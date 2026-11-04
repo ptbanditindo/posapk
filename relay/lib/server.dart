@@ -7,6 +7,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+import 'auth_rules.dart';
 import 'canonical.dart';
 import 'config.dart';
 import 'db.dart';
@@ -182,6 +183,52 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   bool _admin(Request request) {
     final header = request.headers['authorization'] ?? '';
     return header == 'Bearer ${config.adminToken}';
+  }
+
+  /// Kelola akun/perangkat memakai token perangkat pemilik, bukan token
+  /// pendaftaran yang hanya dipakai sekali saat pairing. Perangkat ringkasan
+  /// milik pemilik memakai kind `viewer`, jadi keduanya diterima di sini.
+  Future<Map<String, Object?>?> _manageAuth(
+    Request request,
+    String ownerId,
+  ) async {
+    if (ownerId.isEmpty) return null;
+    if (_admin(request)) {
+      return {'kind': 'admin', 'owner_id': ownerId};
+    }
+    final device = await _deviceAuth(request);
+    if (device == null) return null;
+    if (device['owner_id'] != ownerId) return null;
+    final kind = '${device['kind'] ?? ''}';
+    if (kind != 'owner' && kind != 'viewer') return null;
+    return device;
+  }
+
+  /// Batas kasar untuk amplop dari perangkat karyawan. Isi amplop tetap
+  /// terenkripsi, jadi pemeriksaan ini memakai petunjuk `entity`/`action`
+  /// yang dikirim client; aturan konflik tetap ditegakkan saat apply.
+  Future<bool> _employeeCanSend(
+    Map<String, Object?> device,
+    String entity,
+    String action,
+  ) async {
+    if (entity.isEmpty || action.isEmpty) return false;
+    const direct = {'nota', 'customer', 'unit', 'stock_movement'};
+    if (direct.contains(entity)) return true;
+    final accountId = device['employee_account_id'] as String? ?? '';
+    final account = accountId.isEmpty
+        ? null
+        : await db.one(
+            'SELECT role_base, extra_permissions FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+            {'owner': device['owner_id'], 'sync': accountId},
+          );
+    if (account == null) return false;
+    return employeeEntityAllowed(
+      entity: entity,
+      action: action,
+      roleBase: '${account['role_base'] ?? ''}',
+      extras: stringList(account['extra_permissions']).toSet(),
+    );
   }
 
   Future<Map<String, Object?>?> _owner(String ownerId) =>
@@ -395,6 +442,10 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
       'nonce': '${body['nonce'] ?? ''}',
     };
     final signature = '${body['signature'] ?? ''}';
+    final entity = '${body['entity'] ?? ''}';
+    final action = '${body['action'] ?? ''}';
+    final entityId = '${body['entity_id'] ?? ''}';
+    final hintsSignature = '${body['hints_signature'] ?? ''}';
     if (store.isEmpty ||
         fields['idempotency_key'] == '' ||
         fields['ciphertext'] == '' ||
@@ -409,6 +460,37 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
       signature: signature,
     );
     if (!valid) return _error(400, 'Tanda tangan amplop tidak valid.');
+    if (hintsSignature.isNotEmpty) {
+      final hintsValid = await license.verifyPayload(
+        publicKey: device['public_key'] as String,
+        payload: canonicalJson(
+          envelopeHintFields(
+            storeId: store,
+            senderDeviceId: sender,
+            entity: entity,
+            action: action,
+            entityId: entityId,
+            idempotencyKey: fields['idempotency_key'] as String,
+          ),
+        ),
+        signature: hintsSignature,
+      );
+      if (!hintsValid) {
+        return _error(400, 'Tanda tangan petunjuk amplop tidak valid.');
+      }
+    }
+    final kind = '${device['kind'] ?? ''}';
+    if (!canDeviceSubmitEnvelope(kind)) {
+      return _error(403, 'Perangkat ringkasan hanya dapat membaca data.');
+    }
+    if (kind == 'employee') {
+      if (!await _employeeCanSend(device, entity, action)) {
+        return _error(
+          403,
+          'Perangkat ini tidak berwenang mengirim perubahan tersebut.',
+        );
+      }
+    }
 
     final existing = await db.one(
       '''
@@ -549,6 +631,9 @@ ORDER BY relay_seq ASC LIMIT @limit
     final body = await _body(request);
     final store = '${body['store_id'] ?? ''}';
     final lastSeq = (body['last_seq'] as num?)?.toInt() ?? 0;
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
     await db.execute(
       '''
 INSERT INTO cursors (owner_id, device_id, store_id, last_seq, updated_at)
@@ -1344,8 +1429,8 @@ WHERE owner_id = @owner AND sync_id = @sync
 
   Future<Response> _manageAccounts(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       'SELECT * FROM accounts WHERE owner_id = @owner ORDER BY username',
       {'owner': ownerId},
@@ -1356,8 +1441,8 @@ WHERE owner_id = @owner AND sync_id = @sync
   Future<Response> _saveAccount(Request request) async {
     final body = await _body(request);
     final ownerId = '${body['owner_id'] ?? ''}';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final owner = await _owner(ownerId);
     if (owner == null) return _error(404, 'Owner tidak ditemukan.');
     final syncId = '${body['sync_id'] ?? ''}';
@@ -1455,8 +1540,8 @@ ON CONFLICT (owner_id, sync_id) DO UPDATE SET
 
   Future<Response> _manageInvites(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       '''
 SELECT i.*, a.username FROM invites i
@@ -1486,8 +1571,8 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
   Future<Response> _createInvite(Request request) async {
     final body = await _body(request);
     final ownerId = '${body['owner_id'] ?? ''}';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final accountSync = '${body['account_sync_id'] ?? ''}';
     final store = '${body['store_id'] ?? 'utama'}';
     final ttl = (body['ttl_minutes'] as num?)?.toInt() ?? 10;
@@ -1528,8 +1613,8 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
 
   Future<Response> _manageDevices(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       'SELECT * FROM devices WHERE owner_id = @owner ORDER BY created_at',
       {'owner': ownerId},
@@ -1539,8 +1624,8 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
 
   Future<Response> _revokeDevice(Request request, String id) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _ownerAuth(request, ownerId);
-    if (auth == null) return _error(401, 'Token owner tidak valid.');
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final count = await db.execute(
       'UPDATE devices SET revoked_at = now() WHERE id = @id AND owner_id = @owner AND revoked_at IS NULL',
       {'id': id, 'owner': ownerId},

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../data/app_database.dart';
 import '../../data/license_service.dart';
 import '../../data/supplier_service.dart';
+import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
 class SupplierScreen extends StatefulWidget {
@@ -55,6 +56,8 @@ class _SupplierScreenState extends State<SupplierScreen> {
         alamat: input.alamat,
         catatan: input.catatan,
         aktif: input.aktif,
+        enqueue: (txn, id) =>
+            SyncService.instance.enqueueSupplier(id, txn: txn),
       );
       await _load();
       if (mounted) showSnack(context, 'Supplier disimpan.');
@@ -70,12 +73,16 @@ class _SupplierScreenState extends State<SupplierScreen> {
       context,
       title: 'Hapus supplier',
       message:
-          'Hapus "${supplier['nama']}"? Kaitan barang dan status follow up '
-          'supplier ini ikut dihapus.',
+          'Hapus "${supplier['nama']}"? Barang tidak lagi dihubungkan ke '
+          'supplier ini.',
       confirmLabel: 'Hapus',
     );
     if (!ok) return;
-    await SupplierService.instance.deleteSupplier(supplier['id'] as int);
+    await SupplierService.instance.deleteSupplier(
+      supplier['id'] as int,
+      enqueue: (txn, id) =>
+          SyncService.instance.enqueueSupplier(id, txn: txn),
+    );
     await _load();
     if (mounted) showSnack(context, 'Supplier dihapus.');
   }
@@ -87,6 +94,12 @@ class _SupplierScreenState extends State<SupplierScreen> {
         stockItemId: row['stock_item_id'] as int,
         status: status,
         catatan: row['catatan'] as String?,
+        enqueue: (txn, supplierId, stockItemId) =>
+            SyncService.instance.enqueueSupplierFollowup(
+          supplierId: supplierId,
+          stockItemId: stockItemId,
+          txn: txn,
+        ),
       );
       await _load();
       if (mounted) showSnack(context, 'Status follow up disimpan.');

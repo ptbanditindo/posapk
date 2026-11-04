@@ -45,14 +45,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
     if (input == null) return;
     try {
-      final id = await AppDatabase.instance.addCustomer(
+      await AppDatabase.instance.addCustomer(
         nama: input.nama,
         nomorHp: input.nomorHp,
         alamat: input.alamat,
         waConsent: input.waConsent,
         doNotContact: input.doNotContact,
+        enqueue: (txn, id) =>
+            SyncService.instance.enqueueCustomer(id, txn: txn),
       );
-      await SyncService.instance.enqueueCustomer(id);
       AppState.instance.touch();
       _load();
     } on DuplicateCustomerException catch (duplicate) {
@@ -93,8 +94,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
         alamat: input.alamat,
         waConsent: input.waConsent,
         doNotContact: input.doNotContact,
+        enqueue: (txn, id) =>
+            SyncService.instance.enqueueCustomer(id, txn: txn),
       );
-      await SyncService.instance.enqueueCustomer(customer.id);
       AppState.instance.touch();
       _load();
     } catch (error) {
@@ -159,16 +161,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final target = targetId;
     if (target == null) return;
     try {
-      final moved = await AppDatabase.instance.mergeCustomers(
+      await AppDatabase.instance.mergeCustomers(
         sourceId: source.id,
         targetId: target,
+        enqueueCustomer: (txn, id) =>
+            SyncService.instance.enqueueCustomer(id, txn: txn),
+        enqueueUnit: (txn, id) => SyncService.instance.enqueueUnit(id, txn: txn),
+        enqueueNote: (txn, id) => SyncService.instance.enqueueNote(id, txn: txn),
       );
-      for (final unitId in moved['units'] ?? const <int>[]) {
-        await SyncService.instance.enqueueUnit(unitId);
-      }
-      for (final recordId in moved['records'] ?? const <int>[]) {
-        await SyncService.instance.enqueueNote(recordId);
-      }
       AppState.instance.touch();
       _load();
       if (mounted) showSnack(context, 'Pelanggan digabungkan.');
@@ -443,7 +443,7 @@ class _UnitsSheetState extends State<_UnitsSheet> {
       builder: (_) => const _UnitDialog(),
     );
     if (input == null) return;
-    final id = await AppDatabase.instance.addUnit(
+    await AppDatabase.instance.addUnit(
       customerId: widget.customer.id,
       unitType: input.unitType,
       nopol: input.nopol,
@@ -451,8 +451,8 @@ class _UnitsSheetState extends State<_UnitsSheet> {
       tahunMobil: input.tahunMobil,
       tipeRadiator: input.tipeRadiator,
       labelRadiator: input.labelRadiator,
+      enqueue: (txn, id) => SyncService.instance.enqueueUnit(id, txn: txn),
     );
-    await SyncService.instance.enqueueUnit(id);
     AppState.instance.touch();
     _load();
   }

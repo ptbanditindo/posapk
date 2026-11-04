@@ -6,6 +6,7 @@ import 'data/app_database.dart';
 import 'data/backup_scheduler.dart';
 import 'dev/dummy_seed.dart';
 import 'state/app_state.dart';
+import 'sync/sync_scheduler.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,5 +15,6 @@ Future<void> main() async {
   await seedDummyDataIfEnabled();
   await AppState.instance.load();
   BackupScheduler.instance.start();
+  SyncScheduler.instance.start();
   runApp(const PusatkuApp());
 }

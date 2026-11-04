@@ -37,7 +37,8 @@ class SupplierService {
         (SELECT COUNT(*) FROM supplier_items i WHERE i.supplier_id = s.id)
           AS jumlah_barang
       FROM suppliers s
-      WHERE (? = '' OR s.nama LIKE ? ESCAPE '\\')
+      WHERE s.deleted_at IS NULL
+        AND (? = '' OR s.nama LIKE ? ESCAPE '\\')
         ${activeOnly ? 'AND s.aktif = 1' : ''}
       ORDER BY s.nama COLLATE NOCASE
       ''',
@@ -53,22 +54,11 @@ class SupplierService {
     String? alamat,
     String? catatan,
     bool aktif = true,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
     final cleanName = nama.trim();
     if (cleanName.length < 2) {
       throw ArgumentError('Nama supplier minimal 2 karakter.');
-    }
-    final duplicate = await AppDatabase.instance.db.query(
-      'suppliers',
-      columns: ['id', 'nama'],
-      where: 'LOWER(nama) = LOWER(?)',
-      whereArgs: [cleanName],
-      limit: 1,
-    );
-    if (duplicate.isNotEmpty && duplicate.first['id'] != id) {
-      throw StateError(
-        'Supplier "${duplicate.first['nama']}" sudah ada.',
-      );
     }
     final now = nowIso();
     final phone = (nomorHp ?? '').trim();
@@ -80,44 +70,84 @@ class SupplierService {
       'aktif': aktif ? 1 : 0,
       'updated_at': now,
     };
-    if (id != null) {
-      final rows = await AppDatabase.instance.db.query(
+    return AppDatabase.instance.db.transaction((txn) async {
+      final duplicate = await txn.query(
         'suppliers',
-        columns: ['id'],
-        where: 'id = ?',
-        whereArgs: [id],
+        columns: ['id', 'nama'],
+        where: 'LOWER(nama) = LOWER(?) AND deleted_at IS NULL',
+        whereArgs: [cleanName],
         limit: 1,
       );
-      if (rows.isEmpty) throw StateError('Supplier tidak ditemukan.');
-      await AppDatabase.instance.db.update(
-        'suppliers',
-        payload,
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-      return id;
-    }
-    return AppDatabase.instance.db.insert('suppliers', {
-      ...payload,
-      'sync_id': newSyncId(),
-      'created_at': now,
+      if (duplicate.isNotEmpty && duplicate.first['id'] != id) {
+        throw StateError(
+          'Supplier "${duplicate.first['nama']}" sudah ada.',
+        );
+      }
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      if (id != null) {
+        final rows = await txn.query(
+          'suppliers',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+        if (rows.isEmpty) throw StateError('Supplier tidak ditemukan.');
+        await txn.update(
+          'suppliers',
+          {
+            ...payload,
+            'deleted_at': null,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        if (enqueue != null) await enqueue(txn, id);
+        return id;
+      }
+      final newId = await txn.insert('suppliers', {
+        ...payload,
+        'sync_id': newSyncId(),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
+        'created_at': now,
+      });
+      if (enqueue != null) await enqueue(txn, newId);
+      return newId;
     });
   }
 
-  Future<void> deleteSupplier(int id) async {
+  Future<void> deleteSupplier(
+    int id, {
+    Future<void> Function(Transaction txn, int id)? enqueue,
+  }) async {
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
-      await txn.delete(
-        'supplier_followups',
-        where: 'supplier_id = ?',
-        whereArgs: [id],
-      );
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       await txn.delete(
         'supplier_items',
         where: 'supplier_id = ?',
         whereArgs: [id],
       );
-      await txn.delete('suppliers', where: 'id = ?', whereArgs: [id]);
+      await txn.delete(
+        'supplier_followups',
+        where: 'supplier_id = ?',
+        whereArgs: [id],
+      );
+      await txn.update(
+        'suppliers',
+        {
+          'deleted_at': nowIso(),
+          'aktif': 0,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (enqueue != null) await enqueue(txn, id);
     });
   }
 
@@ -180,7 +210,8 @@ class SupplierService {
       JOIN suppliers s ON s.id = i.supplier_id
       LEFT JOIN supplier_followups f
         ON f.supplier_id = s.id AND f.stock_item_id = st.id
-      WHERE COALESCE(st.jumlah_milli, st.jumlah * 1000) <=
+      WHERE s.deleted_at IS NULL
+        AND COALESCE(st.jumlah_milli, st.jumlah * 1000) <=
         (CASE WHEN st.stok_minimum > 0 THEN st.stok_minimum ELSE 3 END) * 1000
         ${supplierId == null ? '' : 'AND s.id = $supplierId'}
       ORDER BY s.nama COLLATE NOCASE, st.nama COLLATE NOCASE
@@ -203,7 +234,8 @@ class SupplierService {
       JOIN stock_items st ON st.id = i.stock_item_id
       LEFT JOIN supplier_followups f
         ON f.supplier_id = i.supplier_id AND f.stock_item_id = i.stock_item_id
-      ${supplierId == null ? '' : 'WHERE s.id = $supplierId'}
+      WHERE s.deleted_at IS NULL
+        ${supplierId == null ? '' : 'AND s.id = $supplierId'}
       ORDER BY s.nama COLLATE NOCASE, st.nama COLLATE NOCASE
       ''',
     );
@@ -215,39 +247,49 @@ class SupplierService {
     required int stockItemId,
     required String status,
     String? catatan,
+    Future<void> Function(Transaction txn, int supplierId, int stockItemId)?
+        enqueue,
   }) async {
     if (!supplierStatuses.contains(status)) {
       throw ArgumentError('Status supplier tidak dikenal.');
     }
     final now = nowIso();
-    final existing = await AppDatabase.instance.db.query(
-      'supplier_followups',
-      columns: ['id'],
-      where: 'supplier_id = ? AND stock_item_id = ?',
-      whereArgs: [supplierId, stockItemId],
-      limit: 1,
-    );
-    if (existing.isEmpty) {
-      await AppDatabase.instance.db.insert('supplier_followups', {
-        'sync_id': newSyncId(),
-        'supplier_id': supplierId,
-        'stock_item_id': stockItemId,
-        'status': status,
-        'catatan': _clean(catatan),
-        'updated_at': now,
-      });
-      return;
-    }
-    await AppDatabase.instance.db.update(
-      'supplier_followups',
-      {
-        'status': status,
-        'catatan': _clean(catatan),
-        'updated_at': now,
-      },
-      where: 'id = ?',
-      whereArgs: [existing.first['id']],
-    );
+    await AppDatabase.instance.db.transaction((txn) async {
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final existing = await txn.query(
+        'supplier_followups',
+        columns: ['id'],
+        where: 'supplier_id = ? AND stock_item_id = ?',
+        whereArgs: [supplierId, stockItemId],
+        limit: 1,
+      );
+      if (existing.isEmpty) {
+        await txn.insert('supplier_followups', {
+          'sync_id': newSyncId(),
+          'supplier_id': supplierId,
+          'stock_item_id': stockItemId,
+          'status': status,
+          'catatan': _clean(catatan),
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': now,
+        });
+      } else {
+        await txn.update(
+          'supplier_followups',
+          {
+            'status': status,
+            'catatan': _clean(catatan),
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'updated_at': now,
+          },
+          where: 'id = ?',
+          whereArgs: [existing.first['id']],
+        );
+      }
+      if (enqueue != null) await enqueue(txn, supplierId, stockItemId);
+    });
   }
 
   static String? _clean(String? value) {

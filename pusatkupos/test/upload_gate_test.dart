@@ -63,7 +63,7 @@ void main() {
     final pending = rows.firstWhere((row) => row['device_id'] == 'dev_b');
     expect(pending['state'], 'pending');
     expect(pending['pending'], 2);
-    expect(AppDatabase.schemaVersion, 10);
+    expect(AppDatabase.schemaVersion, 11);
   });
 
   test('upload tidak bisa dimulai tanpa perangkat terdaftar', () async {

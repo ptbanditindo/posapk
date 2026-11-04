@@ -191,6 +191,22 @@ Relay memverifikasi tanda tangan amplop perangkat dan menolak amplop yang
 tidak cocok. Relay juga menolak akun karyawan yang izinnya tidak ditandatangani
 kunci identitas owner (`409 owner_signer_required`).
 
+### Otorisasi
+
+- `POST /relay/devices` memakai `X-Relay-Enroll-Token`. Token ini hanya untuk
+  pairing perangkat awal, berlaku 365 hari, dan dapat dipakai beberapa
+  perangkat dalam satu owner. Token tidak berlaku untuk endpoint lain.
+- `GET|POST /relay/manage/*` memakai `X-Device-Token` milik perangkat
+  `owner`/`viewer` atau `Authorization: Bearer <RELAY_ADMIN_TOKEN>`. Token
+  karyawan ditolak `401`.
+- `POST /relay/envelopes` menolak perangkat `viewer` (`403`) dan membatasi
+  perangkat `employee` pada entity `nota`, `customer`, `unit`,
+  `stock_movement`, dan `supplier_followup` (sesuai izin `followup`); entity
+  `harga_jasa`/`stock` hanya bila akun punya izin tambahan terkait. Karena isi
+  amplop terenkripsi, relay memakai petunjuk `entity`/`action` di luar amplop;
+  aturan konflik tetap ditegakkan saat apply di perangkat.
+- `POST /relay/feed/ack` memvalidasi perangkat terdaftar pada `store_id`.
+
 ### Gate unggah cadangan
 
 `POST /relay/snapshots` tidak lagi menerima snapshot langsung. Alurnya:
@@ -224,6 +240,8 @@ dicabut, data yang belum terkirim dari perangkat itu tidak akan masuk.
   dari mode ini ditandatangani ulang oleh kunci lisensi server setelah token
   owner diverifikasi. Perangkat yang dibangun tanpa
   `PUSATKU_LICENSE_PUBLIC_KEY` tidak dapat memverifikasi izin tersebut.
-- `enroll_token` berlaku 30 hari. Setelah kedaluwarsa, pengguna harus memilih
-  Login Google lagi; data lokal tidak hilang.
+- `enroll_token` berlaku 365 hari dan sengaja tidak sekali pakai agar perangkat
+  baru masih bisa dipasangkan. Endpoint pengelolaan tidak lagi menerima token
+  ini. Setelah kedaluwarsa, pengguna harus memilih Login Google lagi; data
+  lokal tidak hilang.
 - Relay uji ini belum menangani TLS, rate limit menyeluruh, atau rotasi kunci.

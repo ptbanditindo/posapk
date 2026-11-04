@@ -27,6 +27,24 @@ Map<String, Object?> envelopeFields({
   };
 }
 
+Map<String, Object?> envelopeHints({
+  required String storeId,
+  required String senderDeviceId,
+  required String entity,
+  required String action,
+  required String entityId,
+  required String idempotencyKey,
+}) {
+  return {
+    'store_id': storeId,
+    'sender_device_id': senderDeviceId,
+    'entity': entity,
+    'action': action,
+    'entity_id': entityId,
+    'idempotency_key': idempotencyKey,
+  };
+}
+
 Future<Map<String, Object?>> buildEnvelope({
   required String devicePrivateKey,
   required List<int> storeKey,
@@ -68,7 +86,32 @@ Future<Map<String, Object?>> buildEnvelope({
     devicePrivateKey,
     utf8.encode(canonicalJson(fields)),
   );
-  return {...fields, 'signature': signature};
+  final hintsSignature = await signPayload(
+    devicePrivateKey,
+    utf8.encode(
+      canonicalJson(
+        envelopeHints(
+          storeId: storeId,
+          senderDeviceId: senderDeviceId,
+          entity: entity,
+          action: action,
+          entityId: entityId,
+          idempotencyKey: idempotencyKey,
+        ),
+      ),
+    ),
+  );
+  // Petunjuk terang dipakai relay untuk membatasi perangkat karyawan. Tanda
+  // tangan terpisah membuat petunjuk itu tidak dapat diubah di perjalanan;
+  // perangkat lama yang tidak mengirim `hints_signature` tetap diterima.
+  return {
+    ...fields,
+    'entity': entity,
+    'action': action,
+    'entity_id': entityId,
+    'hints_signature': hintsSignature,
+    'signature': signature,
+  };
 }
 
 Future<Map<String, Object?>> verifyEnvelope({
@@ -93,12 +136,48 @@ Future<Map<String, Object?>> verifyEnvelope({
     envelope['signature'] as String? ?? '',
   );
   if (!valid) throw StateError('Tanda tangan delta tidak valid.');
+  final outerEntity = envelope['entity'] as String? ?? '';
+  final outerAction = envelope['action'] as String? ?? '';
+  final outerEntityId = envelope['entity_id'] as String? ?? '';
+  final hintsSignature = envelope['hints_signature'] as String? ?? '';
+  if (hintsSignature.isNotEmpty) {
+    final hintsValid = await verifyPayload(
+      senderPublicKey,
+      utf8.encode(
+        canonicalJson(
+          envelopeHints(
+            storeId: envelope['store_id'] as String? ?? '',
+            senderDeviceId: envelope['sender_device_id'] as String? ?? '',
+            entity: outerEntity,
+            action: outerAction,
+            entityId: outerEntityId,
+            idempotencyKey: envelope['idempotency_key'] as String? ?? '',
+          ),
+        ),
+      ),
+      hintsSignature,
+    );
+    if (!hintsValid) {
+      throw StateError('Tanda tangan petunjuk delta tidak valid.');
+    }
+  }
   final clear = await decryptPayload(
     storeKey,
     envelope['ciphertext'] as String,
     envelope['nonce'] as String,
   );
-  return jsonDecode(utf8.decode(clear)) as Map<String, Object?>;
+  final data = jsonDecode(utf8.decode(clear)) as Map<String, Object?>;
+  if (outerEntity.isNotEmpty && outerEntity != '${data['entity'] ?? ''}') {
+    throw StateError('Petunjuk entity tidak cocok dengan isi amplop.');
+  }
+  if (outerAction.isNotEmpty && outerAction != '${data['action'] ?? ''}') {
+    throw StateError('Petunjuk action tidak cocok dengan isi amplop.');
+  }
+  if (outerEntityId.isNotEmpty &&
+      outerEntityId != '${data['entity_id'] ?? ''}') {
+    throw StateError('Petunjuk entity_id tidak cocok dengan isi amplop.');
+  }
+  return data;
 }
 
 Map<String, Object?> snapshotFields({

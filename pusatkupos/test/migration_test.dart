@@ -235,4 +235,126 @@ void main() {
       await dir.delete(recursive: true);
     }
   });
+
+  test('migrasi v10 -> v11 menjaga data dan menambah antrean sync', () async {
+    final dir = await Directory.systemTemp.createTemp('pusatkupos_migrate11_');
+    final path = p.join(dir.path, 'migrate11.db');
+    final db = AppDatabase.instance;
+    await db.initForTest(path);
+    try {
+      final customerId = await db.addCustomer(
+        nama: 'Pelanggan V10',
+        nomorHp: '081200000077',
+      );
+      final unitId = await db.addUnit(
+        customerId: customerId,
+        unitType: 'MOBIL',
+        nopol: 'B 10 LAMA',
+      );
+      await db.saveStockItem(
+        kode: 'SP-V10',
+        nama: 'Radiator V10',
+        hargaModalCents: 1000,
+        hargaJualCents: 2000,
+        jumlah: 9,
+        stokMinimum: 1,
+      );
+      final recordId = await db.createTransaction(
+        unitId: unitId,
+        keluhan: 'Servis V10',
+        jobs: [
+          JobDraft(deskripsi: 'Jasa V10', jumlah: 1, hargaCents: 1000),
+        ],
+        parts: const [],
+        diskonCents: 0,
+        metodeBayar: 'CASH',
+        bayarCents: 1000,
+      );
+      await db.close();
+
+      final raw = await databaseFactory.openDatabase(path);
+      await raw.execute('PRAGMA user_version = 10');
+      await raw.execute('DROP TABLE IF EXISTS sync_inbox');
+      await raw.execute('ALTER TABLE sync_outbox DROP COLUMN next_retry_at');
+      for (final column in const [
+        'status',
+        'retry_count',
+        'last_error',
+        'inbox_id',
+      ]) {
+        await raw.execute('ALTER TABLE sync_conflicts DROP COLUMN $column');
+      }
+      for (final table in const [
+        'customers',
+        'vehicle_or_units',
+        'stock_items',
+        'harga_jasa',
+        'service_records',
+        'suppliers',
+        'supplier_followups',
+        'service_record_commissions',
+        'employee_debts',
+        'salary_payments',
+      ]) {
+        await raw.execute(
+          'ALTER TABLE $table DROP COLUMN sync_hlc_wall',
+        );
+        await raw.execute(
+          'ALTER TABLE $table DROP COLUMN sync_hlc_counter',
+        );
+      }
+      for (final table in const [
+        'customers',
+        'vehicle_or_units',
+        'stock_items',
+        'harga_jasa',
+        'suppliers',
+      ]) {
+        await raw.execute('ALTER TABLE $table DROP COLUMN deleted_at');
+      }
+      await raw.close();
+
+      await db.reopen();
+      final customer = (await db.db.query(
+        'customers',
+        where: 'id = ?',
+        whereArgs: [customerId],
+      ))
+          .single;
+      expect(customer['nama'], 'Pelanggan V10');
+      expect(customer['sync_hlc_wall'], 0);
+      expect(customer['sync_hlc_counter'], 0);
+      expect(customer['deleted_at'], isNull);
+
+      final stock = (await db.listStock()).single;
+      expect(stock.jumlah, 9);
+      final record = (await db.db.query(
+        'service_records',
+        where: 'id = ?',
+        whereArgs: [recordId],
+      ))
+          .single;
+      expect(record['keluhan_awal'], 'Servis V10');
+      expect(record.keys, contains('sync_hlc_wall'));
+
+      final inboxTable = await db.db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_inbox'",
+      );
+      expect(inboxTable, isNotEmpty);
+      final outboxColumns = await db.db.rawQuery('PRAGMA table_info(sync_outbox)');
+      expect(
+        outboxColumns.map((row) => row['name']),
+        contains('next_retry_at'),
+      );
+      final conflictColumns =
+          await db.db.rawQuery('PRAGMA table_info(sync_conflicts)');
+      expect(
+        conflictColumns.map((row) => row['name']),
+        containsAll(['status', 'retry_count', 'last_error', 'inbox_id']),
+      );
+    } finally {
+      await db.close();
+      await dir.delete(recursive: true);
+    }
+  });
 }

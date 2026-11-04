@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/crypto.dart';
 import 'app_database.dart';
 
 const imbalanTypes = ['KOMISI', 'GAJI'];
@@ -153,6 +154,7 @@ class EmployeeService {
     String employeeSyncId, {
     required int nominalCents,
     String? catatan,
+    Future<void> Function(Transaction txn, String syncId)? enqueue,
   }) async {
     if (nominalCents <= 0) {
       throw ArgumentError('Nominal hutang harus lebih dari nol.');
@@ -160,13 +162,21 @@ class EmployeeService {
     if (await findEmployee(employeeSyncId) == null) {
       throw StateError('Karyawan tidak ditemukan.');
     }
-    return _db.insert('employee_debts', {
-      'sync_id': newSyncId(),
-      'employee_sync_id': employeeSyncId,
-      'nominal': nominalCents,
-      'terbayar': 0,
-      'catatan': _clean(catatan),
-      'created_at': nowIso(),
+    return _db.transaction((txn) async {
+      final syncId = newSyncId();
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final id = await txn.insert('employee_debts', {
+        'sync_id': syncId,
+        'employee_sync_id': employeeSyncId,
+        'nominal': nominalCents,
+        'terbayar': 0,
+        'catatan': _clean(catatan),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
+        'created_at': nowIso(),
+      });
+      if (enqueue != null) await enqueue(txn, syncId);
+      return id;
     });
   }
 
@@ -262,6 +272,7 @@ class EmployeeService {
     int bonusCents = 0,
     String metode = 'CASH',
     String? catatan,
+    Future<void> Function(Transaction txn, String syncId)? enqueue,
   }) async {
     if (metode != 'CASH' && metode != 'TRANSFER') {
       throw ArgumentError('Metode pembayaran tidak dikenal.');
@@ -291,14 +302,17 @@ class EmployeeService {
       if (existing.isNotEmpty) {
         throw StateError('Gaji untuk siklus ini sudah dibayar.');
       }
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final remaining = await _applyDebtPayment(
         txn,
         employeeSyncId,
         summary.deductionCents,
+        hlc: hlc,
       );
       final paidAt = at ?? DateTime.now();
+      final syncId = newSyncId();
       await txn.insert('salary_payments', {
-        'sync_id': newSyncId(),
+        'sync_id': syncId,
         'employee_sync_id': employeeSyncId,
         'periode': summary.periode,
         'cycle_start': isoStartOfDay(summary.cycleStart),
@@ -310,8 +324,11 @@ class EmployeeService {
         'bonus': summary.bonusCents,
         'metode': metode,
         'catatan': _clean(catatan),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
       });
+      if (enqueue != null) await enqueue(txn, syncId);
     });
     return PayrollSummary(
       employeeSyncId: summary.employeeSyncId,
@@ -346,6 +363,7 @@ class EmployeeService {
     String employeeSyncId,
     int? overrideCents, {
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
     if (actor != null && !actor.isOwner) {
       throw StateError('Hanya pemilik yang dapat mengubah komisi.');
@@ -365,6 +383,7 @@ class EmployeeService {
       if (records.first['status'] == 'VOID') {
         throw StateError('Nota void tidak dapat diubah komisinya.');
       }
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final rows = await txn.query(
         'service_record_commissions',
         columns: ['id'],
@@ -374,21 +393,29 @@ class EmployeeService {
       );
       if (rows.isEmpty) {
         if (overrideCents == null) return;
-        await txn.insert('service_record_commissions', {
+        final id = await txn.insert('service_record_commissions', {
           'sync_id': newSyncId(),
           'service_record_id': recordId,
           'employee_sync_id': employeeSyncId,
           'nominal': 0,
           'nominal_override': overrideCents,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
         });
+        if (enqueue != null) await enqueue(txn, id);
         return;
       }
       await txn.update(
         'service_record_commissions',
-        {'nominal_override': overrideCents},
+        {
+          'nominal_override': overrideCents,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+        },
         where: 'id = ?',
         whereArgs: [rows.first['id']],
       );
+      if (enqueue != null) await enqueue(txn, rows.first['id'] as int);
     });
   }
 
@@ -426,8 +453,9 @@ class EmployeeService {
   static Future<int> _applyDebtPayment(
     DatabaseExecutor txn,
     String employeeSyncId,
-    int amount,
-  ) async {
+    int amount, {
+    required Hlc hlc,
+  }) async {
     var left = amount;
     if (left > 0) {
       final debts = await txn.query(
@@ -444,7 +472,11 @@ class EmployeeService {
         final take = min(due, left);
         await txn.update(
           'employee_debts',
-          {'terbayar': paid + take},
+          {
+            'terbayar': paid + take,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+          },
           where: 'id = ?',
           whereArgs: [debt['id']],
         );

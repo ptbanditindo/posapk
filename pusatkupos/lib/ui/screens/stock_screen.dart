@@ -78,17 +78,11 @@ class _StockScreenState extends State<StockScreen> {
         satuan: input.satuan,
         desimal: input.desimal,
         actor: AppState.instance.operator,
+        enqueue: (txn, id) => SyncService.instance.enqueueStock(id, txn: txn),
+        enqueueMovement: (txn, movementId) =>
+            SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
       await SupplierService.instance.syncItemSuppliers(id, input.supplierIds);
-      await SyncService.instance.enqueueStock(id);
-      final delta = input.jumlahMilli - (item?.jumlahMilli ?? 0);
-      if (item == null || delta != 0) {
-        await SyncService.instance.enqueueStockDelta(
-          id,
-          delta,
-          qtyMilli: delta,
-        );
-      }
       AppState.instance.touch();
       _load();
     } catch (error) {
@@ -113,11 +107,8 @@ class _StockScreenState extends State<StockScreen> {
         qtyMilli: input.qtyMilli,
         alasan: input.alasan,
         actor: AppState.instance.operator,
-      );
-      await SyncService.instance.enqueueStockDelta(
-        item.id,
-        input.qtyMilli,
-        qtyMilli: input.qtyMilli,
+        enqueueMovement: (txn, movementId) =>
+            SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
       AppState.instance.touch();
       _load();
@@ -143,11 +134,8 @@ class _StockScreenState extends State<StockScreen> {
         qtyMilli: input.qtyMilli,
         alasan: input.alasan,
         actor: AppState.instance.operator,
-      );
-      await SyncService.instance.enqueueStockDelta(
-        item.id,
-        -input.qtyMilli,
-        qtyMilli: -input.qtyMilli,
+        enqueueMovement: (txn, movementId) =>
+            SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
       AppState.instance.touch();
       _load();
@@ -166,18 +154,14 @@ class _StockScreenState extends State<StockScreen> {
       builder: (_) => _OpnameDialog(item: item),
     );
     if (input == null) return;
-    final delta = input.qtyMilli - item.jumlahMilli;
     try {
       await AppDatabase.instance.opname(
         item: item,
         jumlahFisikMilli: input.qtyMilli,
         alasan: input.alasan,
         actor: AppState.instance.operator,
-      );
-      await SyncService.instance.enqueueStockDelta(
-        item.id,
-        delta,
-        qtyMilli: delta,
+        enqueueMovement: (txn, movementId) =>
+            SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
       AppState.instance.touch();
       _load();

@@ -277,7 +277,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     id,
                     actor: AppState.instance.operator,
                     enqueue: (txn, recordId) =>
-                        SyncService.instance.enqueueNote(recordId, txn: txn),
+                        SyncService.instance.enqueueNoteWarranty(
+                      recordId,
+                      txn: txn,
+                    ),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -296,7 +299,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 !detail.record.isVoid
             ? () async {
                 try {
-                  await AppDatabase.instance.markUnitTaken(id, diambil: true);
+                  await AppDatabase.instance.markUnitTaken(
+                    id,
+                    diambil: true,
+                    enqueue: (txn, recordId) =>
+                        SyncService.instance.enqueueNoteTaken(
+                      recordId,
+                      txn: txn,
+                    ),
+                  );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
                   if (context.mounted) Navigator.pop(context);
@@ -331,6 +342,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       entry.key,
                       entry.value,
                       actor: AppState.instance.operator,
+                      enqueue: (txn, commissionId) =>
+                          SyncService.instance.enqueueCommission(
+                        commissionId,
+                        txn: txn,
+                      ),
                     );
                   }
                   AppState.instance.touch();

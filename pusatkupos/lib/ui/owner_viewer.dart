@@ -24,6 +24,7 @@ import '../sync/crypto.dart';
 import '../sync/sync_service.dart';
 import 'entry_gate.dart';
 import 'pin_gate.dart';
+import 'screens/sync_conflicts_screen.dart';
 
 const _summaryKey = 'owner.summary.signed';
 const _enrollKey = 'owner.enroll_token';
@@ -56,6 +57,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
   SessionProfile? _profile;
   _OwnerViewerSummary? _summary;
   String _enrollToken = '';
+  String _deviceToken = '';
   String _defaultStoreId = 'utama';
   String? _error;
   bool _busy = false;
@@ -94,6 +96,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
     try {
       _profile = await SessionService.instance.load();
       _enrollToken = await SecureStore.instance.read(_enrollKey) ?? '';
+      _deviceToken = await SyncService.instance.relayDeviceToken() ?? '';
       final cached = await AppDatabase.instance.getSetting(_summaryKey);
       if (cached != null && cached.isNotEmpty) {
         await _parseSummary(cached, persist: false);
@@ -113,10 +116,12 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
     final device = await DeviceService.instance.currentDevice();
     final relayId = await SyncService.instance.relayDeviceId();
     final key = await SyncService.instance.existingStoreKey();
+    final token = await SyncService.instance.relayDeviceToken() ?? '';
     if (!mounted) return;
     setState(() {
       _connected = device != null && relayId != null && relayId.isNotEmpty;
       _keyReady = key != null;
+      _deviceToken = token;
     });
   }
 
@@ -341,12 +346,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
 
   OwnerApi? get _api {
     final summary = _summary;
-    if (summary == null || _enrollToken.isEmpty || !serviceConfigured) {
+    if (summary == null ||
+        _deviceToken.isEmpty ||
+        !serviceConfigured) {
       return null;
     }
     return OwnerApi(
       baseUrl: normalizedServiceUrl,
-      enrollToken: _enrollToken,
+      deviceToken: _deviceToken,
       ownerId: '${summary.payload['owner_id']}',
     );
   }
@@ -1036,6 +1043,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
     );
   }
 
+  String _lastSyncLabel(Map<String, Object?>? status) {
+    final raw = '${status?['last_success_at'] ?? ''}';
+    if (raw.isEmpty) return 'Belum pernah';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return raw;
+    return _dateFormat.format(parsed.toLocal());
+  }
+
   Widget _dataTab() {
     final status = _syncStatus;
     return ListView(
@@ -1052,6 +1067,22 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               ),
               _row('Kursor', '${status?['cursor'] ?? 0}'),
               _row('Antrean', '${status?['pending'] ?? 0}'),
+              _row('Sinkron terakhir', _lastSyncLabel(status)),
+              _row(
+                'Konflik / gagal',
+                '${((status?['failed'] as int?) ?? 0) + ((status?['blocking'] as int?) ?? 0)}',
+              ),
+              if (status?['stale'] == true)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Perubahan belum terkirim lebih dari 24 jam.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -1069,6 +1100,15 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               onPressed: _busy ? null : _takeSnapshot,
               icon: const Icon(Icons.download_outlined),
               label: const Text('Muat salinan'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const SyncConflictsScreen(),
+                ),
+              ),
+              icon: const Icon(Icons.warning_amber_outlined),
+              label: Text('Konflik (${status?['conflicts'] ?? 0})'),
             ),
           ],
         ),

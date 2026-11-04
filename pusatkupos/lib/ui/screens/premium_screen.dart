@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../data/account_service.dart';
 import '../../data/app_database.dart';
@@ -9,6 +10,7 @@ import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../upload_backup_dialog.dart';
 import '../widgets.dart';
+import 'sync_conflicts_screen.dart';
 
 class PremiumScreen extends StatefulWidget {
   const PremiumScreen({super.key});
@@ -684,20 +686,61 @@ class _PremiumScreenState extends State<PremiumScreen> {
                     onPressed: premium ? _takeSnapshot : null,
                     child: const Text('Ambil snapshot'),
                   ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const SyncConflictsScreen(),
+                      ),
+                    ),
+                    child: Text(
+                      'Konflik (${_syncStatus?['conflicts'] ?? 0})',
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
+              _line('Sinkron terakhir', _lastSyncLabel),
               _line('Menunggu dikirim', '${_syncStatus?['pending'] ?? 0}'),
+              _line(
+                'Konflik / gagal',
+                '${((_syncStatus?['failed'] as int?) ?? 0) + ((_syncStatus?['blocking'] as int?) ?? 0)}',
+              ),
               _line(
                 'Terakhir diterima',
                 '${_syncStatus?['cursor'] ?? 0}',
               ),
+              if (_syncStatus?['stale'] == true) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Ada perubahan yang belum terkirim lebih dari 24 jam. '
+                  'Periksa koneksi atau buka daftar konflik.',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              if (('${_syncStatus?['last_error'] ?? ''}').isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${_syncStatus?['last_error']}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
             ],
           ),
         ),
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  String get _lastSyncLabel {
+    final raw = '${_syncStatus?['last_success_at'] ?? ''}';
+    if (raw.isEmpty) return 'Belum pernah';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return raw;
+    return DateFormat('dd/MM/yyyy HH:mm').format(parsed.toLocal());
   }
 
   Widget _line(String label, String value) {

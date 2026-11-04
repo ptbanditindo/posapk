@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../core/app_config.dart';
@@ -19,6 +20,7 @@ import 'crypto.dart';
 import 'protocol.dart';
 import 'relay_client.dart';
 import 'snapshot_sync.dart';
+import 'sync_conflict_rules.dart';
 
 class SyncService {
   SyncService._();
@@ -45,10 +47,13 @@ class SyncService {
       'sync.relay_url',
       normalizeRelayUrl(relayUrl),
     );
-    await AppDatabase.instance.setSetting(
-      'sync.enroll_token',
-      enrollToken.trim(),
-    );
+    final enroll = enrollToken.trim();
+    if (enroll.isEmpty) {
+      await SecureStore.instance.delete('sync.enroll_token');
+    } else {
+      await SecureStore.instance.write('sync.enroll_token', enroll);
+    }
+    await AppDatabase.instance.deleteSetting('sync.enroll_token');
     await AppDatabase.instance.setSetting(
       'sync.store_id',
       storeId.trim().isEmpty ? 'utama' : storeId.trim(),
@@ -60,7 +65,15 @@ class SyncService {
     return _setting('sync.relay_url');
   }
 
-  Future<String?> enrollToken() => _setting('sync.enroll_token');
+  Future<String?> enrollToken() async {
+    final stored = await SecureStore.instance.read('sync.enroll_token');
+    if (stored != null && stored.isNotEmpty) return stored;
+    final legacy = await _setting('sync.enroll_token');
+    if (legacy == null || legacy.isEmpty) return null;
+    await SecureStore.instance.write('sync.enroll_token', legacy);
+    await AppDatabase.instance.deleteSetting('sync.enroll_token');
+    return legacy;
+  }
 
   Future<String> storeId() async =>
       (await _setting('sync.store_id')) ?? 'utama';
@@ -69,7 +82,12 @@ class SyncService {
 
   Future<String?> relayDeviceToken() async {
     final stored = await SecureStore.instance.read('sync.relay_device_token');
-    return stored ?? _setting('sync.relay_device_token');
+    if (stored != null && stored.isNotEmpty) return stored;
+    final legacy = await _setting('sync.relay_device_token');
+    if (legacy == null || legacy.isEmpty) return null;
+    await SecureStore.instance.write('sync.relay_device_token', legacy);
+    await AppDatabase.instance.deleteSetting('sync.relay_device_token');
+    return legacy;
   }
 
   Future<List<int>?> existingStoreKey() async {
@@ -341,9 +359,7 @@ class SyncService {
       throw StateError('Daftarkan perangkat ini terlebih dahulu.');
     }
     final store = await storeId();
-    if (await pendingCount() > 0) {
-      throw StateError('Kirim perubahan lokal sebelum membuat cadangan.');
-    }
+    await _requireCleanBeforeUpload();
     final keyReady = await refreshStoreKey();
     if (!keyReady) throw StateError('Kunci toko belum tersedia.');
     final client = RelayClient(baseUrl: url, deviceToken: token);
@@ -408,9 +424,7 @@ class SyncService {
     }
     final storeKey = (await existingStoreKey())!;
     final store = await storeId();
-    if (await pendingCount() > 0) {
-      throw StateError('Kirim perubahan lokal sebelum membuat snapshot.');
-    }
+    await _requireCleanBeforeUpload();
     final client = RelayClient(baseUrl: url, deviceToken: token);
     final status = await client.syncRound(roundId);
     await _cacheRoundStatus(status);
@@ -493,6 +507,7 @@ class SyncService {
     await AppDatabase.instance.setSetting('sync.relay_device_id', relayId);
     await AppDatabase.instance.setSetting('sync.local_device_id', device['id'] as String);
     await SecureStore.instance.write('sync.relay_device_token', token);
+    await AppDatabase.instance.deleteSetting('sync.relay_device_token');
     await AppDatabase.instance.deleteSetting(
       'sync.restore_requires_bootstrap',
     );
@@ -555,6 +570,155 @@ class SyncService {
     return rows.first['total'] as int? ?? 0;
   }
 
+  Future<int> pendingInboxCount() async {
+    final rows = await AppDatabase.instance.db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_inbox WHERE status = 'pending'",
+    );
+    return rows.first['total'] as int? ?? 0;
+  }
+
+  Future<int> failedInboxCount() async {
+    final rows = await AppDatabase.instance.db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_inbox WHERE status = 'failed'",
+    );
+    return rows.first['total'] as int? ?? 0;
+  }
+
+  Future<int> openConflictCount() async {
+    final rows = await AppDatabase.instance.db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_conflicts "
+      "WHERE resolved_at IS NULL AND status != 'ignored'",
+    );
+    return rows.first['total'] as int? ?? 0;
+  }
+
+  /// Konflik yang masih menghalangi unggahan: delta belum diterapkan atau
+  /// konflik permanen yang belum diselesaikan pengguna.
+  Future<int> blockingConflictCount() async {
+    final rows = await AppDatabase.instance.db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_conflicts "
+      "WHERE resolved_at IS NULL AND status IN ('failed', 'retrying')",
+    );
+    return rows.first['total'] as int? ?? 0;
+  }
+
+  Future<List<Map<String, Object?>>> conflicts() async {
+    return AppDatabase.instance.db.query(
+      'sync_conflicts',
+      orderBy: 'resolved_at IS NOT NULL, created_at DESC',
+    );
+  }
+
+  /// Coba terapkan ulang amplop yang tertahan. Konflik tetap terlihat sampai
+  /// hasil berikutnya benar-benar berhasil.
+  Future<void> retryConflict(int conflictId) async {
+    final db = AppDatabase.instance.db;
+    final rows = await db.query(
+      'sync_conflicts',
+      where: 'id = ?',
+      whereArgs: [conflictId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final inboxId = rows.first['inbox_id'] as int?;
+    final stamp = nowIso();
+    await db.transaction((txn) async {
+      await txn.update(
+        'sync_conflicts',
+        {
+          'status': 'retrying',
+          'retry_count': 0,
+          'resolved_at': null,
+          'last_error': '',
+        },
+        where: 'id = ?',
+        whereArgs: [conflictId],
+      );
+      if (inboxId != null) {
+        await txn.update(
+          'sync_inbox',
+          {
+            'status': 'pending',
+            'retry_count': 0,
+            'next_retry_at': stamp,
+            'updated_at': stamp,
+          },
+          where: 'id = ?',
+          whereArgs: [inboxId],
+        );
+      }
+    });
+  }
+
+  /// Tandai konflik selesai atas pilihan pengguna. Baris konflik tidak
+  /// dihapus; amplop yang diabaikan juga ditandai agar tidak diterapkan ulang.
+  Future<void> ignoreConflict(int conflictId) async {
+    final db = AppDatabase.instance.db;
+    final rows = await db.query(
+      'sync_conflicts',
+      where: 'id = ?',
+      whereArgs: [conflictId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final conflict = rows.first;
+    final inboxId = conflict['inbox_id'] as int?;
+    final stamp = nowIso();
+    await db.transaction((txn) async {
+      await txn.update(
+        'sync_conflicts',
+        {'status': 'ignored', 'resolved_at': stamp},
+        where: 'id = ?',
+        whereArgs: [conflictId],
+      );
+      if (inboxId == null) return;
+      final inbox = await txn.query(
+        'sync_inbox',
+        where: 'id = ?',
+        whereArgs: [inboxId],
+        limit: 1,
+      );
+      await txn.update(
+        'sync_inbox',
+        {'status': 'ignored', 'updated_at': stamp},
+        where: 'id = ?',
+        whereArgs: [inboxId],
+      );
+      if (inbox.isEmpty) return;
+      final idem = inbox.first['idempotency_key'] as String? ?? '';
+      if (idem.isEmpty) return;
+      await txn.insert(
+        'applied_deltas',
+        {
+          'idempotency_key': idem,
+          'envelope_id': inbox.first['envelope_id'] ?? '',
+          'entity': inbox.first['entity'] ?? '',
+          'entity_id': inbox.first['entity_id'] ?? '',
+          'applied_at': stamp,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    });
+  }
+
+  Future<void> _requireCleanBeforeUpload() async {
+    if (await pendingCount() > 0) {
+      throw StateError('Kirim perubahan lokal sebelum membuat cadangan.');
+    }
+    if (await pendingInboxCount() > 0) {
+      throw StateError(
+        'Masih ada perubahan dari perangkat lain yang belum diterapkan. '
+        'Sinkronkan ulang sebelum membuat cadangan.',
+      );
+    }
+    if (await failedInboxCount() > 0 || await blockingConflictCount() > 0) {
+      throw StateError(
+        'Masih ada konflik sinkronisasi yang belum diselesaikan. '
+        'Buka daftar konflik sebelum membuat cadangan.',
+      );
+    }
+  }
+
   Future<Map<String, Object?>> status() async {
     final cursorRows = await AppDatabase.instance.db.query(
       'sync_cursor',
@@ -562,11 +726,27 @@ class SyncService {
       whereArgs: [await storeId(), await relayDeviceId() ?? ''],
       limit: 1,
     );
+    final lastSuccess = await _setting('sync.last_success_at');
+    final lastError = await _setting('sync.last_error');
+    final lastAttempt = await _setting('sync.last_attempt_at');
+    final pending = await pendingCount();
+    final age = lastSuccess == null
+        ? null
+        : DateTime.now().difference(DateTime.parse(lastSuccess));
     return {
       'relay_url': await relayUrl() ?? '',
       'store_id': await storeId(),
       'relay_device_id': await relayDeviceId() ?? '',
-      'pending': await pendingCount(),
+      'pending': pending,
+      'inbox': await pendingInboxCount(),
+      'failed': await failedInboxCount(),
+      'conflicts': await openConflictCount(),
+      'blocking': await blockingConflictCount(),
+      'last_success_at': lastSuccess ?? '',
+      'last_error': lastError ?? '',
+      'last_attempt_at': lastAttempt ?? '',
+      'syncing': _inflight != null,
+      'stale': pending > 0 && (age == null || age.inHours >= 24),
       'cursor': cursorRows.isEmpty ? 0 : cursorRows.first['last_seq'] ?? 0,
     };
   }
@@ -577,10 +757,20 @@ class SyncService {
     required String entityId,
     required Map<String, Object?> payload,
     DatabaseExecutor? txn,
+    int? hlcWall,
+    int? hlcCounter,
   }) async {
     final executor = txn ?? AppDatabase.instance.db;
-    final deviceId = await relayDeviceId() ??
-        await AppDatabase.instance.getSetting('device.current_id') ??
+    final deviceRows = await executor.query(
+      'app_settings',
+      columns: ['key', 'value'],
+      where: "key IN ('sync.relay_device_id', 'device.current_id')",
+    );
+    final deviceSettings = {
+      for (final row in deviceRows) '${row['key']}': '${row['value']}',
+    };
+    final deviceId = deviceSettings['sync.relay_device_id'] ??
+        deviceSettings['device.current_id'] ??
         'local';
     final last = await executor.rawQuery(
       'SELECT COALESCE(MAX(seq), 0) AS seq, '
@@ -601,17 +791,14 @@ class SyncService {
         : int.tryParse(floorRows.first['value'] as String? ?? '') ?? 0;
     final maxSeq = (last.first['seq'] as int?) ?? 0;
     final seq = (maxSeq > floor ? maxSeq : floor) + 1;
-    final hlc = nextHlc(
-      Hlc(
-        (last.first['wall'] as int?) ?? 0,
-        (last.first['counter'] as int?) ?? 0,
-      ),
-    );
+    final storedWall = hlcWall ?? (last.first['wall'] as int?) ?? 0;
+    final storedCounter = hlcCounter ?? (last.first['counter'] as int?) ?? 0;
+    final hlc = nextHlc(Hlc(storedWall, storedCounter));
     await executor.insert('sync_outbox', {
       'device_id': deviceId,
       'seq': seq,
-      'hlc_wall': hlc.wall,
-      'hlc_counter': hlc.counter,
+      'hlc_wall': hlcWall ?? hlc.wall,
+      'hlc_counter': hlcCounter ?? hlc.counter,
       'idempotency_key': newSyncId(),
       'entity': entity,
       'entity_id': entityId,
@@ -635,8 +822,10 @@ class SyncService {
     await enqueue(
       txn: txn,
       entity: 'customer',
-      action: 'upsert',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
       entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
       payload: {
         'sync_id': row['sync_id'],
         'nama': row['nama'],
@@ -645,6 +834,7 @@ class SyncService {
         'wa_consent': row['wa_consent'] ?? 1,
         'do_not_contact': row['do_not_contact'] ?? 0,
         'created_at': row['created_at'],
+        'deleted_at': row['deleted_at'],
       },
     );
   }
@@ -669,8 +859,10 @@ class SyncService {
     await enqueue(
       txn: txn,
       entity: 'unit',
-      action: 'upsert',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
       entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
       payload: {
         'sync_id': row['sync_id'],
         'customer_sync_id':
@@ -682,6 +874,7 @@ class SyncService {
         'tipe_radiator': row['tipe_radiator'],
         'label_radiator': row['label_radiator'],
         'created_at': row['created_at'],
+        'deleted_at': row['deleted_at'],
       },
     );
   }
@@ -699,8 +892,10 @@ class SyncService {
     await enqueue(
       txn: txn,
       entity: 'stock',
-      action: 'upsert',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
       entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
       payload: {
         'sync_id': row['sync_id'],
         'kode': row['kode'],
@@ -710,6 +905,7 @@ class SyncService {
         'stok_minimum': row['stok_minimum'],
         'satuan': row['satuan'] ?? 'pcs',
         'desimal': row['desimal'] ?? 0,
+        'deleted_at': row['deleted_at'],
       },
     );
   }
@@ -742,6 +938,26 @@ class SyncService {
   }
 
   Future<void> enqueueNote(int id, {DatabaseExecutor? txn}) async {
+    await _enqueueNoteState(id, 'upsert', txn: txn);
+  }
+
+  Future<void> enqueueNoteVoid(int id, {DatabaseExecutor? txn}) async {
+    await _enqueueNoteState(id, 'void', txn: txn);
+  }
+
+  Future<void> enqueueNoteWarranty(int id, {DatabaseExecutor? txn}) async {
+    await _enqueueNoteState(id, 'warranty', txn: txn);
+  }
+
+  Future<void> enqueueNoteTaken(int id, {DatabaseExecutor? txn}) async {
+    await _enqueueNoteState(id, 'taken', txn: txn);
+  }
+
+  Future<void> _enqueueNoteState(
+    int id,
+    String action, {
+    DatabaseExecutor? txn,
+  }) async {
     final payload = await AppDatabase.instance.noteSyncPayload(
       id,
       executor: txn,
@@ -752,26 +968,240 @@ class SyncService {
     await enqueue(
       txn: txn,
       entity: 'nota',
-      action: 'upsert',
+      action: action,
       entityId: syncId,
       payload: payload,
     );
   }
 
-  Future<void> enqueueNoteVoid(int id, {DatabaseExecutor? txn}) async {
-    final payload = await AppDatabase.instance.noteSyncPayload(
-      id,
-      executor: txn,
+  Future<void> enqueueStockMovement(
+    int movementId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.rawQuery(
+      '''
+      SELECT m.*, s.sync_id AS stock_sync_id, r.sync_id AS record_sync_id
+      FROM stock_movements m
+      LEFT JOIN stock_items s ON s.id = m.stock_item_id
+      LEFT JOIN service_records r ON r.id = m.service_record_id
+      WHERE m.id = ?
+      LIMIT 1
+      ''',
+      [movementId],
     );
-    final record = payload['record'] as Map<String, Object?>? ?? const {};
-    final syncId = record['sync_id'] as String? ?? '';
-    if (syncId.isEmpty) return;
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final syncId = row['sync_id'] as String? ?? '';
+    final stockSync = row['stock_sync_id'] as String? ?? '';
+    if (syncId.isEmpty || stockSync.isEmpty) return;
     await enqueue(
       txn: txn,
-      entity: 'nota',
-      action: 'void',
+      entity: 'stock_movement',
+      action: 'upsert',
       entityId: syncId,
-      payload: payload,
+      payload: {
+        'sync_id': syncId,
+        'stock_sync_id': stockSync,
+        'nama_item': row['nama_item'],
+        'jenis': row['jenis'],
+        'jumlah_milli': row['jumlah_milli'] ?? (row['jumlah'] as int? ?? 0) * 1000,
+        'alasan': row['alasan'],
+        'created_at': row['created_at'],
+        'record_sync_id': row['record_sync_id'],
+      },
+    );
+  }
+
+  Future<void> enqueueCatalog(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'harga_jasa',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'harga_jasa',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'nama': row['nama'],
+        'harga_standar': row['harga_standar'],
+        'interval_servis_bulan': row['interval_servis_bulan'] ?? 0,
+        'created_at': row['created_at'],
+        'deleted_at': row['deleted_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueSupplier(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'suppliers',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'supplier',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'nama': row['nama'],
+        'nomor_hp': row['nomor_hp'],
+        'alamat': row['alamat'],
+        'catatan': row['catatan'],
+        'aktif': row['aktif'] ?? 1,
+        'created_at': row['created_at'],
+        'deleted_at': row['deleted_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueSupplierFollowup({
+    required int supplierId,
+    required int stockItemId,
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.rawQuery(
+      '''
+      SELECT f.*, s.sync_id AS supplier_sync_id,
+        st.sync_id AS stock_sync_id
+      FROM supplier_followups f
+      JOIN suppliers s ON s.id = f.supplier_id
+      JOIN stock_items st ON st.id = f.stock_item_id
+      WHERE f.supplier_id = ? AND f.stock_item_id = ?
+      LIMIT 1
+      ''',
+      [supplierId, stockItemId],
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'supplier_followup',
+      action: 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'supplier_sync_id': row['supplier_sync_id'],
+        'stock_sync_id': row['stock_sync_id'],
+        'status': row['status'],
+        'catatan': row['catatan'],
+        'updated_at': row['updated_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueCommission(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.rawQuery(
+      '''
+      SELECT c.*, r.sync_id AS record_sync_id
+      FROM service_record_commissions c
+      JOIN service_records r ON r.id = c.service_record_id
+      WHERE c.id = ?
+      LIMIT 1
+      ''',
+      [id],
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'commission',
+      action: 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'record_sync_id': row['record_sync_id'],
+        'employee_sync_id': row['employee_sync_id'],
+        'nominal': row['nominal'],
+        'nominal_override': row['nominal_override'],
+      },
+    );
+  }
+
+  Future<void> enqueueDebt(String syncId, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'employee_debts',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'debt',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'employee_sync_id': row['employee_sync_id'],
+        'nominal': row['nominal'],
+        'terbayar': row['terbayar'] ?? 0,
+        'catatan': row['catatan'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueSalary(String syncId, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'salary_payments',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final debts = await executor.query(
+      'employee_debts',
+      columns: ['sync_id', 'terbayar'],
+      where: 'employee_sync_id = ?',
+      whereArgs: [row['employee_sync_id']],
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'salary',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        ...row,
+        'debt_updates': debts
+            .map(
+              (debt) => {
+                'sync_id': debt['sync_id'],
+                'terbayar': debt['terbayar'] ?? 0,
+              },
+            )
+            .toList(),
+      },
     );
   }
 
@@ -846,7 +1276,31 @@ class SyncService {
     await AccountService.instance.applyRemotePermissions(account);
   }
 
-  Future<Map<String, Object?>> syncNow() async {
+  Future<Map<String, Object?>>? _inflight;
+
+  bool get isSyncing => _inflight != null;
+
+  /// Satu sinkronisasi per proses. Pemanggil kedua menunggu hasil yang sama
+  /// agar dua putaran tidak menerapkan delta yang sama secara bersamaan.
+  Future<Map<String, Object?>> syncNow() {
+    final running = _inflight;
+    if (running != null) return running;
+    final future = _runSync();
+    _inflight = future.whenComplete(() => _inflight = null);
+    return _inflight!;
+  }
+
+  Future<Map<String, Object?>> _runSync() async {
+    await AppDatabase.instance.setSetting('sync.last_attempt_at', nowIso());
+    try {
+      return await _syncNow();
+    } catch (error) {
+      await AppDatabase.instance.setSetting('sync.last_error', '$error');
+      rethrow;
+    }
+  }
+
+  Future<Map<String, Object?>> _syncNow() async {
     await _requirePremium();
     final url = await relayUrl();
     if (url == null || url.isEmpty) {
@@ -881,42 +1335,95 @@ class SyncService {
     if (privateKey == null) throw StateError('Kunci perangkat tidak tersedia.');
     final store = await storeId();
     var sent = 0;
+    final now = nowIso();
     final pending = await AppDatabase.instance.db.query(
       'sync_outbox',
-      where: 'status = ?',
-      whereArgs: ['pending'],
+      where: "status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+      whereArgs: [now],
       orderBy: 'seq',
     );
     for (final item in pending) {
-      final payload = jsonDecode(item['payload_json'] as String)
-          as Map<String, Object?>;
-      final envelope = await buildEnvelope(
-        devicePrivateKey: privateKey,
-        storeKey: storeKey,
-        storeId: store,
-        senderDeviceId: deviceId,
-        recipientDeviceId: '',
-        seq: item['seq'] as int,
-        hlcWall: item['hlc_wall'] as int,
-        hlcCounter: item['hlc_counter'] as int,
-        idempotencyKey: item['idempotency_key'] as String,
-        entity: item['entity'] as String,
-        action: item['action'] as String,
-        entityId: item['entity_id'] as String,
-        payload: payload,
-      );
-      await client.submitEnvelope(envelope);
-      await AppDatabase.instance.db.update(
-        'sync_outbox',
-        {'status': 'sent', 'sent_at': nowIso()},
-        where: 'id = ?',
-        whereArgs: [item['id']],
-      );
-      sent++;
+      try {
+        final payload = jsonDecode(item['payload_json'] as String)
+            as Map<String, Object?>;
+        final envelope = await buildEnvelope(
+          devicePrivateKey: privateKey,
+          storeKey: storeKey,
+          storeId: store,
+          senderDeviceId: deviceId,
+          recipientDeviceId: '',
+          seq: item['seq'] as int,
+          hlcWall: item['hlc_wall'] as int,
+          hlcCounter: item['hlc_counter'] as int,
+          idempotencyKey: item['idempotency_key'] as String,
+          entity: item['entity'] as String,
+          action: item['action'] as String,
+          entityId: item['entity_id'] as String,
+          payload: payload,
+        );
+        await client.submitEnvelope(envelope);
+        await AppDatabase.instance.db.update(
+          'sync_outbox',
+          {
+            'status': 'sent',
+            'sent_at': nowIso(),
+            'error': '',
+            'next_retry_at': null,
+          },
+          where: 'id = ?',
+          whereArgs: [item['id']],
+        );
+        sent++;
+      } catch (error) {
+        final attempts = ((item['retry_count'] as num?)?.toInt() ?? 0) + 1;
+        await AppDatabase.instance.db.update(
+          'sync_outbox',
+          {
+            'retry_count': attempts,
+            'error': '$error',
+            'next_retry_at': DateTime.now()
+                .add(SyncConflictRules.backoffFor(attempts))
+                .toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [item['id']],
+        );
+        await AppDatabase.instance.setSetting(
+          'sync.last_error',
+          '$error',
+        );
+        break;
+      }
     }
     final devices = await client.devices();
     var keys = _senderKeys(devices);
+    var kinds = _senderKinds(devices);
+    final inbox = await _retryInbox(
+      store: store,
+      deviceId: deviceId,
+      storeKey: storeKey,
+      keys: keys,
+      kinds: kinds,
+    );
+    var applied = inbox.applied;
+    var conflictCount = inbox.failed;
     final cursor = await _cursor(store, deviceId);
+    if (inbox.blockedSeq != null) {
+      // Ada amplop yang belum dapat diterapkan. Cursor tetap di urutan
+      // sebelum amplop itu; amplop sesudahnya boleh diterapkan tetapi belum
+      // diakui sampai celah terisi.
+      final halt = inbox.blockedSeq! > 0 ? inbox.blockedSeq! - 1 : cursor;
+      if (halt > cursor) {
+        await client.ack(storeId: store, lastSeq: halt);
+        await _setCursor(store, deviceId, halt);
+      }
+      await _ackOpenRound(client, store: store, lastSeq: halt);
+      throw StateError(
+        'Sinkronisasi tertahan pada urutan ${inbox.blockedSeq}. '
+        '${inbox.lastError.isEmpty ? 'Amplop belum dapat diterapkan.' : inbox.lastError} '
+        'Akan dicoba lagi otomatis.',
+      );
+    }
     final feed = await client.feed(storeId: store, sinceSeq: cursor);
     if (feed['snapshot_required'] == true) {
       final boot = await client.bootstrap(store);
@@ -939,6 +1446,10 @@ class SyncService {
         if (result['applied'] == true) {
           await client.ack(storeId: store, lastSeq: seq);
           await _setCursor(store, deviceId, seq);
+          await AppDatabase.instance.setSetting(
+            'sync.last_success_at',
+            nowIso(),
+          );
         }
         await _ackOpenRound(client, store: store, lastSeq: seq);
         return {
@@ -956,93 +1467,87 @@ class SyncService {
         'snapshot_required': true,
       };
     }
-    var applied = 0;
-    var conflictCount = 0;
-    int? haltedSeq;
-    String? unknownSender;
+    int? blockedSeq;
+    String blockedError = '';
     var refreshedDevices = false;
     for (final raw in (feed['envelopes'] as List? ?? const [])) {
       final envelope = (raw as Map).map(
         (key, value) => MapEntry('$key', value),
       );
       final sender = envelope['sender_device_id'] as String? ?? '';
-      final seq = (envelope['seq'] as num?)?.toInt() ?? 0;
-      if (sender == deviceId) continue;
+      final relaySeq = (envelope['relay_seq'] as num?)?.toInt() ??
+          (envelope['seq'] as num?)?.toInt() ??
+          0;
+      if (sender == deviceId) {
+        continue;
+      }
+      if (relaySeq <= cursor) continue;
       var key = keys[sender];
       if (key == null && !refreshedDevices) {
         refreshedDevices = true;
-        keys = _senderKeys(await client.devices());
+        final fresh = await client.devices();
+        keys = _senderKeys(fresh);
+        kinds = _senderKinds(fresh);
         key = keys[sender];
       }
       if (key == null) {
-        haltedSeq = seq;
-        unknownSender = sender;
+        blockedSeq = blockedSeq == null || relaySeq < blockedSeq
+            ? relaySeq
+            : blockedSeq;
+        blockedError = sender.isEmpty
+            ? 'Amplop tanpa pengirim.'
+            : 'Amplop dari perangkat "$sender" tidak dikenal.';
         break;
       }
-      final idem = envelope['idempotency_key'] as String? ?? '';
-      final existing = await AppDatabase.instance.db.query(
-        'applied_deltas',
-        where: 'idempotency_key = ?',
-        whereArgs: [idem],
-        limit: 1,
-      );
-      if (existing.isNotEmpty) continue;
       try {
-        final data = await verifyEnvelope(
+        final didApply = await _applyOnce(
           envelope: envelope,
-          senderPublicKey: key,
+          senderKey: key,
+          senderKind: kinds[sender] ?? 'unknown',
           storeKey: storeKey,
+          storeId: store,
         );
-        await AppDatabase.instance.db.transaction((txn) async {
-          await _apply(txn, data, envelope['id'] as String? ?? '');
-          await txn.insert(
-            'applied_deltas',
-            {
-              'idempotency_key': idem,
-              'envelope_id': envelope['id'] as String? ?? '',
-              'entity': data['entity'] ?? '',
-              'entity_id': data['entity_id'] ?? '',
-              'applied_at': nowIso(),
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore,
-          );
-        });
-        applied++;
+        if (didApply) applied++;
       } catch (error) {
+        final attempts = await _rememberFailure(
+          storeId: store,
+          deviceId: deviceId,
+          relaySeq: relaySeq,
+          envelope: envelope,
+          error: error,
+        );
         conflictCount++;
-        await AppDatabase.instance.db.insert('sync_conflicts', {
-          'entity': envelope['entity'] as String? ?? 'unknown',
-          'entity_id': envelope['entity_id'] as String? ?? '',
-          'reason': _conflictReason(error),
-          'detail_json': jsonEncode({
-            'seq': seq,
-            'envelope_id': envelope['id'],
-            'sender_device_id': sender,
-            'error': '$error',
-          }),
-          'created_at': nowIso(),
-        });
+        if (attempts >= SyncConflictRules.maxRetries) {
+          // Percobaan habis: amplop dilewati tetapi konflik tetap terlihat
+          // dan dapat dicoba ulang dari layar konflik.
+          continue;
+        }
+        if (blockedSeq == null || relaySeq < blockedSeq) {
+          blockedSeq = relaySeq;
+          blockedError = '$error';
+        }
       }
     }
-    if (haltedSeq != null) {
-      final haltCursor = haltedSeq > 0 ? haltedSeq - 1 : cursor;
-      if (haltCursor > cursor) {
-        await client.ack(storeId: store, lastSeq: haltCursor);
-        await _setCursor(store, deviceId, haltCursor);
-      }
-      throw StateError(
-        'Amplop dari perangkat "${unknownSender ?? '-'}" tidak dikenal '
-        'pada urutan $haltedSeq. Sinkronisasi dihentikan sebelum amplop itu; '
-        'periksa daftar perangkat di relay.',
-      );
-    }
-    final next = feed['next_seq'] as int? ?? cursor;
+    final next = blockedSeq != null
+        ? (blockedSeq > 0 ? blockedSeq - 1 : cursor)
+        : (feed['next_seq'] as int? ?? cursor);
     if (next > 0) {
       await client.ack(storeId: store, lastSeq: next);
       await _setCursor(store, deviceId, next);
     }
     await _ackOpenRound(client, store: store, lastSeq: next);
     await cleanupSyncHistory();
+    if (blockedSeq == null) {
+      await AppDatabase.instance.setSetting('sync.last_success_at', nowIso());
+      await AppDatabase.instance.deleteSetting('sync.last_error');
+    }
+    if (blockedSeq != null) {
+      throw StateError(
+        'Sinkronisasi tertahan pada urutan $blockedSeq. '
+        '${blockedError.isEmpty ? 'Amplop belum dapat diterapkan.' : blockedError} '
+        'Perangkat lain tidak kehilangan data; percobaan ulang dijadwalkan.',
+      );
+    }
     return {
       'sent': sent,
       'applied': applied,
@@ -1050,6 +1555,340 @@ class SyncService {
       'cursor': next,
       'snapshot_required': feed['snapshot_required'] == true,
     };
+  }
+
+  Future<bool> _applyOnce({
+    required Map<String, Object?> envelope,
+    required String senderKey,
+    required String senderKind,
+    required List<int> storeKey,
+    required String storeId,
+  }) async {
+    final data = await verifyEnvelope(
+      envelope: envelope,
+      senderPublicKey: senderKey,
+      storeKey: storeKey,
+    );
+    final idem = envelope['idempotency_key'] as String? ?? '';
+    if (idem.isEmpty) {
+      throw StateError('Amplop tanpa idempotency key.');
+    }
+    var applied = false;
+    await AppDatabase.instance.db.transaction((txn) async {
+      final existing = await txn.query(
+        'applied_deltas',
+        columns: ['idempotency_key'],
+        where: 'idempotency_key = ?',
+        whereArgs: [idem],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) return;
+      await _apply(
+        txn,
+        data,
+        envelope['id'] as String? ?? '',
+        senderKind: senderKind,
+      );
+      await txn.insert(
+        'applied_deltas',
+        {
+          'idempotency_key': idem,
+          'envelope_id': envelope['id'] as String? ?? '',
+          'entity': data['entity'] ?? '',
+          'entity_id': data['entity_id'] ?? '',
+          'applied_at': nowIso(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+      await AppDatabase.instance.noteRemoteHlc(
+        txn,
+        (envelope['hlc_wall'] as num?)?.toInt() ?? 0,
+        (envelope['hlc_counter'] as num?)?.toInt() ?? 0,
+      );
+      await txn.insert(
+        'app_settings',
+        {'key': 'sync.last_success_at', 'value': nowIso()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      applied = true;
+    });
+    return applied;
+  }
+
+  Future<
+      ({
+        int? blockedSeq,
+        int applied,
+        int failed,
+        String lastError,
+      })> _retryInbox({
+    required String store,
+    required String deviceId,
+    required List<int> storeKey,
+    required Map<String, String?> keys,
+    required Map<String, String> kinds,
+  }) async {
+    final rows = await AppDatabase.instance.db.query(
+      'sync_inbox',
+      where: "status = 'pending'",
+      orderBy: 'relay_seq',
+    );
+    int? blockedSeq;
+    var applied = 0;
+    var failed = 0;
+    var lastError = '';
+    final now = DateTime.now();
+    for (final row in rows) {
+      final relaySeq = (row['relay_seq'] as num?)?.toInt() ?? 0;
+      final dueText = row['next_retry_at'] as String?;
+      final due = dueText == null || dueText.isEmpty
+          ? now
+          : DateTime.tryParse(dueText) ?? now;
+      if (due.isAfter(now)) {
+        blockedSeq ??= relaySeq;
+        lastError = row['last_error'] as String? ?? lastError;
+        continue;
+      }
+      final raw = jsonDecode(row['envelope_json'] as String);
+      if (raw is! Map) {
+        blockedSeq ??= relaySeq;
+        continue;
+      }
+      final envelope = raw.map((key, value) => MapEntry('$key', value));
+      final sender = envelope['sender_device_id'] as String? ?? '';
+      final key = keys[sender];
+      if (key == null) {
+        blockedSeq ??= relaySeq;
+        lastError = 'Kunci pengirim belum tersedia.';
+        continue;
+      }
+      try {
+        final didApply = await _applyOnce(
+          envelope: envelope,
+          senderKey: key,
+          senderKind: kinds[sender] ?? 'unknown',
+          storeKey: storeKey,
+          storeId: store,
+        );
+        if (didApply) applied++;
+        await AppDatabase.instance.db.update(
+          'sync_inbox',
+          {
+            'status': 'applied',
+            'last_error': '',
+            'updated_at': nowIso(),
+          },
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      } catch (error) {
+        final attempts = ((row['retry_count'] as num?)?.toInt() ?? 0) + 1;
+        final permanent = attempts >= SyncConflictRules.maxRetries;
+        await AppDatabase.instance.db.update(
+          'sync_inbox',
+          {
+            'retry_count': attempts,
+            'last_error': '$error',
+            'next_retry_at': permanent
+                ? null
+                : DateTime.now()
+                    .add(SyncConflictRules.backoffFor(attempts))
+                    .toIso8601String(),
+            'status': permanent ? 'failed' : 'pending',
+            'updated_at': nowIso(),
+          },
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+        await _upsertConflictForInbox(
+          inboxId: row['id'] as int,
+          entity: '${row['entity'] ?? envelope['entity'] ?? ''}',
+          entityId: '${row['entity_id'] ?? envelope['entity_id'] ?? ''}',
+          error: error,
+          attempts: attempts,
+          permanent: permanent,
+          relaySeq: relaySeq,
+          envelope: envelope,
+        );
+        if (permanent) {
+          failed++;
+        } else {
+          blockedSeq ??= relaySeq;
+          lastError = '$error';
+        }
+      }
+    }
+    return (
+      blockedSeq: blockedSeq,
+      applied: applied,
+      failed: failed,
+      lastError: lastError,
+    );
+  }
+
+  @visibleForTesting
+  Future<bool> applyOnceForTest({
+    required Map<String, Object?> envelope,
+    required String senderKey,
+    required String senderKind,
+    required List<int> storeKey,
+    required String storeId,
+  }) {
+    return _applyOnce(
+      envelope: envelope,
+      senderKey: senderKey,
+      senderKind: senderKind,
+      storeKey: storeKey,
+      storeId: storeId,
+    );
+  }
+
+  @visibleForTesting
+  Future<({int? blockedSeq, int applied, int failed, String lastError})>
+      retryInboxForTest({
+    required String store,
+    required String deviceId,
+    required List<int> storeKey,
+    required Map<String, String?> keys,
+    required Map<String, String> kinds,
+  }) {
+    return _retryInbox(
+      store: store,
+      deviceId: deviceId,
+      storeKey: storeKey,
+      keys: keys,
+      kinds: kinds,
+    );
+  }
+
+  Future<int> _rememberFailure({
+    required String storeId,
+    required String deviceId,
+    required int relaySeq,
+    required Map<String, Object?> envelope,
+    required Object error,
+  }) async {
+    final envelopeId = envelope['id'] as String? ?? '';
+    final idem = envelope['idempotency_key'] as String? ?? '';
+    final existing = await AppDatabase.instance.db.query(
+      'sync_inbox',
+      where: 'envelope_id = ? OR idempotency_key = ?',
+      whereArgs: [envelopeId, idem],
+      limit: 1,
+    );
+    final attempts = existing.isEmpty
+        ? 1
+        : ((existing.first['retry_count'] as num?)?.toInt() ?? 0) + 1;
+    final permanent = attempts >= SyncConflictRules.maxRetries;
+    final stamp = nowIso();
+    int inboxId;
+    if (existing.isEmpty) {
+      inboxId = await AppDatabase.instance.db.insert('sync_inbox', {
+        'store_id': storeId,
+        'device_id': deviceId,
+        'relay_seq': relaySeq,
+        'envelope_id': envelopeId,
+        'idempotency_key': idem,
+        'entity': '${envelope['entity'] ?? ''}',
+        'entity_id': '${envelope['entity_id'] ?? ''}',
+        'envelope_json': jsonEncode(envelope),
+        'last_error': '$error',
+        'retry_count': attempts,
+        'next_retry_at': permanent
+            ? null
+            : DateTime.now()
+                .add(SyncConflictRules.backoffFor(attempts))
+                .toIso8601String(),
+        'status': permanent ? 'failed' : 'pending',
+        'created_at': stamp,
+        'updated_at': stamp,
+      });
+    } else {
+      inboxId = existing.first['id'] as int;
+      await AppDatabase.instance.db.update(
+        'sync_inbox',
+        {
+          'relay_seq': relaySeq,
+          'envelope_json': jsonEncode(envelope),
+          'last_error': '$error',
+          'retry_count': attempts,
+          'next_retry_at': permanent
+              ? null
+              : DateTime.now()
+                  .add(SyncConflictRules.backoffFor(attempts))
+                  .toIso8601String(),
+          'status': permanent ? 'failed' : 'pending',
+          'updated_at': stamp,
+        },
+        where: 'id = ?',
+        whereArgs: [inboxId],
+      );
+    }
+    await _upsertConflictForInbox(
+      inboxId: inboxId,
+      entity: '${envelope['entity'] ?? ''}',
+      entityId: '${envelope['entity_id'] ?? ''}',
+      error: error,
+      attempts: attempts,
+      permanent: permanent,
+      relaySeq: relaySeq,
+      envelope: envelope,
+    );
+    return attempts;
+  }
+
+  Future<void> _upsertConflictForInbox({
+    required int inboxId,
+    required String entity,
+    required String entityId,
+    required Object error,
+    required int attempts,
+    required bool permanent,
+    required int relaySeq,
+    required Map<String, Object?> envelope,
+  }) async {
+    final existing = await AppDatabase.instance.db.query(
+      'sync_conflicts',
+      columns: ['id'],
+      where: 'inbox_id = ? AND resolved_at IS NULL',
+      whereArgs: [inboxId],
+      limit: 1,
+    );
+    final reason = SyncConflictRules.reasonFor(error);
+    final detail = jsonEncode({
+      'seq': relaySeq,
+      'envelope_id': envelope['id'],
+      'sender_device_id': envelope['sender_device_id'],
+      'error': '$error',
+      'retryable': SyncConflictRules.isRetryable(error),
+      'permanent': permanent,
+    });
+    if (existing.isEmpty) {
+      await AppDatabase.instance.db.insert('sync_conflicts', {
+        'entity': entity,
+        'entity_id': entityId,
+        'reason': reason,
+        'detail_json': detail,
+        'status': permanent ? 'failed' : 'retrying',
+        'retry_count': attempts,
+        'last_error': '$error',
+        'inbox_id': inboxId,
+        'created_at': nowIso(),
+      });
+      return;
+    }
+    await AppDatabase.instance.db.update(
+      'sync_conflicts',
+      {
+        'reason': reason,
+        'detail_json': detail,
+        'status': permanent ? 'failed' : 'retrying',
+        'retry_count': attempts,
+        'last_error': '$error',
+      },
+      where: 'id = ?',
+      whereArgs: [existing.first['id']],
+    );
   }
 
   Map<String, String?> _senderKeys(List<Map<String, Object?>> devices) {
@@ -1060,14 +1899,720 @@ class SyncService {
     };
   }
 
-  String _conflictReason(Object error) {
-    final text = '$error'.toLowerCase();
-    if (text.contains('tanda tangan')) return 'tanda_tangan_tidak_valid';
-    if (text.contains('dekripsi')) return 'dekripsi_gagal';
-    if (text.contains('unique') || text.contains('constraint')) {
-      return 'konflik_unik';
+  Map<String, String> _senderKinds(List<Map<String, Object?>> devices) {
+    return {
+      for (final device in devices)
+        if (device['id'] != null) '${device['id']}': '${device['kind'] ?? ''}',
+    };
+  }
+
+  /// Aturan master: HLC terbesar menang; HLC sama berarti versi lokal
+  /// dipertahankan. Baris lama tanpa HLC (0,0) menerima versi pertama.
+  Future<bool> _remoteWins(
+    DatabaseExecutor txn, {
+    required String table,
+    required String syncId,
+    required int wall,
+    required int counter,
+  }) async {
+    final rows = await txn.query(
+      table,
+      columns: ['sync_hlc_wall', 'sync_hlc_counter'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return true;
+    final localWall = (rows.first['sync_hlc_wall'] as num?)?.toInt() ?? 0;
+    final localCounter =
+        (rows.first['sync_hlc_counter'] as num?)?.toInt() ?? 0;
+    if (wall != localWall) return wall > localWall;
+    if (counter != localCounter) return counter > localCounter;
+    return localWall == 0 && localCounter == 0;
+  }
+
+  Future<void> _recordConflict(
+    DatabaseExecutor txn, {
+    required String entity,
+    required String entityId,
+    required String reason,
+    required Map<String, Object?> detail,
+    String status = 'open',
+  }) async {
+    await txn.insert('sync_conflicts', {
+      'entity': entity,
+      'entity_id': entityId,
+      'reason': reason,
+      'detail_json': jsonEncode(detail),
+      'status': status,
+      'retry_count': 0,
+      'last_error': '${detail['error'] ?? ''}',
+      'created_at': nowIso(),
+    });
+  }
+
+  Future<void> _apply(
+    DatabaseExecutor txn,
+    Map<String, Object?> data,
+    String envelopeId, {
+    String senderKind = 'unknown',
+  }) async {
+    final entity = data['entity'] as String? ?? '';
+    final action = data['action'] as String? ?? '';
+    final payload = data['payload'] as Map<String, Object?>? ?? const {};
+    final wall = (data['hlc_wall'] as num?)?.toInt() ?? 0;
+    final counter = (data['hlc_counter'] as num?)?.toInt() ?? 0;
+    final hlc = {'sync_hlc_wall': wall, 'sync_hlc_counter': counter};
+    final violation = SyncConflictRules.senderViolation(
+      senderKind: senderKind,
+      entity: entity,
+      action: action,
+    );
+    if (violation != null) {
+      await _recordConflict(
+        txn,
+        entity: entity,
+        entityId: '${data['entity_id'] ?? payload['sync_id'] ?? ''}',
+        reason: violation,
+        detail: {
+          'envelope_id': envelopeId,
+          'sender_kind': senderKind,
+          'action': action,
+          'error': '',
+        },
+      );
+      return;
     }
-    return 'gagal_terapkan';
+    if (entity == 'customer') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'customers',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {
+            'envelope_id': envelopeId,
+            'hlc_wall': wall,
+            'hlc_counter': counter,
+            'error': '',
+          },
+        );
+        return;
+      }
+      final values = {
+        'nama': payload['nama'] ?? '',
+        'nomor_hp': payload['nomor_hp'] ?? '',
+        'alamat': payload['alamat'],
+        'wa_consent': payload['wa_consent'] ?? 1,
+        'do_not_contact': payload['do_not_contact'] ?? 0,
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'customers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('customers', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'customers',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+    } else if (entity == 'unit') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final customerSync = payload['customer_sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      final customer = await txn.query(
+        'customers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [customerSync],
+        limit: 1,
+      );
+      if (customer.isEmpty) {
+        throw RetryableSyncException(
+          'Unit menunggu data pelanggan ($customerSync) diterapkan.',
+          code: 'unit_butuh_customer',
+        );
+      }
+      if (!await _remoteWins(
+        txn,
+        table: 'vehicle_or_units',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final values = {
+        'customer_id': customer.first['id'],
+        'unit_type': payload['unit_type'] ?? 'MOBIL',
+        'nopol': payload['nopol'],
+        'jenis_mobil': payload['jenis_mobil'],
+        'tahun_mobil': payload['tahun_mobil'],
+        'tipe_radiator': payload['tipe_radiator'],
+        'label_radiator': payload['label_radiator'],
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'vehicle_or_units',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('vehicle_or_units', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'vehicle_or_units',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+    } else if (entity == 'stock') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      final rows = await txn.query(
+        'stock_items',
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (action == 'delta') {
+        if (rows.isEmpty) {
+          throw RetryableSyncException(
+            'Delta stok diterima sebelum metadata barang ($syncId).',
+            code: 'stok_tanpa_metadata',
+          );
+        }
+        final delta = (payload['qty_milli'] as num?)?.toInt() ??
+            ((payload['qty'] as num?)?.toInt() ?? 0) * 1000;
+        final before = StockItem.fromRow(rows.first);
+        final next = before.jumlahMilli + delta;
+        await txn.update(
+          'stock_items',
+          {'jumlah': next ~/ 1000, 'jumlah_milli': next},
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+        return;
+      }
+      if (!await _remoteWins(
+        txn,
+        table: 'stock_items',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final values = {
+        'kode': payload['kode'],
+        'nama': payload['nama'],
+        'harga_modal': payload['harga_modal'],
+        'harga_jual': payload['harga_jual'],
+        'stok_minimum': payload['stok_minimum'],
+        'satuan': payload['satuan'] ?? 'pcs',
+        'desimal': payload['desimal'] ?? 0,
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+      };
+      if (rows.isEmpty) {
+        if ((payload['kode'] as String? ?? '').isEmpty) {
+          throw RetryableSyncException('Barang tanpa kode.');
+        }
+        final milli = (payload['jumlah_milli'] as num?)?.toInt() ??
+            ((payload['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        await txn.insert('stock_items', {
+          'sync_id': syncId,
+          ...values,
+          'jumlah': milli ~/ 1000,
+          'jumlah_milli': milli,
+          'created_at': nowIso(),
+        });
+      } else {
+        await txn.update(
+          'stock_items',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+    } else if (entity == 'stock_movement') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final stockSync = payload['stock_sync_id'] as String? ?? '';
+      if (syncId.isEmpty || stockSync.isEmpty) return;
+      final existing = await txn.query(
+        'stock_movements',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) return;
+      final stock = await txn.query(
+        'stock_items',
+        where: 'sync_id = ?',
+        whereArgs: [stockSync],
+        limit: 1,
+      );
+      if (stock.isEmpty) {
+        throw RetryableSyncException(
+          'Pergerakan stok menunggu barang ($stockSync).',
+          code: 'gerakan_tanpa_barang',
+        );
+      }
+      final recordSync = payload['record_sync_id'] as String? ?? '';
+      int? recordId;
+      if (recordSync.isNotEmpty) {
+        final record = await txn.query(
+          'service_records',
+          columns: ['id'],
+          where: 'sync_id = ?',
+          whereArgs: [recordSync],
+          limit: 1,
+        );
+        recordId = record.isEmpty ? null : record.first['id'] as int;
+      }
+      final qtyMilli = (payload['jumlah_milli'] as num?)?.toInt() ?? 0;
+      await txn.insert('stock_movements', {
+        'sync_id': syncId,
+        'stock_item_id': stock.first['id'],
+        'nama_item': payload['nama_item'] ?? stock.first['nama'],
+        'jenis': payload['jenis'] ?? 'KOREKSI',
+        'jumlah': qtyMilli ~/ 1000,
+        'jumlah_milli': qtyMilli,
+        'alasan': payload['alasan'],
+        'service_record_id': recordId,
+        'created_at': payload['created_at'] ?? nowIso(),
+      });
+      final before = StockItem.fromRow(stock.first);
+      final next = before.jumlahMilli + qtyMilli;
+      await txn.update(
+        'stock_items',
+        {'jumlah': next ~/ 1000, 'jumlah_milli': next},
+        where: 'id = ?',
+        whereArgs: [stock.first['id']],
+      );
+      if (next < 0) {
+        await _recordConflict(
+          txn,
+          entity: 'stock',
+          entityId: stockSync,
+          reason: 'stok_negatif',
+          detail: {
+            'movement_sync_id': syncId,
+            'jumlah_milli': next,
+            'error': '',
+          },
+          status: 'review',
+        );
+      }
+    } else if (entity == 'harga_jasa') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'harga_jasa',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final values = {
+        'nama': payload['nama'] ?? '',
+        'harga_standar': payload['harga_standar'] ?? 0,
+        'interval_servis_bulan': payload['interval_servis_bulan'] ?? 0,
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'harga_jasa',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('harga_jasa', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'harga_jasa',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+    } else if (entity == 'supplier') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'suppliers',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final values = {
+        'nama': payload['nama'] ?? '',
+        'nomor_hp': payload['nomor_hp'],
+        'alamat': payload['alamat'],
+        'catatan': payload['catatan'],
+        'aktif': payload['aktif'] ?? 1,
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'suppliers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      final int supplierId;
+      if (rows.isEmpty) {
+        supplierId = await txn.insert('suppliers', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': payload['updated_at'] ?? nowIso(),
+        });
+      } else {
+        supplierId = rows.first['id'] as int;
+        await txn.update(
+          'suppliers',
+          {...values, 'updated_at': payload['updated_at'] ?? nowIso()},
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+      if (action == 'delete') {
+        await txn.delete(
+          'supplier_items',
+          where: 'supplier_id = ?',
+          whereArgs: [supplierId],
+        );
+        await txn.delete(
+          'supplier_followups',
+          where: 'supplier_id = ?',
+          whereArgs: [supplierId],
+        );
+      }
+    } else if (entity == 'supplier_followup') {
+      final supplierSync = payload['supplier_sync_id'] as String? ?? '';
+      final stockSync = payload['stock_sync_id'] as String? ?? '';
+      final supplier = await txn.query(
+        'suppliers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [supplierSync],
+        limit: 1,
+      );
+      final stock = await txn.query(
+        'stock_items',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [stockSync],
+        limit: 1,
+      );
+      if (supplier.isEmpty || stock.isEmpty) {
+        throw RetryableSyncException(
+          'Follow-up supplier menunggu supplier/barang.',
+          code: 'followup_supplier_butuh_induk',
+        );
+      }
+      if (supplier.first['deleted_at'] != null) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'supplier_followups',
+        syncId: payload['sync_id'] as String? ?? '',
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: payload['sync_id'] as String? ?? '',
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final values = {
+        'status': payload['status'] ?? 'BELUM',
+        'catatan': payload['catatan'],
+        'updated_at': payload['updated_at'] ?? nowIso(),
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'supplier_followups',
+        columns: ['id'],
+        where: 'supplier_id = ? AND stock_item_id = ?',
+        whereArgs: [supplier.first['id'], stock.first['id']],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('supplier_followups', {
+          'sync_id': payload['sync_id'] ?? newSyncId(),
+          'supplier_id': supplier.first['id'],
+          'stock_item_id': stock.first['id'],
+          ...values,
+        });
+      } else {
+        await txn.update(
+          'supplier_followups',
+          values,
+          where: 'id = ?',
+          whereArgs: [rows.first['id']],
+        );
+      }
+    } else if (entity == 'commission') {
+      final recordSync = payload['record_sync_id'] as String? ?? '';
+      final record = await txn.query(
+        'service_records',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [recordSync],
+        limit: 1,
+      );
+      if (record.isEmpty) {
+        throw RetryableSyncException(
+          'Komisi menunggu nota ($recordSync).',
+          code: 'komisi_tanpa_nota',
+        );
+      }
+      if (!await _remoteWins(
+        txn,
+        table: 'service_record_commissions',
+        syncId: payload['sync_id'] as String? ?? '',
+        wall: wall,
+        counter: counter,
+      )) {
+        return;
+      }
+      final values = {
+        'nominal': payload['nominal'] ?? 0,
+        'nominal_override': payload['nominal_override'],
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'service_record_commissions',
+        columns: ['id'],
+        where: 'service_record_id = ? AND employee_sync_id = ?',
+        whereArgs: [record.first['id'], payload['employee_sync_id']],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('service_record_commissions', {
+          'sync_id': payload['sync_id'] ?? newSyncId(),
+          'service_record_id': record.first['id'],
+          'employee_sync_id': payload['employee_sync_id'] ?? '',
+          ...values,
+        });
+      } else {
+        await txn.update(
+          'service_record_commissions',
+          values,
+          where: 'id = ?',
+          whereArgs: [rows.first['id']],
+        );
+      }
+    } else if (entity == 'debt') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'employee_debts',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        return;
+      }
+      final values = {
+        'employee_sync_id': payload['employee_sync_id'] ?? '',
+        'nominal': payload['nominal'] ?? 0,
+        'terbayar': payload['terbayar'] ?? 0,
+        'catatan': payload['catatan'],
+        ...hlc,
+      };
+      final rows = await txn.query(
+        'employee_debts',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        await txn.insert('employee_debts', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'employee_debts',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+    } else if (entity == 'salary') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'salary_payments',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        return;
+      }
+      final employeeSync = payload['employee_sync_id'] ?? '';
+      final cycleStart = payload['cycle_start'] ?? '';
+      final rows = await txn.query(
+        'salary_payments',
+        columns: ['id'],
+        where: 'employee_sync_id = ? AND cycle_start = ?',
+        whereArgs: [employeeSync, cycleStart],
+        limit: 1,
+      );
+      final values = {
+        'employee_sync_id': employeeSync,
+        'periode': payload['periode'] ?? 'BULANAN',
+        'cycle_start': cycleStart,
+        'cycle_end': payload['cycle_end'] ?? cycleStart,
+        'tanggal': payload['tanggal'] ?? cycleStart,
+        'nominal': payload['nominal'] ?? 0,
+        'potongan_hutang': payload['potongan_hutang'] ?? 0,
+        'cicilan_hutang': payload['cicilan_hutang'] ?? 0,
+        'bonus': payload['bonus'] ?? 0,
+        'metode': payload['metode'] ?? 'CASH',
+        'catatan': payload['catatan'],
+        ...hlc,
+      };
+      if (rows.isEmpty) {
+        await txn.insert('salary_payments', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'salary_payments',
+          values,
+          where: 'id = ?',
+          whereArgs: [rows.first['id']],
+        );
+      }
+      for (final raw in (payload['debt_updates'] as List? ?? const [])) {
+        if (raw is! Map) continue;
+        final debtSync = '${raw['sync_id'] ?? ''}';
+        final paid = (raw['terbayar'] as num?)?.toInt() ?? 0;
+        if (debtSync.isEmpty) continue;
+        final debt = await txn.query(
+          'employee_debts',
+          columns: ['id', 'terbayar'],
+          where: 'sync_id = ?',
+          whereArgs: [debtSync],
+          limit: 1,
+        );
+        if (debt.isEmpty) continue;
+        final localPaid = (debt.first['terbayar'] as num?)?.toInt() ?? 0;
+        if (paid <= localPaid) continue;
+        await txn.update(
+          'employee_debts',
+          {
+            'terbayar': paid,
+            'sync_hlc_wall': wall,
+            'sync_hlc_counter': counter,
+          },
+          where: 'id = ?',
+          whereArgs: [debt.first['id']],
+        );
+      }
+    } else if (entity == 'nota') {
+      await AppDatabase.instance.applyNotePayloadTx(
+        txn,
+        payload,
+        action: action,
+      );
+    } else {
+      await _recordConflict(
+        txn,
+        entity: entity,
+        entityId: '${data['entity_id'] ?? ''}',
+        reason: 'entity_belum_didukung',
+        detail: {'envelope_id': envelopeId, 'data': data, 'error': ''},
+      );
+    }
   }
 
   Future<void> cleanupSyncHistory() async {
@@ -1100,167 +2645,6 @@ class SyncService {
         );
       }
     });
-  }
-
-  Future<void> _apply(
-    DatabaseExecutor txn,
-    Map<String, Object?> data,
-    String envelopeId,
-  ) async {
-    final entity = data['entity'] as String? ?? '';
-    final action = data['action'] as String? ?? '';
-    final payload = data['payload'] as Map<String, Object?>? ?? const {};
-    if (entity == 'customer') {
-      final syncId = payload['sync_id'] as String? ?? '';
-      if (syncId.isEmpty) return;
-      final rows = await txn.query(
-        'customers',
-        columns: ['id'],
-        where: 'sync_id = ?',
-        whereArgs: [syncId],
-        limit: 1,
-      );
-      if (rows.isEmpty) {
-        await txn.insert('customers', {
-          'sync_id': syncId,
-          'nama': payload['nama'] ?? '',
-          'nomor_hp': payload['nomor_hp'] ?? '',
-          'alamat': payload['alamat'],
-          'wa_consent': payload['wa_consent'] ?? 1,
-          'do_not_contact': payload['do_not_contact'] ?? 0,
-          'created_at': payload['created_at'] ?? nowIso(),
-        });
-      } else {
-        await txn.update(
-          'customers',
-          {
-            'nama': payload['nama'],
-            'nomor_hp': payload['nomor_hp'],
-            'alamat': payload['alamat'],
-            'wa_consent': payload['wa_consent'] ?? 1,
-            'do_not_contact': payload['do_not_contact'] ?? 0,
-          },
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-        );
-      }
-    } else if (entity == 'unit') {
-      final syncId = payload['sync_id'] as String? ?? '';
-      final customerSync = payload['customer_sync_id'] as String? ?? '';
-      if (syncId.isEmpty) return;
-      final customer = await txn.query(
-        'customers',
-        columns: ['id'],
-        where: 'sync_id = ?',
-        whereArgs: [customerSync],
-        limit: 1,
-      );
-      if (customer.isEmpty) return;
-      final rows = await txn.query(
-        'vehicle_or_units',
-        columns: ['id'],
-        where: 'sync_id = ?',
-        whereArgs: [syncId],
-        limit: 1,
-      );
-      final values = {
-        'customer_id': customer.first['id'],
-        'unit_type': payload['unit_type'] ?? 'MOBIL',
-        'nopol': payload['nopol'],
-        'jenis_mobil': payload['jenis_mobil'],
-        'tahun_mobil': payload['tahun_mobil'],
-        'tipe_radiator': payload['tipe_radiator'],
-        'label_radiator': payload['label_radiator'],
-      };
-      if (rows.isEmpty) {
-        await txn.insert('vehicle_or_units', {
-          'sync_id': syncId,
-          ...values,
-          'created_at': payload['created_at'] ?? nowIso(),
-        });
-      } else {
-        await txn.update(
-          'vehicle_or_units',
-          values,
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-        );
-      }
-    } else if (entity == 'stock') {
-      final syncId = payload['sync_id'] as String? ?? '';
-      if (syncId.isEmpty) return;
-      final rows = await txn.query(
-        'stock_items',
-        where: 'sync_id = ?',
-        whereArgs: [syncId],
-        limit: 1,
-      );
-      if (rows.isEmpty) {
-        if (action == 'delta') {
-          throw StateError(
-            'Delta stok diterima sebelum metadata barang ($syncId).',
-          );
-        }
-        if ((payload['kode'] as String? ?? '').isEmpty) {
-          throw StateError('Barang tanpa kode.');
-        }
-        final milli = (payload['jumlah_milli'] as num?)?.toInt() ??
-            ((payload['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-        await txn.insert('stock_items', {
-          'sync_id': syncId,
-          'kode': payload['kode'],
-          'nama': payload['nama'] ?? '',
-          'harga_modal': payload['harga_modal'] ?? 0,
-          'harga_jual': payload['harga_jual'] ?? 0,
-          'jumlah': milli ~/ 1000,
-          'jumlah_milli': milli,
-          'satuan': payload['satuan'] ?? 'pcs',
-          'desimal': payload['desimal'] ?? 0,
-          'stok_minimum': payload['stok_minimum'] ?? 0,
-          'created_at': nowIso(),
-        });
-      } else if (action == 'delta') {
-        final delta = (payload['qty_milli'] as num?)?.toInt() ??
-            ((payload['qty'] as num?)?.toInt() ?? 0) * 1000;
-        final before = StockItem.fromRow(rows.first);
-        final next = before.jumlahMilli + delta;
-        await txn.update(
-          'stock_items',
-          {'jumlah': next ~/ 1000, 'jumlah_milli': next},
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-        );
-      } else {
-        await txn.update(
-          'stock_items',
-          {
-            'kode': payload['kode'],
-            'nama': payload['nama'],
-            'harga_modal': payload['harga_modal'],
-            'harga_jual': payload['harga_jual'],
-            'stok_minimum': payload['stok_minimum'],
-            'satuan': payload['satuan'] ?? 'pcs',
-            'desimal': payload['desimal'] ?? 0,
-          },
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-        );
-      }
-    } else if (entity == 'nota') {
-      await AppDatabase.instance.applyNotePayloadTx(
-        txn,
-        payload,
-        action: action,
-      );
-    } else {
-      await txn.insert('sync_conflicts', {
-        'entity': entity,
-        'entity_id': data['entity_id'] ?? '',
-        'reason': 'entity_belum_didukung',
-        'detail_json': jsonEncode(data),
-        'created_at': nowIso(),
-      });
-    }
   }
 
   Future<int> _cursor(String store, String device) async {

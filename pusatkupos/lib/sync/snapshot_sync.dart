@@ -61,9 +61,11 @@ const snapshotLocalTables = [
   'devices',
   'login_guards',
   'sync_outbox',
+  'sync_inbox',
   'sync_cursor',
   'applied_deltas',
   'sync_conflicts',
+  'device_sync_status',
 ];
 
 const snapshotLocalSettingsWhere =
@@ -156,6 +158,16 @@ extension SnapshotDatabase on AppDatabase {
     if (((pending.first['total'] as int?) ?? 0) > 0) {
       throw StateError(
         'Kirim perubahan lokal ke relay sebelum menerapkan snapshot.',
+      );
+    }
+    final inbox = await db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_inbox "
+      "WHERE status IN ('pending', 'failed')",
+    );
+    if (((inbox.first['total'] as int?) ?? 0) > 0) {
+      throw StateError(
+        'Selesaikan perubahan masuk yang tertunda sebelum menerapkan '
+        'snapshot.',
       );
     }
     final canonical = canonicalJson({

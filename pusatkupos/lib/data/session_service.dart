@@ -202,7 +202,9 @@ class SessionService {
   Future<void> saveDeviceToken(String? token, String? deviceId) async {
     if (token == null || token.isEmpty) return;
     await SecureStore.instance.write('session.device_token', token);
-    await AppDatabase.instance.setSetting('sync.relay_device_token', token);
+    await SecureStore.instance.write('sync.relay_device_token', token);
+    // Hapus salinan lama di app_settings agar token tidak tersimpan polos.
+    await AppDatabase.instance.deleteSetting('sync.relay_device_token');
     if (deviceId != null && deviceId.isNotEmpty) {
       await AppDatabase.instance.setSetting('sync.relay_device_id', deviceId);
     }

@@ -16,6 +16,7 @@ import 'package:pusatkupos/data/models.dart';
 import 'package:pusatkupos/data/pairing_service.dart';
 import 'package:pusatkupos/data/secure_store.dart';
 import 'package:pusatkupos/sync/crypto.dart';
+import 'package:pusatkupos/sync/protocol.dart';
 import 'package:pusatkupos/sync/snapshot_sync.dart';
 import 'package:pusatkupos/sync/sync_service.dart';
 
@@ -82,6 +83,41 @@ String _newSalt() {
   return base64UrlEncode(List<int>.generate(16, (_) => random.nextInt(256)));
 }
 
+Future<http.Response> _submitProbe({
+  required Map<String, dynamic> config,
+  required String token,
+  required String localDeviceId,
+  required String relayDeviceId,
+  required String entity,
+  required String action,
+}) async {
+  final signing =
+      await SecureStore.instance.read('device.$localDeviceId.sign');
+  final envelope = await buildEnvelope(
+    devicePrivateKey: signing!,
+    storeKey: List<int>.generate(32, (index) => index + 7),
+    storeId: config['store_id'] as String,
+    senderDeviceId: relayDeviceId,
+    recipientDeviceId: '',
+    seq: 1,
+    hlcWall: DateTime.now().millisecondsSinceEpoch,
+    hlcCounter: 0,
+    idempotencyKey: 'probe-${newSyncId()}',
+    entity: entity,
+    action: action,
+    entityId: 'probe-$entity',
+    payload: {'sync_id': 'probe-$entity'},
+  );
+  return http.post(
+    Uri.parse('${config['relay_url'] as String}/relay/envelopes'),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Device-Token': token,
+    },
+    body: jsonEncode(envelope),
+  );
+}
+
 void main() {
   SecureStore.useDatabaseForTests = true;
   test(
@@ -138,6 +174,9 @@ void main() {
             nama: 'HP Owner A',
           );
           expect(reg['key_pending'], isFalse);
+          config['device_token'] =
+              await SyncService.instance.relayDeviceToken();
+          await _writeJson(_configPath, config);
           final customerId = await db.addCustomer(
             nama: 'Pelanggan E2E',
             nomorHp: '081200000010',
@@ -312,6 +351,10 @@ void main() {
           final sync = await SyncService.instance.syncNow();
           expect(sync['sent'], 1);
           final check = await SyncService.instance.startUploadCheck();
+          // Putaran mensyaratkan semua perangkat sinkron setelah dibuka.
+          await _openAndSeed(config, config['b_db'] as String);
+          await SyncService.instance.syncNow();
+          await _openAndSeed(config, config['a_db'] as String);
           final snapshot = await SyncService.instance.uploadSnapshot(
             roundId: '${check['id']}',
           );
@@ -348,7 +391,7 @@ void main() {
           final relay = config['relay_url'] as String;
           final headers = {
             'Content-Type': 'application/json',
-            'X-Relay-Enroll-Token': config['relay_token'] as String,
+            'X-Device-Token': config['device_token'] as String,
           };
           final store = config['store_id'] as String;
           final username = 'kasir_${newNotaPrefix(length: 4).toLowerCase()}';
@@ -403,7 +446,7 @@ void main() {
               'ttl_minutes': 10,
             }),
           );
-          expect(inviteResponse.statusCode, 201, reason: inviteResponse.body);
+          expect(inviteResponse.statusCode, 200, reason: inviteResponse.body);
           final invite = jsonDecode(inviteResponse.body) as Map<String, dynamic>;
           await _writeJson(config['m1_result'] as String, {
             'code': invite['code'],
@@ -442,6 +485,17 @@ void main() {
           );
           expect(secondLogin?.mustChangePassword, isFalse);
           expect(await SyncService.instance.existingStoreKey(), isNull);
+          final employeeToken = await SyncService.instance.relayDeviceToken();
+          final denied = await _submitProbe(
+            config: config,
+            token: employeeToken!,
+            localDeviceId:
+                await db.getSetting('sync.local_device_id') ?? '',
+            relayDeviceId: paired['relay_device_id'] as String,
+            entity: 'salary',
+            action: 'upsert',
+          );
+          expect(denied.statusCode, 403, reason: denied.body);
           await _writeJson(config['e1_result'] as String, {
             'relay_device_id': paired['relay_device_id'],
             'encryption_key': paired['encryption_key'],
@@ -493,7 +547,7 @@ void main() {
             ),
             headers: {
               'Content-Type': 'application/json',
-              'X-Relay-Enroll-Token': config['relay_token'] as String,
+              'X-Device-Token': config['device_token'] as String,
             },
             body: jsonEncode({'reason': 'uji ganti perangkat owner'}),
           );
@@ -510,15 +564,11 @@ void main() {
             'public_key': config['owner_public'],
             'created_at': nowIso(),
           });
-          await db.db.insert('license', {
-            'id': 1,
-            'plan': 'premium',
-            'period_end': '2027-11-03T00:00:00',
-            'store_limit': 2,
-            'provider': 'summary',
-            'token': null,
-            'activated_at': nowIso(),
-          });
+          await installTestLicense(
+            ownerId: config['owner_id'] as String,
+            days: 3650,
+            storeLimit: 10,
+          );
           await SyncService.instance.configure(
             relayUrl: config['relay_url'] as String,
             enrollToken: config['relay_token'] as String,
@@ -530,6 +580,17 @@ void main() {
           );
           expect(registered['key_pending'], isTrue);
           final viewerDevice = await DeviceService.instance.currentDevice();
+          final viewerToken = await SyncService.instance.relayDeviceToken();
+          final denied = await _submitProbe(
+            config: config,
+            token: viewerToken!,
+            localDeviceId:
+                await db.getSetting('sync.local_device_id') ?? '',
+            relayDeviceId: registered['relay_device_id'] as String,
+            entity: 'customer',
+            action: 'upsert',
+          );
+          expect(denied.statusCode, 403, reason: denied.body);
           await _writeJson(config['v1_result'] as String, {
             'relay_device_id': registered['relay_device_id'],
             'encryption_key': viewerDevice!['encryption_key'],
@@ -546,6 +607,11 @@ void main() {
           break;
         case 'V2':
           await db.initForTest(config['v_db'] as String);
+          await installTestLicense(
+            ownerId: config['owner_id'] as String,
+            days: 3650,
+            storeLimit: 10,
+          );
           expect(await SyncService.instance.refreshStoreKey(), isTrue);
           final sync = await SyncService.instance.syncNow();
           final records = await db.listRecords(limit: 10);

@@ -21,20 +21,23 @@ class OwnerApiException implements Exception {
 }
 
 /// Kelola akun dan perangkat karyawan dari mode ringkasan laporan.
+///
+/// Endpoint pengelolaan memakai token perangkat pemilik (kind `owner` atau
+/// `viewer`), bukan token pendaftaran yang hanya dipakai saat pairing.
 class OwnerApi {
   OwnerApi({
     required String baseUrl,
-    required this.enrollToken,
+    required this.deviceToken,
     required this.ownerId,
   }) : baseUrl = normalizeRelayUrl(baseUrl);
 
   final String baseUrl;
-  final String enrollToken;
+  final String deviceToken;
   final String ownerId;
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        'X-Relay-Enroll-Token': enrollToken,
+        'X-Device-Token': deviceToken,
       };
 
   Uri _uri(String path, [Map<String, String>? query]) =>

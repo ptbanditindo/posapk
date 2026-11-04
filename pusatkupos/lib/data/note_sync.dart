@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'models.dart';
 
@@ -126,6 +127,19 @@ extension NoteSyncDatabase on AppDatabase {
         'status': row['status'],
         'void_reason': row['void_reason'],
         'voided_at': row['voided_at'],
+        'bergaransi': row['bergaransi'],
+        'garansi_bulan': row['garansi_bulan'],
+        'garansi_sampai': row['garansi_sampai'],
+        'catatan_garansi': row['catatan_garansi'],
+        'status_klaim': row['status_klaim'],
+        'tanggal_klaim': row['tanggal_klaim'],
+        'sparepart_only': row['sparepart_only'],
+        'garansi_barang_aktif': row['garansi_barang_aktif'],
+        'garansi_barang_nilai': row['garansi_barang_nilai'],
+        'garansi_barang_satuan': row['garansi_barang_satuan'],
+        'garansi_barang_sampai': row['garansi_barang_sampai'],
+        'unit_ditinggal': row['unit_ditinggal'],
+        'diambil_at': row['diambil_at'],
         'created_by': row['created_by'],
         'created_by_employee_id': row['created_by_employee_id'],
         'mechanic': row['mechanic'],
@@ -199,7 +213,12 @@ extension NoteSyncDatabase on AppDatabase {
         limit: 1,
       );
       if (action == 'void') {
-        if (existingRecord.isEmpty) return 'missing';
+        if (existingRecord.isEmpty) {
+          throw RetryableSyncException(
+            'Pembatalan nota menunggu nota asal diterapkan.',
+            code: 'nota_butuh_induk',
+          );
+        }
         if (existingRecord.first['voided_at'] != null) return 'duplicate';
         final reason =
             record['void_reason'] as String? ?? 'Void dari perangkat lain';
@@ -242,9 +261,9 @@ extension NoteSyncDatabase on AppDatabase {
             'created_at': nowIso(),
           });
         }
-        for (final payment in payments) {
-          await _upsertPayment(txn, existingRecord.first['id'] as int, payment);
-        }
+        // Refund dibuat di perangkat yang melakukan void. Perangkat lain
+        // hanya menyamakan status dan stok agar tidak menghitung refund dua
+        // kali.
         await txn.update(
           'service_records',
           {
@@ -259,14 +278,78 @@ extension NoteSyncDatabase on AppDatabase {
         return 'void';
       }
       if (action == 'payment') {
-        if (existingRecord.isEmpty) return 'missing';
+        if (existingRecord.isEmpty) {
+          throw RetryableSyncException(
+            'Pembayaran menunggu nota asal diterapkan.',
+            code: 'nota_butuh_induk',
+          );
+        }
         for (final payment in payments) {
           await _upsertPayment(txn, existingRecord.first['id'] as int, payment);
         }
         await _recalculateRecordTotals(txn, existingRecord.first['id'] as int);
         return 'payment';
       }
-      if (existingRecord.isNotEmpty) return 'duplicate';
+      if (action == 'warranty') {
+        if (existingRecord.isEmpty) {
+          throw RetryableSyncException(
+            'Klaim garansi menunggu nota asal diterapkan.',
+            code: 'nota_butuh_induk',
+          );
+        }
+        await _applyPostSaleFields(
+          txn,
+          existingRecord.first,
+          record,
+          warranty: true,
+          taken: false,
+        );
+        return 'warranty';
+      }
+      if (action == 'taken') {
+        if (existingRecord.isEmpty) {
+          throw RetryableSyncException(
+            'Status pengambilan unit menunggu nota asal diterapkan.',
+            code: 'nota_butuh_induk',
+          );
+        }
+        await _applyPostSaleFields(
+          txn,
+          existingRecord.first,
+          record,
+          warranty: false,
+          taken: true,
+        );
+        return 'taken';
+      }
+      if (existingRecord.isNotEmpty) {
+        // Nota final tidak ditulis ulang. Hanya pembayaran tambahan dan
+        // status pasca-jual (garansi, unit diambil) yang boleh menyusul.
+        var changed = await _applyPostSaleFields(
+          txn,
+          existingRecord.first,
+          record,
+          warranty: true,
+          taken: true,
+        );
+        var paymentAdded = false;
+        for (final payment in payments) {
+          final inserted = await _upsertPayment(
+            txn,
+            existingRecord.first['id'] as int,
+            payment,
+          );
+          paymentAdded = paymentAdded || inserted;
+        }
+        changed = changed || paymentAdded;
+        if (paymentAdded) {
+          await _recalculateRecordTotals(
+            txn,
+            existingRecord.first['id'] as int,
+          );
+        }
+        return changed ? 'updated' : 'duplicate';
+      }
       final customerSync = customer['sync_id'] as String? ?? '';
       if (customerSync.isEmpty) throw StateError('Pelanggan tanpa sync_id.');
       final customerRows = await txn.query(
@@ -288,21 +371,30 @@ extension NoteSyncDatabase on AppDatabase {
         });
       } else {
         customerId = customerRows.first['id'] as int;
-        await txn.update(
-          'customers',
-          {
-            'nama': customer['nama'] ?? customerRows.first['nama'],
-            'nomor_hp':
-                customer['nomor_hp'] ?? customerRows.first['nomor_hp'],
-            'alamat': customer['alamat'] ?? customerRows.first['alamat'],
-            'wa_consent':
-                customer['wa_consent'] ?? customerRows.first['wa_consent'],
-            'do_not_contact': customer['do_not_contact'] ??
-                customerRows.first['do_not_contact'],
-          },
-          where: 'id = ?',
-          whereArgs: [customerId],
-        );
+        // Data master yang sudah ada tidak ditimpa snapshot nota yang lebih
+        // lama; hanya kolom kosong yang diisi.
+        final fill = <String, Object?>{};
+        for (final key in const [
+          'nama',
+          'nomor_hp',
+          'alamat',
+          'wa_consent',
+          'do_not_contact',
+        ]) {
+          final current = customerRows.first[key];
+          final incoming = customer[key];
+          if ((current == null || '$current'.isEmpty) && incoming != null) {
+            fill[key] = incoming;
+          }
+        }
+        if (fill.isNotEmpty) {
+          await txn.update(
+            'customers',
+            fill,
+            where: 'id = ?',
+            whereArgs: [customerId],
+          );
+        }
       }
       final unitSync = unit['sync_id'] as String? ?? '';
       if (unitSync.isEmpty) throw StateError('Unit tanpa sync_id.');
@@ -327,24 +419,29 @@ extension NoteSyncDatabase on AppDatabase {
         });
       } else {
         unitId = unitRows.first['id'] as int;
-        await txn.update(
-          'vehicle_or_units',
-          {
-            'customer_id': customerId,
-            'unit_type': unit['unit_type'] ?? unitRows.first['unit_type'],
-            'nopol': unit['nopol'] ?? unitRows.first['nopol'],
-            'jenis_mobil':
-                unit['jenis_mobil'] ?? unitRows.first['jenis_mobil'],
-            'tahun_mobil':
-                unit['tahun_mobil'] ?? unitRows.first['tahun_mobil'],
-            'tipe_radiator':
-                unit['tipe_radiator'] ?? unitRows.first['tipe_radiator'],
-            'label_radiator':
-                unit['label_radiator'] ?? unitRows.first['label_radiator'],
-          },
-          where: 'id = ?',
-          whereArgs: [unitId],
-        );
+        final fill = <String, Object?>{};
+        for (final key in const [
+          'unit_type',
+          'nopol',
+          'jenis_mobil',
+          'tahun_mobil',
+          'tipe_radiator',
+          'label_radiator',
+        ]) {
+          final current = unitRows.first[key];
+          final incoming = unit[key];
+          if ((current == null || '$current'.isEmpty) && incoming != null) {
+            fill[key] = incoming;
+          }
+        }
+        if (fill.isNotEmpty) {
+          await txn.update(
+            'vehicle_or_units',
+            fill,
+            where: 'id = ?',
+            whereArgs: [unitId],
+          );
+        }
       }
       var noNota =
           record['no_nota'] as String? ?? await allocateNextNota(txn);
@@ -389,6 +486,19 @@ extension NoteSyncDatabase on AppDatabase {
         'total_dibayar': record['total_dibayar'] ?? 0,
         'sisa_bayar': record['sisa_bayar'] ?? 0,
         'status': record['status'] ?? 'AKTIF',
+        'bergaransi': record['bergaransi'] ?? 1,
+        'garansi_bulan': record['garansi_bulan'] ?? 1,
+        'garansi_sampai': record['garansi_sampai'],
+        'catatan_garansi': record['catatan_garansi'],
+        'status_klaim': record['status_klaim'] ?? 'Belum claim',
+        'tanggal_klaim': record['tanggal_klaim'],
+        'sparepart_only': record['sparepart_only'] ?? 0,
+        'garansi_barang_aktif': record['garansi_barang_aktif'] ?? 0,
+        'garansi_barang_nilai': record['garansi_barang_nilai'] ?? 0,
+        'garansi_barang_satuan': record['garansi_barang_satuan'] ?? 'HARI',
+        'garansi_barang_sampai': record['garansi_barang_sampai'],
+        'unit_ditinggal': record['unit_ditinggal'] ?? 0,
+        'diambil_at': record['diambil_at'],
         'created_by': record['created_by'],
         'created_by_employee_id': record['created_by_employee_id'],
         'mechanic': record['mechanic'],
@@ -505,7 +615,52 @@ extension NoteSyncDatabase on AppDatabase {
       return 'applied';
   }
 
-  Future<void> _upsertPayment(
+  /// Status pasca-jual boleh menyusul tanpa menulis ulang nilai final nota.
+  /// Klaim garansi dan waktu pengambilan bersifat monoton: nilai yang sudah
+  /// tercatat tidak pernah dikembalikan oleh perangkat yang lebih lama.
+  Future<bool> _applyPostSaleFields(
+    DatabaseExecutor txn,
+    Map<String, Object?> existing,
+    Map<String, Object?> record, {
+    required bool warranty,
+    required bool taken,
+  }) async {
+    final values = <String, Object?>{};
+    if (warranty) {
+      final incomingClaim = '${record['status_klaim'] ?? ''}';
+      final localClaim = '${existing['status_klaim'] ?? ''}';
+      if (incomingClaim == 'Sudah claim' && localClaim != 'Sudah claim') {
+        values['status_klaim'] = 'Sudah claim';
+        values['tanggal_klaim'] = record['tanggal_klaim'] ?? nowIso();
+      }
+      if (record['garansi_sampai'] != null &&
+          existing['garansi_sampai'] == null) {
+        values['bergaransi'] = record['bergaransi'] ?? 1;
+        values['garansi_sampai'] = record['garansi_sampai'];
+        values['catatan_garansi'] = record['catatan_garansi'];
+      }
+    }
+    if (taken) {
+      if (record['diambil_at'] != null && existing['diambil_at'] == null) {
+        values['diambil_at'] = record['diambil_at'];
+      }
+      if ((record['unit_ditinggal'] as num?)?.toInt() == 1 &&
+          (existing['unit_ditinggal'] as num?)?.toInt() != 1) {
+        values['unit_ditinggal'] = 1;
+      }
+    }
+    if (values.isEmpty) return false;
+    values['updated_at'] = nowIso();
+    await txn.update(
+      'service_records',
+      values,
+      where: 'id = ?',
+      whereArgs: [existing['id']],
+    );
+    return true;
+  }
+
+  Future<bool> _upsertPayment(
     DatabaseExecutor txn,
     int recordId,
     Map<String, Object?> payment,
@@ -519,7 +674,7 @@ extension NoteSyncDatabase on AppDatabase {
         whereArgs: [syncId],
         limit: 1,
       );
-      if (rows.isNotEmpty) return;
+      if (rows.isNotEmpty) return false;
     }
     await txn.insert('service_payments', {
       'sync_id': syncId.isEmpty ? newSyncId() : syncId,
@@ -532,6 +687,7 @@ extension NoteSyncDatabase on AppDatabase {
       'request_id': null,
       'catatan': payment['catatan'],
     });
+    return true;
   }
 
   Future<void> _recalculateRecordTotals(

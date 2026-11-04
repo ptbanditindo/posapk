@@ -42,4 +42,46 @@ void main() {
     expect(next.wall, futureWall);
     expect(next.counter, 3);
   });
+
+  test('petunjuk entity/action ditandatangani dan tidak dapat diubah',
+      () async {
+    final signing = await generateSigningKey();
+    final storeKey = List<int>.generate(32, (index) => index + 1);
+    final envelope = await buildEnvelope(
+      devicePrivateKey: signing.privateKey,
+      storeKey: storeKey,
+      storeId: 'utama',
+      senderDeviceId: 'device-1',
+      recipientDeviceId: '',
+      seq: 1,
+      hlcWall: 1000,
+      hlcCounter: 0,
+      idempotencyKey: 'idem-petunjuk',
+      entity: 'customer',
+      action: 'upsert',
+      entityId: 'cust-1',
+      payload: {'nama': 'Tes'},
+    );
+    expect(envelope['hints_signature'], isNotEmpty);
+
+    final tampered = Map<String, Object?>.from(envelope)
+      ..['action'] = 'delete';
+    await expectLater(
+      verifyEnvelope(
+        envelope: tampered,
+        senderPublicKey: signing.publicKey,
+        storeKey: storeKey,
+      ),
+      throwsA(isA<StateError>()),
+    );
+
+    final legacy = Map<String, Object?>.from(envelope)
+      ..remove('hints_signature');
+    final data = await verifyEnvelope(
+      envelope: legacy,
+      senderPublicKey: signing.publicKey,
+      storeKey: storeKey,
+    );
+    expect(data['entity'], 'customer');
+  });
 }

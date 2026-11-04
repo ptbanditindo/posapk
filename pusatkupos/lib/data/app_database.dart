@@ -12,6 +12,7 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/money.dart';
 import '../core/phone.dart';
+import '../sync/crypto.dart';
 import 'models.dart';
 import 'store_registry.dart';
 
@@ -20,7 +21,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 10;
+  static const int schemaVersion = 11;
 
   Database? _db;
   String? _path;
@@ -405,6 +406,7 @@ class AppDatabase {
     await _upgradeV8(db);
     await _upgradeV9(db);
     await _addSyncIds(db);
+    await _upgradeV11(db);
   }
 
   Future<void> _addSyncIds(Database db) async {
@@ -451,6 +453,91 @@ class AppDatabase {
     }
     if (oldVersion < 10) {
       await _upgradeV10(db);
+    }
+    if (oldVersion < 11) {
+      await _upgradeV11(db);
+    }
+  }
+
+  /// v11: antrean penerapan delta yang gagal, metadata HLC untuk aturan
+  /// konflik, dan tombstone agar penghapusan tetap tersinkron.
+  Future<void> _upgradeV11(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        relay_seq INTEGER NOT NULL DEFAULT 0,
+        envelope_id TEXT NOT NULL DEFAULT '',
+        idempotency_key TEXT NOT NULL DEFAULT '',
+        entity TEXT NOT NULL DEFAULT '',
+        entity_id TEXT NOT NULL DEFAULT '',
+        envelope_json TEXT NOT NULL DEFAULT '{}',
+        last_error TEXT NOT NULL DEFAULT '',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (envelope_id),
+        UNIQUE (idempotency_key)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS ix_sync_inbox_due '
+      'ON sync_inbox(status, next_retry_at)',
+    );
+    await _addColumn(db, 'sync_outbox', 'next_retry_at', 'TEXT');
+    await _addColumn(
+      db,
+      'sync_conflicts',
+      'status',
+      "TEXT NOT NULL DEFAULT 'open'",
+    );
+    await _addColumn(
+      db,
+      'sync_conflicts',
+      'retry_count',
+      'INTEGER NOT NULL DEFAULT 0',
+    );
+    await _addColumn(
+      db,
+      'sync_conflicts',
+      'last_error',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumn(db, 'sync_conflicts', 'inbox_id', 'INTEGER');
+    for (final table in const [
+      'customers',
+      'vehicle_or_units',
+      'stock_items',
+      'harga_jasa',
+      'service_records',
+      'suppliers',
+      'supplier_followups',
+      'service_record_commissions',
+      'employee_debts',
+      'salary_payments',
+    ]) {
+      await _addColumn(
+        db,
+        table,
+        'sync_hlc_wall',
+        'INTEGER NOT NULL DEFAULT 0',
+      );
+      await _addColumn(
+        db,
+        table,
+        'sync_hlc_counter',
+        'INTEGER NOT NULL DEFAULT 0',
+      );
+      if (table != 'service_records' &&
+          table != 'service_record_commissions' &&
+          table != 'employee_debts' &&
+          table != 'salary_payments' &&
+          table != 'supplier_followups') {
+        await _addColumn(db, table, 'deleted_at', 'TEXT');
+      }
     }
   }
 
@@ -985,14 +1072,101 @@ WHERE $column IS NOT NULL
     await db.delete('app_settings', where: 'key = ?', whereArgs: [key]);
   }
 
+  /// Jam logis berikutnya untuk penulisan lokal. Nilai ini disimpan pada baris
+  /// dan amplop agar perangkat lain dapat memakai aturan "HLC terbaru menang".
+  static const _hlcTables = [
+    'customers',
+    'vehicle_or_units',
+    'stock_items',
+    'harga_jasa',
+    'service_records',
+    'suppliers',
+    'supplier_followups',
+    'service_record_commissions',
+    'employee_debts',
+    'salary_payments',
+  ];
+
+  /// HLC baru selalu lebih besar dari antrean keluar, data master yang sudah
+  /// tersimpan, dan lantai HLC dari perangkat lain. Dengan begitu penulisan
+  /// lokal tidak pernah kalah hanya karena antrean lama sudah dibersihkan.
+  Future<Hlc> nextSyncHlc(DatabaseExecutor txn) async {
+    final rows = await txn.rawQuery(
+      'SELECT COALESCE(MAX(hlc_wall), 0) AS wall, '
+      'COALESCE(MAX(hlc_counter), 0) AS counter FROM sync_outbox',
+    );
+    var wall = (rows.first['wall'] as int?) ?? 0;
+    var counter = (rows.first['counter'] as int?) ?? 0;
+    for (final table in _hlcTables) {
+      final local = await txn.rawQuery(
+        'SELECT COALESCE(MAX(sync_hlc_wall), 0) AS wall, '
+        'COALESCE(MAX(sync_hlc_counter), 0) AS counter FROM $table',
+      );
+      final localWall = (local.first['wall'] as int?) ?? 0;
+      final localCounter = (local.first['counter'] as int?) ?? 0;
+      if (localWall > wall ||
+          (localWall == wall && localCounter > counter)) {
+        wall = localWall;
+        counter = localCounter;
+      }
+    }
+    final floor = await _hlcFloor(txn);
+    if (floor.wall > wall ||
+        (floor.wall == wall && floor.counter > counter)) {
+      wall = floor.wall;
+      counter = floor.counter;
+    }
+    return nextHlc(Hlc(wall, counter));
+  }
+
+  /// Menaikkan lantai HLC setelah menerapkan delta dari perangkat lain agar
+  /// penulisan lokal berikutnya tidak kalah dibanding data yang baru diterima.
+  Future<void> noteRemoteHlc(
+    DatabaseExecutor txn,
+    int wall,
+    int counter,
+  ) async {
+    if (wall <= 0) return;
+    final floor = await _hlcFloor(txn);
+    if (wall < floor.wall ||
+        (wall == floor.wall && counter <= floor.counter)) {
+      return;
+    }
+    await txn.insert(
+      'app_settings',
+      {'key': 'sync.hlc_floor', 'value': '$wall:$counter'},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<({int wall, int counter})> _hlcFloor(
+    DatabaseExecutor txn,
+  ) async {
+    final rows = await txn.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['sync.hlc_floor'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return (wall: 0, counter: 0);
+    final parts = '${rows.first['value'] ?? ''}'.split(':');
+    if (parts.length != 2) return (wall: 0, counter: 0);
+    return (
+      wall: int.tryParse(parts[0]) ?? 0,
+      counter: int.tryParse(parts[1]) ?? 0,
+    );
+  }
+
   Future<List<Customer>> listCustomers({String query = ''}) async {
     final term = query.trim();
     final escaped = escapeLike(term);
     final rows = await db.query(
       'customers',
       where: term.isEmpty
-          ? null
-          : "nama LIKE ? ESCAPE '\\' OR nomor_hp LIKE ? ESCAPE '\\'",
+          ? 'deleted_at IS NULL'
+          : "deleted_at IS NULL AND (nama LIKE ? ESCAPE '\\' "
+              "OR nomor_hp LIKE ? ESCAPE '\\')",
       whereArgs: term.isEmpty ? null : ['%$escaped%', '%$escaped%'],
       orderBy: 'nama COLLATE NOCASE',
     );
@@ -1009,9 +1183,13 @@ WHERE $column IS NOT NULL
     return rows.isEmpty ? null : rows.first;
   }
 
-  Future<Customer?> customerByPhone(String nomorHp) async {    final normalized = normalizePhone(nomorHp);
+  Future<Customer?> customerByPhone(String nomorHp) async {
+    final normalized = normalizePhone(nomorHp);
     if (normalized.isEmpty) return null;
-    final rows = await db.query('customers');
+    final rows = await db.query(
+      'customers',
+      where: 'deleted_at IS NULL',
+    );
     for (final row in rows) {
       if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
         return Customer.fromRow(row);
@@ -1027,6 +1205,7 @@ WHERE $column IS NOT NULL
     bool waConsent = true,
     bool doNotContact = false,
     bool allowDuplicate = false,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) {
     return db.transaction((txn) async {
       final normalized = normalizePhone(nomorHp);
@@ -1034,7 +1213,10 @@ WHERE $column IS NOT NULL
         throw ArgumentError('Nomor HP wajib diisi.');
       }
       if (!allowDuplicate) {
-        final rows = await txn.query('customers');
+        final rows = await txn.query(
+          'customers',
+          where: 'deleted_at IS NULL',
+        );
         for (final row in rows) {
           if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
             throw DuplicateCustomerException(
@@ -1044,15 +1226,20 @@ WHERE $column IS NOT NULL
           }
         }
       }
-      return txn.insert('customers', {
+      final hlc = await nextSyncHlc(txn);
+      final id = await txn.insert('customers', {
         'sync_id': newSyncId(),
         'nama': nama.trim(),
         'nomor_hp': normalized,
         'alamat': (alamat ?? '').trim().isEmpty ? null : alamat!.trim(),
         'wa_consent': waConsent ? 1 : 0,
         'do_not_contact': doNotContact ? 1 : 0,
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
       });
+      if (enqueue != null) await enqueue(txn, id);
+      return id;
     });
   }
 
@@ -1063,38 +1250,51 @@ WHERE $column IS NOT NULL
     String? alamat,
     bool waConsent = true,
     bool doNotContact = false,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
     final normalized = normalizePhone(nomorHp);
     if (normalized.isEmpty) {
       throw ArgumentError('Nomor HP wajib diisi.');
     }
-    final rows = await db.query('customers');
-    for (final row in rows) {
-      if (row['id'] == id) continue;
-      if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
-        throw DuplicateCustomerException(
-          existingId: row['id'] as int,
-          existingName: row['nama'] as String? ?? '',
-        );
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'customers',
+        where: 'deleted_at IS NULL',
+      );
+      for (final row in rows) {
+        if (row['id'] == id) continue;
+        if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
+          throw DuplicateCustomerException(
+            existingId: row['id'] as int,
+            existingName: row['nama'] as String? ?? '',
+          );
+        }
       }
-    }
-    await db.update(
-      'customers',
-      {
-        'nama': nama.trim(),
-        'nomor_hp': normalized,
-        'alamat': (alamat ?? '').trim().isEmpty ? null : alamat!.trim(),
-        'wa_consent': waConsent ? 1 : 0,
-        'do_not_contact': doNotContact ? 1 : 0,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+      final hlc = await nextSyncHlc(txn);
+      await txn.update(
+        'customers',
+        {
+          'nama': nama.trim(),
+          'nomor_hp': normalized,
+          'alamat': (alamat ?? '').trim().isEmpty ? null : alamat!.trim(),
+          'wa_consent': waConsent ? 1 : 0,
+          'do_not_contact': doNotContact ? 1 : 0,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (enqueue != null) await enqueue(txn, id);
+    });
   }
 
   Future<Map<String, List<int>>> mergeCustomers({
     required int sourceId,
     required int targetId,
+    Future<void> Function(Transaction txn, int id)? enqueueCustomer,
+    Future<void> Function(Transaction txn, int id)? enqueueUnit,
+    Future<void> Function(Transaction txn, int id)? enqueueNote,
   }) async {
     if (sourceId == targetId) {
       throw ArgumentError('Pelanggan asal dan tujuan harus berbeda.');
@@ -1102,7 +1302,7 @@ WHERE $column IS NOT NULL
     return db.transaction((txn) async {
       final target = await txn.query(
         'customers',
-        where: 'id = ?',
+        where: 'id = ? AND deleted_at IS NULL',
         whereArgs: [targetId],
         limit: 1,
       );
@@ -1114,34 +1314,61 @@ WHERE $column IS NOT NULL
         whereArgs: [sourceId],
       );
       final unitIds = units.map((row) => row['id'] as int).toList();
-      if (unitIds.isEmpty) {
-        await txn.delete('customers', where: 'id = ?', whereArgs: [sourceId]);
-        return {'units': unitIds, 'records': <int>[]};
+      final records = unitIds.isEmpty
+          ? <Map<String, Object?>>[]
+          : await txn.query(
+              'service_records',
+              columns: ['id'],
+              where:
+                  'unit_id IN (${List.filled(unitIds.length, '?').join(',')})',
+              whereArgs: unitIds,
+            );
+      if (unitIds.isNotEmpty) {
+        final unitHlc = await nextSyncHlc(txn);
+        await txn.update(
+          'vehicle_or_units',
+          {
+            'customer_id': targetId,
+            'sync_hlc_wall': unitHlc.wall,
+            'sync_hlc_counter': unitHlc.counter,
+          },
+          where: 'customer_id = ?',
+          whereArgs: [sourceId],
+        );
       }
-      final records = await txn.query(
-        'service_records',
-        columns: ['id'],
-        where: 'unit_id IN (${List.filled(unitIds.length, '?').join(',')})',
-        whereArgs: unitIds,
-      );
+      final hlc = await nextSyncHlc(txn);
       await txn.update(
-        'vehicle_or_units',
-        {'customer_id': targetId},
-        where: 'customer_id = ?',
+        'customers',
+        {
+          'deleted_at': nowIso(),
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+        },
+        where: 'id = ?',
         whereArgs: [sourceId],
       );
-      await txn.delete('customers', where: 'id = ?', whereArgs: [sourceId]);
-      return {
-        'units': unitIds,
-        'records': records.map((row) => row['id'] as int).toList(),
-      };
+      if (enqueueCustomer != null) {
+        await enqueueCustomer(txn, sourceId);
+      }
+      if (enqueueUnit != null) {
+        for (final unitId in unitIds) {
+          await enqueueUnit(txn, unitId);
+        }
+      }
+      final recordIds = records.map((row) => row['id'] as int).toList();
+      if (enqueueNote != null) {
+        for (final recordId in recordIds) {
+          await enqueueNote(txn, recordId);
+        }
+      }
+      return {'units': unitIds, 'records': recordIds};
     });
   }
 
   Future<List<VehicleUnit>> listUnits(int customerId) async {
     final rows = await db.query(
       'vehicle_or_units',
-      where: 'customer_id = ?',
+      where: 'customer_id = ? AND deleted_at IS NULL',
       whereArgs: [customerId],
       orderBy: 'id DESC',
     );
@@ -1156,17 +1383,25 @@ WHERE $column IS NOT NULL
     int? tahunMobil,
     String? tipeRadiator,
     String? labelRadiator,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) {
-    return db.insert('vehicle_or_units', {
-      'sync_id': newSyncId(),
-      'customer_id': customerId,
-      'unit_type': unitType,
-      'nopol': _nullable(nopol),
-      'jenis_mobil': _nullable(jenisMobil),
-      'tahun_mobil': tahunMobil,
-      'tipe_radiator': _nullable(tipeRadiator),
-      'label_radiator': _nullable(labelRadiator),
-      'created_at': nowIso(),
+    return db.transaction((txn) async {
+      final hlc = await nextSyncHlc(txn);
+      final id = await txn.insert('vehicle_or_units', {
+        'sync_id': newSyncId(),
+        'customer_id': customerId,
+        'unit_type': unitType,
+        'nopol': _nullable(nopol),
+        'jenis_mobil': _nullable(jenisMobil),
+        'tahun_mobil': tahunMobil,
+        'tipe_radiator': _nullable(tipeRadiator),
+        'label_radiator': _nullable(labelRadiator),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
+        'created_at': nowIso(),
+      });
+      if (enqueue != null) await enqueue(txn, id);
+      return id;
     });
   }
 
@@ -1198,6 +1433,8 @@ WHERE $column IS NOT NULL
     int intervalBulan = 0,
     String? alasan,
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
     if (actor != null) Permissions.require(actor, permissionChangeStock);
     if (hargaModalCents < 0 || hargaJualCents < 0) {
@@ -1244,10 +1481,21 @@ WHERE $column IS NOT NULL
         );
         if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
         final before = StockItem.fromRow(rows.first);
-        await txn.update('stock_items', payload, where: 'id = ?', whereArgs: [id]);
+        final hlc = await nextSyncHlc(txn);
+        await txn.update(
+          'stock_items',
+          {
+            ...payload,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
         final delta = milli - before.jumlahMilli;
+        int? movementId;
         if (delta != 0) {
-          await txn.insert('stock_movements', {
+          movementId = await txn.insert('stock_movements', {
             'sync_id': newSyncId(),
             'stock_item_id': id,
             'nama_item': payload['nama'],
@@ -1260,17 +1508,25 @@ WHERE $column IS NOT NULL
             'created_at': nowIso(),
           });
         }
+        if (enqueue != null) await enqueue(txn, id);
+        if (movementId != null && enqueueMovement != null) {
+          await enqueueMovement(txn, movementId);
+        }
         return id;
       });
     }
     return db.transaction((txn) async {
+      final hlc = await nextSyncHlc(txn);
       final newId = await txn.insert('stock_items', {
         ...payload,
         'sync_id': newSyncId(),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
       });
+      int? movementId;
       if (milli != 0) {
-        await txn.insert('stock_movements', {
+        movementId = await txn.insert('stock_movements', {
           'sync_id': newSyncId(),
           'stock_item_id': newId,
           'nama_item': payload['nama'],
@@ -1283,6 +1539,10 @@ WHERE $column IS NOT NULL
           'created_at': nowIso(),
         });
       }
+      if (enqueue != null) await enqueue(txn, newId);
+      if (movementId != null && enqueueMovement != null) {
+        await enqueueMovement(txn, movementId);
+      }
       return newId;
     });
   }
@@ -1293,6 +1553,8 @@ WHERE $column IS NOT NULL
     int? qtyMilli,
     String? alasan,
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
     if (actor != null) Permissions.require(actor, permissionStockIn);
     final milli = qtyMilli ?? qty * 1000;
@@ -1303,6 +1565,8 @@ WHERE $column IS NOT NULL
       jenis: 'MASUK',
       alasan: (alasan ?? '').trim().isEmpty ? 'Tambah stok' : alasan!.trim(),
       serviceRecordId: null,
+      enqueue: enqueue,
+      enqueueMovement: enqueueMovement,
     );
   }
 
@@ -1312,6 +1576,8 @@ WHERE $column IS NOT NULL
     int? qtyMilli,
     required String alasan,
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
     if (actor != null) Permissions.require(actor, permissionStockOut);
     final milli = qtyMilli ?? qty * 1000;
@@ -1326,6 +1592,8 @@ WHERE $column IS NOT NULL
       jenis: 'KELUAR',
       alasan: reason,
       serviceRecordId: null,
+      enqueue: enqueue,
+      enqueueMovement: enqueueMovement,
     );
   }
 
@@ -1334,6 +1602,8 @@ WHERE $column IS NOT NULL
     required int jumlahFisikMilli,
     String? alasan,
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
     if (actor != null) Permissions.require(actor, permissionOpname);
     if (jumlahFisikMilli < 0) {
@@ -1355,7 +1625,7 @@ WHERE $column IS NOT NULL
         where: 'id = ?',
         whereArgs: [item.id],
       );
-      await txn.insert('stock_movements', {
+      final movementId = await txn.insert('stock_movements', {
         'sync_id': newSyncId(),
         'stock_item_id': item.id,
         'nama_item': item.nama,
@@ -1367,6 +1637,8 @@ WHERE $column IS NOT NULL
             : alasan!.trim(),
         'created_at': nowIso(),
       });
+      if (enqueue != null) await enqueue(txn, item.id);
+      if (enqueueMovement != null) await enqueueMovement(txn, movementId);
     });
   }
 
@@ -1376,6 +1648,8 @@ WHERE $column IS NOT NULL
     required String jenis,
     required String alasan,
     required int? serviceRecordId,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
     await db.transaction((txn) async {
       final rows = await txn.query(
@@ -1393,7 +1667,7 @@ WHERE $column IS NOT NULL
         where: 'id = ?',
         whereArgs: [item.id],
       );
-      await txn.insert('stock_movements', {
+      final movementId = await txn.insert('stock_movements', {
         'sync_id': newSyncId(),
         'stock_item_id': item.id,
         'nama_item': item.nama,
@@ -1404,12 +1678,15 @@ WHERE $column IS NOT NULL
         'service_record_id': serviceRecordId,
         'created_at': nowIso(),
       });
+      if (enqueue != null) await enqueue(txn, item.id);
+      if (enqueueMovement != null) await enqueueMovement(txn, movementId);
     });
   }
 
   Future<List<ServiceCatalog>> listCatalog() async {
     final rows = await db.query(
       'harga_jasa',
+      where: 'deleted_at IS NULL',
       orderBy: 'nama COLLATE NOCASE',
     );
     return rows.map(ServiceCatalog.fromRow).toList();
@@ -1421,6 +1698,7 @@ WHERE $column IS NOT NULL
     required int hargaCents,
     int intervalBulan = 0,
     Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
     if (actor != null) {
       Permissions.require(actor, permissionChangeServicePrice);
@@ -1433,27 +1711,57 @@ WHERE $column IS NOT NULL
       'harga_standar': hargaCents,
       'interval_servis_bulan': intervalBulan < 0 ? 0 : intervalBulan,
     };
-    if (id != null) {
-      await db.update(
-        'harga_jasa',
-        payload,
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-      return id;
-    }
-    return db.insert('harga_jasa', {
-      ...payload,
-      'sync_id': newSyncId(),
-      'created_at': nowIso(),
+    return db.transaction((txn) async {
+      final hlc = await nextSyncHlc(txn);
+      if (id != null) {
+        await txn.update(
+          'harga_jasa',
+          {
+            ...payload,
+            'deleted_at': null,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        if (enqueue != null) await enqueue(txn, id);
+        return id;
+      }
+      final newId = await txn.insert('harga_jasa', {
+        ...payload,
+        'sync_id': newSyncId(),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
+        'created_at': nowIso(),
+      });
+      if (enqueue != null) await enqueue(txn, newId);
+      return newId;
     });
   }
 
-  Future<void> deleteCatalog(int id, {Operator? actor}) async {
+  Future<void> deleteCatalog(
+    int id, {
+    Operator? actor,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+  }) async {
     if (actor != null) {
       Permissions.require(actor, permissionChangeServicePrice);
     }
-    await db.delete('harga_jasa', where: 'id = ?', whereArgs: [id]);
+    await db.transaction((txn) async {
+      final hlc = await nextSyncHlc(txn);
+      await txn.update(
+        'harga_jasa',
+        {
+          'deleted_at': nowIso(),
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (enqueue != null) await enqueue(txn, id);
+    });
   }
 
   Future<int> createTransaction({
@@ -2006,19 +2314,23 @@ WHERE $column IS NOT NULL
     int recordId, {
     required bool diambil,
     Operator? actor,
+    Future<void> Function(Transaction txn, int recordId)? enqueue,
   }) async {
-    final updated = await db.update(
-      'service_records',
-      {
-        'diambil_at': diambil ? nowIso() : null,
-        'updated_at': nowIso(),
-      },
-      where: 'unit_ditinggal = 1 AND id = ?',
-      whereArgs: [recordId],
-    );
-    if (updated == 0) {
-      throw StateError('Nota ini tidak ditandai unit ditinggal.');
-    }
+    await db.transaction((txn) async {
+      final updated = await txn.update(
+        'service_records',
+        {
+          'diambil_at': diambil ? nowIso() : null,
+          'updated_at': nowIso(),
+        },
+        where: 'unit_ditinggal = 1 AND id = ?',
+        whereArgs: [recordId],
+      );
+      if (updated == 0) {
+        throw StateError('Nota ini tidak ditandai unit ditinggal.');
+      }
+      if (enqueue != null) await enqueue(txn, recordId);
+    });
   }
 
   Future<List<ServiceRecordSummary>> listRecords({

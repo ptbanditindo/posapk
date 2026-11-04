@@ -4,6 +4,7 @@ import '../../core/money.dart';
 import '../../data/app_database.dart';
 import '../../data/models.dart';
 import '../../state/app_state.dart';
+import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
 class JasaScreen extends StatefulWidget {
@@ -52,6 +53,8 @@ class _JasaScreenState extends State<JasaScreen> {
         nama: input.nama,
         hargaCents: input.hargaCents,
         actor: AppState.instance.operator,
+        enqueue: (txn, id) =>
+            SyncService.instance.enqueueCatalog(id, txn: txn),
       );
       AppState.instance.touch();
       _load();

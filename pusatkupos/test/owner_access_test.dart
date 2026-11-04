@@ -5,7 +5,7 @@ void main() {
   test('alamat layanan owner wajib https kecuali localhost debug', () {
     final secure = OwnerApi(
       baseUrl: 'https://relay.contoh.com/',
-      enrollToken: 'token',
+      deviceToken: 'token',
       ownerId: 'owner',
     );
     expect(secure.baseUrl, 'https://relay.contoh.com');
@@ -13,7 +13,7 @@ void main() {
     expect(
       () => OwnerApi(
         baseUrl: 'http://relay.contoh.com',
-        enrollToken: 'token',
+        deviceToken: 'token',
         ownerId: 'owner',
       ),
       throwsArgumentError,
@@ -21,7 +21,7 @@ void main() {
 
     final local = OwnerApi(
       baseUrl: 'http://127.0.0.1:8120',
-      enrollToken: 'token',
+      deviceToken: 'token',
       ownerId: 'owner',
     );
     expect(local.baseUrl, 'http://127.0.0.1:8120');

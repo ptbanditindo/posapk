@@ -219,7 +219,7 @@ Future<void> main(List<String> args) async {
       'permission_signature': accountSignature,
       'permission_signer_public_key': owner.publicKey,
     },
-    headers: {'X-Relay-Enroll-Token': created['enroll_token'] as String},
+    headers: {'X-Device-Token': token},
   );
   final invite = await _post(
     '/relay/manage/invites',
@@ -229,7 +229,7 @@ Future<void> main(List<String> args) async {
       'store_id': 'utama',
       'ttl_minutes': 10,
     },
-    headers: {'X-Relay-Enroll-Token': created['enroll_token'] as String},
+    headers: {'X-Device-Token': token},
   );
   final employee = await _keyPair('employee');
   final claim = await _post('/relay/invites/claim', {

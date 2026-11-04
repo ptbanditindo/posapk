@@ -4,6 +4,7 @@ import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/employee_service.dart';
 import '../../data/license_service.dart';
+import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
 class EmployeesScreen extends StatefulWidget {
@@ -124,6 +125,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
       await EmployeeService.instance.paySalary(
         selected,
         bonusCents: bonus,
+        enqueue: (txn, syncId) =>
+            SyncService.instance.enqueueSalary(syncId, txn: txn),
       );
       _bonus.clear();
       await _loadSelected();
@@ -185,6 +188,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
         selected,
         nominalCents: cents,
         catatan: note,
+        enqueue: (txn, syncId) =>
+            SyncService.instance.enqueueDebt(syncId, txn: txn),
       );
       await _loadSelected();
       if (mounted) showSnack(context, 'Hutang dicatat.');
