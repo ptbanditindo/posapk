@@ -7,6 +7,7 @@ import '../../data/google_auth_service.dart';
 import '../../data/license_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
+import '../upload_backup_dialog.dart';
 import '../widgets.dart';
 
 class PremiumScreen extends StatefulWidget {
@@ -349,18 +350,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
   }
 
   Future<void> _uploadSnapshot() async {
-    setState(() => _busy = true);
-    try {
-      final result = await SyncService.instance.uploadSnapshot();
-      if (mounted) {
-        showSnack(context, 'Snapshot diunggah sampai urutan ${result['store_seq']}.');
-      }
-    } catch (error) {
-      if (mounted) {
-        showSnack(context, 'Gagal unggah snapshot: $error', error: true);
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
+    final uploaded = await showUploadBackupDialog(context);
+    if (!mounted || !uploaded) return;
+    await _load();
+    if (mounted) {
+      showSnack(context, 'Cadangan toko berhasil diunggah.');
     }
   }
 

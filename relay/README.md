@@ -168,7 +168,11 @@ ada. Jika email belum terhubung, login ditolak dengan kode
 - `GET /relay/feed`
 - `POST /relay/feed/ack`
 - `GET /relay/bootstrap`
-- `POST /relay/snapshots`
+- `POST /relay/sync/rounds` (buka putaran kelengkapan)
+- `GET /relay/sync/rounds/open`
+- `GET /relay/sync/rounds/<id>`
+- `POST /relay/sync/rounds/<id>/ack`
+- `POST /relay/snapshots` (wajib `round_id` lengkap)
 - `GET /relay/devices`
 - `POST /relay/invites/claim`
 - `GET /relay/permissions/me`
@@ -186,6 +190,33 @@ ada. Jika email belum terhubung, login ditolak dengan kode
 Relay memverifikasi tanda tangan amplop perangkat dan menolak amplop yang
 tidak cocok. Relay juga menolak akun karyawan yang izinnya tidak ditandatangani
 kunci identitas owner (`409 owner_signer_required`).
+
+### Gate unggah cadangan
+
+`POST /relay/snapshots` tidak lagi menerima snapshot langsung. Alurnya:
+
+1. Perangkat membuka putaran lewat `POST /relay/sync/rounds`. Relay mencatat
+   `latest_seq` dan daftar perangkat tulis saat itu: semua perangkat owner dan
+   satu perangkat terbaru per akun karyawan. Perangkat `viewer` dan yang sudah
+   dicabut tidak dihitung.
+2. Setiap perangkat mengakui putaran lewat ack setelah mengirim antrean lokal
+   dan menerima data sampai `latest_seq`. Ack membawa `last_seq` dan
+   `pending_count`.
+3. Relay menandai putaran lengkap hanya bila semua perangkat tercatat sudah
+   ack dengan `last_seq >= latest_seq`, `pending_count = 0`, dan tidak ada data
+   baru setelah putaran dibuka. Data baru membuat putaran basi; buka ulang.
+4. Snapshot ditolak (`409 incomplete_store` atau `stale_round`) bila putaran
+   belum lengkap. Snapshot yang diterima menyimpan `round_id`,
+   `device_manifest`, dan `complete = true`.
+5. Relay memverifikasi tanda tangan Ed25519 perangkat atas metadata snapshot:
+   `store_id`, `device_id`, `checksum`, `store_seq`, `hlc_wall`,
+   `hlc_counter`.
+
+Batasannya: gate ini mencegah cadangan tidak lengkap karena perangkat lupa
+sinkron, bukan pertahanan terhadap perangkat yang sudah dikuasai penyerang.
+Perangkat yang sah tetap memegang kunci toko dan dapat menulis data. Perangkat
+hilang harus dicabut lewat `POST /relay/manage/devices/<id>/revoke`; setelah
+dicabut, data yang belum terkirim dari perangkat itu tidak akan masuk.
 
 ## Batasan yang masih tersisa
 

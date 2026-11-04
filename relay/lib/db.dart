@@ -152,8 +152,38 @@ CREATE TABLE IF NOT EXISTS snapshots (
   checksum TEXT NOT NULL,
   hlc_wall BIGINT NOT NULL,
   hlc_counter INTEGER NOT NULL,
+  round_id TEXT NOT NULL DEFAULT '',
+  complete BOOLEAN NOT NULL DEFAULT true,
+  device_manifest JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_id, store_id)
+)
+''',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS round_id TEXT NOT NULL DEFAULT \'\'',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS complete BOOLEAN NOT NULL DEFAULT true',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS device_manifest JSONB NOT NULL DEFAULT \'[]\'::jsonb',
+      '''
+CREATE TABLE IF NOT EXISTS sync_rounds (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  latest_seq BIGINT NOT NULL,
+  devices JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+)
+''',
+      'CREATE INDEX IF NOT EXISTS ix_sync_rounds_store ON sync_rounds(owner_id, store_id, status)',
+      '''
+CREATE TABLE IF NOT EXISTS sync_round_acks (
+  round_id TEXT NOT NULL REFERENCES sync_rounds(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  last_seq BIGINT NOT NULL,
+  pending_count INTEGER NOT NULL DEFAULT 0,
+  acked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (round_id, device_id)
 )
 ''',
       '''
@@ -265,6 +295,20 @@ List<String> stringList(Object? value) {
   if (value is String && value.isNotEmpty) {
     final decoded = jsonDecode(value);
     if (decoded is List) return decoded.map((item) => '$item').toList();
+  }
+  return const [];
+}
+
+List<Map<String, Object?>> jsonList(Object? value) {
+  Object? decoded = value;
+  if (value is String && value.isNotEmpty) {
+    decoded = jsonDecode(value);
+  }
+  if (decoded is List) {
+    return decoded
+        .whereType<Map>()
+        .map((item) => item.map((key, entry) => MapEntry('$key', entry)))
+        .toList();
   }
   return const [];
 }

@@ -468,6 +468,36 @@ Aturan:
 | `lib/data/google_auth_service.dart` | `signIn()`/`install()` agar tujuan database dapat dipilih |
 | `lib/ui/onboarding.dart` | Empat pilihan masuk, termasuk ringkasan laporan toko |
 
+#### 7.2.1 Gate kelengkapan unggah cadangan
+
+Unggah cadangan tidak boleh menghasilkan snapshot yang kehilangan data satu
+perangkat. Alurnya memakai putaran sinkron:
+
+1. Perangkat owner membuka putaran; relay menyimpan `latest_seq` dan daftar
+   perangkat tulis (semua perangkat owner + satu perangkat terbaru per akun
+   karyawan; `viewer` dan perangkat dicabut dikecualikan).
+2. Setiap perangkat mengakui putaran setelah mengirim antrean lokal dan
+   menerima data sampai `latest_seq`, membawa `pending_count`.
+3. Relay menandai lengkap hanya bila semua perangkat sudah ack, tidak ada
+   antrean lokal, dan tidak ada data baru setelah putaran dibuka.
+4. Snapshot ditolak bila putaran belum lengkap atau basi. Metadata snapshot
+   diverifikasi dengan tanda tangan perangkat.
+5. Status per perangkat di-cache di tabel lokal `device_sync_status` dan
+   ditampilkan sebagai checklist "sudah/belum sinkron" sebelum unggah.
+
+| File | Perubahan |
+| --- | --- |
+| `lib/ui/upload_backup_dialog.dart` *(baru)* | Checklist perangkat, periksa ulang, tombol unggah terkunci |
+| `lib/sync/sync_service.dart` | `startUploadCheck`, `refreshUploadCheck`, `uploadSnapshot(roundId)`, ack putaran saat sync |
+| `lib/sync/relay_client.dart` | Endpoint putaran sinkron |
+| `lib/data/app_database.dart` | Tabel `device_sync_status` (schema v10) |
+| `lib/ui/screens/premium_screen.dart` | Unggah lewat dialog kelengkapan |
+| `test/upload_gate_test.dart` *(baru)* | Cache status + upload ditolak tanpa perangkat |
+| `relay/lib/sync_round.dart` *(baru)* | Evaluasi kelengkapan murni |
+| `relay/lib/server.dart` | Endpoint putaran + validasi snapshot + tanda tangan |
+| `relay/lib/db.dart` | `sync_rounds`, `sync_round_acks`, kolom baru `snapshots` |
+| `relay/test/sync_round_test.dart` *(baru)* | Kasus offline, antrean, stale, revoked |
+
 ### 7.3 Relay (`relay/`)
 
 | File | Perubahan |

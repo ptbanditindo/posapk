@@ -20,7 +20,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 9;
+  static const int schemaVersion = 10;
 
   Database? _db;
   String? _path;
@@ -449,6 +449,23 @@ class AppDatabase {
     if (oldVersion < 9) {
       await _upgradeV9(db);
     }
+    if (oldVersion < 10) {
+      await _upgradeV10(db);
+    }
+  }
+
+  Future<void> _upgradeV10(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS device_sync_status (
+        device_id TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'owner',
+        state TEXT NOT NULL,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        pending INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      )
+    ''');
   }
 
   Future<void> _upgradeV9(Database db) async {
@@ -930,6 +947,17 @@ WHERE $column IS NOT NULL
         detail_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         resolved_at TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS device_sync_status (
+        device_id TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'owner',
+        state TEXT NOT NULL,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        pending INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
       )
     ''');
   }

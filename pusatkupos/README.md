@@ -63,8 +63,8 @@ tersedia.
   (fitur penuh) dan **Ringkasan laporan toko** (read-only). Sesi aplikasi tetap
   memakai PIN. Untuk Android, daftarkan SHA-1 keystore di Google Cloud Console.
 - Alamat layanan dan token pendaftaran ditanam saat build; pengguna tidak
-  pernah melihat atau mengisi alamat relay. Relay adalah detail internal
-  layanan premium.
+  pernah melihat atau mengisi alamat relay. Relay adalah layanan premium yang
+  disediakan pemilik aplikasi dan tidak perlu dipasang atau diatur toko.
 
 ## Build
 
@@ -116,8 +116,14 @@ build; langkah berikut berjalan otomatis setelah Login Google.
    sinkronisasi. Pengirim tak dikenal menghentikan kursor sebelum amplop itu.
 4. Snapshot/backup memakai `device.nota_prefix` baru setelah restore; seq
    outbox dilanjutkan dari batas tersimpan.
-5. Mode ringkasan mendaftar sebagai perangkat `viewer`, memuat salinan toko,
-   dan tidak mengirim transaksi.
+5. Unggah cadangan selalu didahului pemeriksaan kelengkapan. Aplikasi membuka
+   satu putaran sinkron berisi semua perangkat tulis toko; setiap perangkat
+   harus mengaku sudah menerima data terbaru dan tidak punya antrean lokal.
+   Relay menolak snapshot bila masih ada perangkat yang belum sinkron, dan
+   pemeriksaan diulang bila data baru masuk. Status "sudah/belum sinkron"
+   disimpan di tabel `device_sync_status`.
+6. Mode ringkasan mendaftar sebagai perangkat `viewer`, memuat salinan toko,
+   dan tidak mengirim transaksi maupun mengunggah cadangan.
 
 ### Kontrak layanan pusat (`relay/`)
 
@@ -130,6 +136,8 @@ mengharapkan layanan:
 - Mengembalikan `wrapped_key_signature` pada bootstrap.
 - Menerbitkan `license_token` (Ed25519 kunci server) pada claim/pairing.
 - Menyimpan/meneruskan snapshot dan delta tanpa menerapkan data bisnis.
+- Menolak snapshot yang tidak menyertakan putaran sinkron lengkap dan
+  memverifikasi tanda tangan perangkat pada metadata snapshot.
 - Menjaga kuota follow-up gratis berdasarkan kode arsip database.
 
 ## Rencana Play Store shell

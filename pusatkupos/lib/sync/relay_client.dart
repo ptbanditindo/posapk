@@ -206,6 +206,49 @@ class RelayClient {
     return _json(response);
   }
 
+  Future<Map<String, Object?>> createSyncRound(String storeId) async {
+    final response = await http.post(
+      _uri('/relay/sync/rounds'),
+      headers: _headers,
+      body: jsonEncode({'store_id': storeId}),
+    );
+    return _json(response);
+  }
+
+  Future<Map<String, Object?>> syncRound(String roundId) async {
+    final response = await http.get(
+      _uri('/relay/sync/rounds/$roundId'),
+      headers: _headers,
+    );
+    return _json(response);
+  }
+
+  Future<Map<String, Object?>> openSyncRound(String storeId) async {
+    final response = await http.get(
+      _uri('/relay/sync/rounds/open', {'store_id': storeId}),
+      headers: _headers,
+    );
+    return _json(response);
+  }
+
+  Future<Map<String, Object?>> ackSyncRound({
+    required String roundId,
+    required String storeId,
+    required int lastSeq,
+    required int pending,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/sync/rounds/$roundId/ack'),
+      headers: _headers,
+      body: jsonEncode({
+        'store_id': storeId,
+        'last_seq': lastSeq,
+        'pending_count': pending,
+      }),
+    );
+    return _json(response);
+  }
+
   Future<List<Map<String, Object?>>> devices() async {
     final response = await http.get(_uri('/relay/devices'), headers: _headers);
     final decoded = jsonDecode(response.body);

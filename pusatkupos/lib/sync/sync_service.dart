@@ -274,7 +274,119 @@ class SyncService {
     };
   }
 
-  Future<Map<String, Object?>> uploadSnapshot() async {
+  Future<void> _ackOpenRound(
+    RelayClient client, {
+    required String store,
+    required int lastSeq,
+  }) async {
+    final open = await client.openSyncRound(store);
+    final raw = open['round'];
+    if (raw is! Map) return;
+    final round = Map<String, Object?>.from(raw);
+    final id = '${round['id'] ?? ''}';
+    if (id.isEmpty) return;
+    await client.ackSyncRound(
+      roundId: id,
+      storeId: store,
+      lastSeq: lastSeq,
+      pending: await pendingCount(),
+    );
+  }
+
+  Future<void> _cacheRoundStatus(Map<String, Object?> round) async {
+    final devices = round['devices'];
+    if (devices is! List) return;
+    final stamp = nowIso();
+    await AppDatabase.instance.db.transaction((txn) async {
+      await txn.delete('device_sync_status');
+      for (final raw in devices.whereType<Map>()) {
+        final id = '${raw['id'] ?? ''}';
+        if (id.isEmpty) continue;
+        await txn.insert(
+          'device_sync_status',
+          {
+            'device_id': id,
+            'nama': '${raw['nama'] ?? 'Perangkat'}',
+            'kind': '${raw['kind'] ?? 'owner'}',
+            'state': '${raw['state'] ?? 'pending'}',
+            'last_seq': (raw['last_seq'] as num?)?.toInt() ?? 0,
+            'pending': (raw['pending'] as num?)?.toInt() ?? 0,
+            'updated_at': stamp,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  Future<List<Map<String, Object?>>> cachedDeviceSyncStatus() async {
+    return AppDatabase.instance.db.query(
+      'device_sync_status',
+      orderBy: 'kind DESC, nama COLLATE NOCASE',
+    );
+  }
+
+  /// Membuka pemeriksaan kelengkapan. Unggahan hanya boleh dilakukan setelah
+  /// semua perangkat tulis pada toko ini mengaku sudah sinkron.
+  Future<Map<String, Object?>> startUploadCheck() async {
+    await _requirePremium();
+    final url = await relayUrl();
+    final relayId = await relayDeviceId();
+    final token = await relayDeviceToken();
+    if (url == null ||
+        url.isEmpty ||
+        relayId == null ||
+        token == null ||
+        token.isEmpty) {
+      throw StateError('Daftarkan perangkat ini terlebih dahulu.');
+    }
+    final store = await storeId();
+    if (await pendingCount() > 0) {
+      throw StateError('Kirim perubahan lokal sebelum membuat cadangan.');
+    }
+    final keyReady = await refreshStoreKey();
+    if (!keyReady) throw StateError('Kunci toko belum tersedia.');
+    final client = RelayClient(baseUrl: url, deviceToken: token);
+    final boot = await client.bootstrap(store);
+    final latest = (boot['latest_seq'] as num?)?.toInt() ?? 0;
+    final localCursor = await _cursor(store, relayId);
+    if (latest > localCursor) {
+      throw StateError('Sinkronkan perangkat ini sebelum membuat cadangan.');
+    }
+    final round = await client.createSyncRound(store);
+    final id = '${round['id'] ?? ''}';
+    if (id.isEmpty) throw StateError('Pemeriksaan perangkat gagal dibuat.');
+    final roundLatest = (round['latest_seq'] as num?)?.toInt() ?? 0;
+    if (roundLatest != latest) {
+      throw StateError(
+        'Ada data baru masuk saat pemeriksaan. Ulangi pemeriksaan.',
+      );
+    }
+    await client.ackSyncRound(
+      roundId: id,
+      storeId: store,
+      lastSeq: latest,
+      pending: 0,
+    );
+    final status = await client.syncRound(id);
+    await _cacheRoundStatus(status);
+    return status;
+  }
+
+  Future<Map<String, Object?>> refreshUploadCheck(String roundId) async {
+    await _requirePremium();
+    final url = await relayUrl();
+    final token = await relayDeviceToken();
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw StateError('Daftarkan perangkat ini terlebih dahulu.');
+    }
+    final client = RelayClient(baseUrl: url, deviceToken: token);
+    final status = await client.syncRound(roundId);
+    await _cacheRoundStatus(status);
+    return status;
+  }
+
+  Future<Map<String, Object?>> uploadSnapshot({required String roundId}) async {
     await _requirePremium();
     final url = await relayUrl();
     final relayId = await relayDeviceId();
@@ -300,8 +412,14 @@ class SyncService {
       throw StateError('Kirim perubahan lokal sebelum membuat snapshot.');
     }
     final client = RelayClient(baseUrl: url, deviceToken: token);
-    final boot = await client.bootstrap(store);
-    final latest = (boot['latest_seq'] as num?)?.toInt() ?? 0;
+    final status = await client.syncRound(roundId);
+    await _cacheRoundStatus(status);
+    if (status['complete'] != true) {
+      throw StateError(
+        'Cadangan belum lengkap: masih ada perangkat yang belum sinkron.',
+      );
+    }
+    final latest = (status['latest_seq'] as num?)?.toInt() ?? 0;
     final localCursor = await _cursor(store, relayId);
     if (latest > localCursor) {
       throw StateError('Sinkronkan perangkat ini sebelum membuat snapshot.');
@@ -316,6 +434,7 @@ class SyncService {
     return client.createSnapshot({
       'store_id': store,
       'store_seq': latest,
+      'round_id': roundId,
       'ciphertext': snapshot['ciphertext'],
       'nonce': snapshot['nonce'],
       'signature': snapshot['signature'],
@@ -363,6 +482,7 @@ class SyncService {
       encryptionKey: device['encryption_key'] as String,
       ownerPublicKey: ownerPublic,
       storeIds: [await storeId()],
+      kind: viewer ? 'viewer' : 'owner',
     );
     final relayDevice = response['device'] as Map<String, Object?>? ?? const {};
     final relayId = relayDevice['id'] as String? ?? '';
@@ -820,6 +940,7 @@ class SyncService {
           await client.ack(storeId: store, lastSeq: seq);
           await _setCursor(store, deviceId, seq);
         }
+        await _ackOpenRound(client, store: store, lastSeq: seq);
         return {
           'sent': sent,
           'applied': 0,
@@ -920,6 +1041,7 @@ class SyncService {
       await client.ack(storeId: store, lastSeq: next);
       await _setCursor(store, deviceId, next);
     }
+    await _ackOpenRound(client, store: store, lastSeq: next);
     await cleanupSyncHistory();
     return {
       'sent': sent,

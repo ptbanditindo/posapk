@@ -12,6 +12,7 @@ import 'config.dart';
 import 'db.dart';
 import 'google.dart';
 import 'license.dart';
+import 'sync_round.dart';
 
 const _followupQuotaLimit = 20;
 
@@ -51,6 +52,10 @@ class RelayServer {
     _router.post('/relay/feed/ack', _ack);
     _router.get('/relay/devices', _devices);
     _router.get('/relay/bootstrap', _bootstrap);
+    _router.post('/relay/sync/rounds', _createSyncRound);
+    _router.get('/relay/sync/rounds/open', _openSyncRound);
+    _router.get('/relay/sync/rounds/<id>', _syncRound);
+    _router.post('/relay/sync/rounds/<id>/ack', _ackSyncRound);
     _router.post('/relay/snapshots', _createSnapshot);
     _router.post('/relay/invites/claim', _claimInvite);
     _router.get('/relay/permissions/me', _permissionsMe);
@@ -640,7 +645,251 @@ FROM devices WHERE owner_id = @owner ORDER BY created_at
         'checksum': row['checksum'],
         'hlc_wall': (row['hlc_wall'] as num?)?.toInt() ?? 0,
         'hlc_counter': (row['hlc_counter'] as num?)?.toInt() ?? 0,
+        'round_id': '${row['round_id'] ?? ''}',
+        'complete': row['complete'] != false,
+        'device_manifest': jsonList(row['device_manifest']),
       };
+
+  Future<int> _storeLatestSeq(String owner, String store) async {
+    final maxRow = await db.one(
+      'SELECT COALESCE(MAX(relay_seq), 0) AS latest FROM envelopes '
+      'WHERE owner_id = @owner AND store_id = @store',
+      {'owner': owner, 'store': store},
+    );
+    var latest = (maxRow?['latest'] as num?)?.toInt() ?? 0;
+    final snapshot = await db.one(
+      'SELECT store_seq FROM snapshots WHERE owner_id = @owner AND store_id = @store',
+      {'owner': owner, 'store': store},
+    );
+    final snapSeq = (snapshot?['store_seq'] as num?)?.toInt() ?? 0;
+    if (snapSeq > latest) latest = snapSeq;
+    return latest;
+  }
+
+  /// Perangkat yang wajib ikut dalam putaran: semua perangkat owner yang
+  /// menulis, ditambah satu perangkat terbaru per akun karyawan. Perangkat
+  /// ringkasan dan perangkat yang sudah dicabut tidak dihitung.
+  Future<List<Map<String, Object?>>> _roundDevices(
+    String owner,
+    String store,
+    Map<String, Object?> requester,
+  ) async {
+    final rows = await db.query(
+      '''
+SELECT id, nama, kind, employee_account_id, created_at
+FROM devices
+WHERE owner_id = @owner AND revoked_at IS NULL
+  AND store_ids @> jsonb_build_array(CAST(@store AS text))
+ORDER BY created_at DESC
+''',
+      {'owner': owner, 'store': store},
+    );
+    final ownerDevices = <Map<String, Object?>>[];
+    final employeeDevices = <String, Map<String, Object?>>{};
+    for (final row in rows) {
+      final kind = '${row['kind']}';
+      if (kind == 'viewer') continue;
+      final entry = {
+        'id': '${row['id']}',
+        'nama': '${row['nama']}',
+        'kind': kind,
+      };
+      if (kind == 'employee') {
+        final account = '${row['employee_account_id'] ?? ''}';
+        final key = account.isEmpty ? 'device:${row['id']}' : account;
+        employeeDevices.putIfAbsent(key, () => entry);
+      } else {
+        ownerDevices.add(entry);
+      }
+    }
+    final devices = [...ownerDevices, ...employeeDevices.values];
+    if ('${requester['kind']}' != 'viewer' &&
+        !devices.any((item) => item['id'] == requester['id'])) {
+      devices.add({
+        'id': '${requester['id']}',
+        'nama': '${requester['nama']}',
+        'kind': '${requester['kind']}',
+      });
+    }
+    return devices;
+  }
+
+  Future<Map<String, Object?>> _roundPayload(Map<String, Object?> round) async {
+    final owner = '${round['owner_id']}';
+    final store = '${round['store_id']}';
+    final ackRows = await db.query(
+      'SELECT device_id, last_seq, pending_count, acked_at '
+      'FROM sync_round_acks WHERE round_id = @id',
+      {'id': round['id']},
+    );
+    final acks = ackRows
+        .map(
+          (row) => {
+            'device_id': row['device_id'],
+            'last_seq': row['last_seq'],
+            'pending_count': row['pending_count'],
+            'acked_at': _iso(row['acked_at']),
+          },
+        )
+        .toList();
+    final revokedRows = await db.query(
+      'SELECT id FROM devices WHERE owner_id = @owner AND revoked_at IS NOT NULL',
+      {'owner': owner},
+    );
+    final revoked = revokedRows.map((row) => '${row['id']}').toSet();
+    final evaluation = evaluateSyncRound(
+      latestSeq: (round['latest_seq'] as num?)?.toInt() ?? 0,
+      currentLatestSeq: await _storeLatestSeq(owner, store),
+      devices: jsonList(round['devices']),
+      acks: acks,
+      revokedDeviceIds: revoked,
+    );
+    return {
+      'id': '${round['id']}',
+      'store_id': store,
+      'status': '${round['status']}',
+      'created_at': _iso(round['created_at']),
+      'completed_at': _iso(round['completed_at']),
+      ...evaluation,
+    };
+  }
+
+  Future<Response> _createSyncRound(Request request) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final body = await _body(request);
+    final store = '${body['store_id'] ?? ''}';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    if ('${device['kind']}' != 'owner') {
+      return _error(
+        403,
+        'Hanya perangkat owner yang dapat memeriksa kelengkapan cadangan.',
+        code: 'owner_device_required',
+      );
+    }
+    final owner = '${device['owner_id']}';
+    final latest = await _storeLatestSeq(owner, store);
+    final devices = await _roundDevices(owner, store, device);
+    await db.execute(
+      "UPDATE sync_rounds SET status = 'superseded' "
+      "WHERE owner_id = @owner AND store_id = @store AND status = 'open'",
+      {'owner': owner, 'store': store},
+    );
+    final id = _id('rnd');
+    await db.execute(
+      '''
+INSERT INTO sync_rounds (id, owner_id, store_id, requested_by, latest_seq, devices)
+VALUES (@id, @owner, @store, @device, @latest, CAST(@devices AS jsonb))
+''',
+      {
+        'id': id,
+        'owner': owner,
+        'store': store,
+        'device': device['id'],
+        'latest': latest,
+        'devices': jsonEncode(devices),
+      },
+    );
+    final round = await db.one('SELECT * FROM sync_rounds WHERE id = @id', {
+      'id': id,
+    });
+    if (round == null) return _error(500, 'Putaran sinkron gagal dibuat.');
+    return _json(200, await _roundPayload(round));
+  }
+
+  Future<Response> _openSyncRound(Request request) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final store = request.url.queryParameters['store_id'] ?? '';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final round = await db.one(
+      '''
+SELECT * FROM sync_rounds
+WHERE owner_id = @owner AND store_id = @store AND status = 'open'
+ORDER BY created_at DESC LIMIT 1
+''',
+      {'owner': device['owner_id'], 'store': store},
+    );
+    if (round == null) return _json(200, {'round': null});
+    final listed = jsonList(round['devices']).any(
+      (item) => '${item['id']}' == '${device['id']}',
+    );
+    if (!listed) return _json(200, {'round': null});
+    return _json(200, {'round': await _roundPayload(round)});
+  }
+
+  Future<Response> _syncRound(Request request, String id) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final round = await db.one('SELECT * FROM sync_rounds WHERE id = @id', {
+      'id': id,
+    });
+    if (round == null || round['owner_id'] != device['owner_id']) {
+      return _error(404, 'Putaran sinkron tidak ditemukan.');
+    }
+    return _json(200, await _roundPayload(round));
+  }
+
+  Future<Response> _ackSyncRound(Request request, String id) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final body = await _body(request);
+    final store = '${body['store_id'] ?? ''}';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final round = await db.one('SELECT * FROM sync_rounds WHERE id = @id', {
+      'id': id,
+    });
+    if (round == null ||
+        round['owner_id'] != device['owner_id'] ||
+        '${round['store_id']}' != store) {
+      return _error(404, 'Putaran sinkron tidak ditemukan.');
+    }
+    final listed = jsonList(round['devices']).any(
+      (item) => '${item['id']}' == '${device['id']}',
+    );
+    if (!listed) {
+      return _error(403, 'Perangkat ini tidak termasuk dalam putaran sinkron.');
+    }
+    final lastSeq = (body['last_seq'] as num?)?.toInt() ?? 0;
+    final pending = ((body['pending_count'] as num?)?.toInt() ?? 0)
+        .clamp(0, 1000000);
+    await db.execute(
+      '''
+INSERT INTO sync_round_acks (round_id, device_id, last_seq, pending_count)
+VALUES (@round, @device, @seq, @pending)
+ON CONFLICT (round_id, device_id) DO UPDATE SET
+  last_seq = GREATEST(sync_round_acks.last_seq, EXCLUDED.last_seq),
+  pending_count = EXCLUDED.pending_count,
+  acked_at = now()
+''',
+      {
+        'round': id,
+        'device': device['id'],
+        'seq': lastSeq,
+        'pending': pending,
+      },
+    );
+    var payload = await _roundPayload(round);
+    if (payload['complete'] == true && '${round['status']}' != 'complete') {
+      await db.execute(
+        "UPDATE sync_rounds SET status = 'complete', "
+        'completed_at = COALESCE(completed_at, now()) WHERE id = @id',
+        {'id': id},
+      );
+      final refreshed = await db.one(
+        'SELECT * FROM sync_rounds WHERE id = @id',
+        {'id': id},
+      );
+      if (refreshed != null) payload = await _roundPayload(refreshed);
+    }
+    return _json(200, payload);
+  }
 
   Future<Response> _createSnapshot(Request request) async {
     final device = await _deviceAuth(request);
@@ -650,18 +899,85 @@ FROM devices WHERE owner_id = @owner ORDER BY created_at
     if (!stringList(device['store_ids']).contains(store)) {
       return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
     }
+    if ('${device['kind']}' == 'viewer') {
+      return _error(
+        403,
+        'Mode ringkasan tidak dapat mengunggah cadangan toko.',
+        code: 'read_only',
+      );
+    }
+    final roundId = '${body['round_id'] ?? ''}';
+    final round = roundId.isEmpty
+        ? null
+        : await db.one('SELECT * FROM sync_rounds WHERE id = @id', {
+            'id': roundId,
+          });
+    if (round == null ||
+        round['owner_id'] != device['owner_id'] ||
+        '${round['store_id']}' != store) {
+      return _error(
+        409,
+        'Periksa kelengkapan perangkat sebelum mengunggah cadangan.',
+        code: 'sync_round_required',
+      );
+    }
+    final roundStatus = await _roundPayload(round);
+    if (roundStatus['complete'] != true) {
+      return _json(409, {
+        'detail': 'Cadangan belum lengkap: masih ada perangkat yang belum '
+            'sinkron atau ada data baru sejak pemeriksaan.',
+        'code': 'incomplete_store',
+        'round': roundStatus,
+      });
+    }
+    final seq = (body['store_seq'] as num?)?.toInt() ?? 0;
+    if (seq != ((roundStatus['latest_seq'] as num?)?.toInt() ?? 0)) {
+      return _error(
+        409,
+        'Urutan cadangan tidak cocok dengan putaran sinkron.',
+        code: 'stale_round',
+      );
+    }
+    final checksum = '${body['checksum'] ?? ''}';
+    final signature = '${body['signature'] ?? ''}';
+    final wall = (body['hlc_wall'] as num?)?.toInt() ?? 0;
+    final counter = (body['hlc_counter'] as num?)?.toInt() ?? 0;
+    if (checksum.isEmpty ||
+        signature.isEmpty ||
+        '${body['ciphertext'] ?? ''}'.isEmpty ||
+        '${body['nonce'] ?? ''}'.isEmpty) {
+      return _error(400, 'Isi snapshot tidak lengkap.');
+    }
+    final valid = await license.verifyPayload(
+      publicKey: '${device['public_key']}',
+      payload: canonicalJson({
+        'store_id': store,
+        'device_id': '${device['id']}',
+        'checksum': checksum,
+        'store_seq': seq,
+        'hlc_wall': wall,
+        'hlc_counter': counter,
+      }),
+      signature: signature,
+    );
+    if (!valid) {
+      return _error(400, 'Tanda tangan snapshot tidak valid.');
+    }
     final id = _id('snap');
     await db.execute(
       '''
 INSERT INTO snapshots (owner_id, store_id, id, device_id, store_seq, ciphertext,
-  nonce, signature, checksum, hlc_wall, hlc_counter)
+  nonce, signature, checksum, hlc_wall, hlc_counter, round_id, complete,
+  device_manifest)
 VALUES (@owner, @store, @id, @device, @seq, @ciphertext, @nonce, @signature,
-  @checksum, @wall, @counter)
+  @checksum, @wall, @counter, @round, true, CAST(@manifest AS jsonb))
 ON CONFLICT (owner_id, store_id) DO UPDATE SET
   id = EXCLUDED.id, device_id = EXCLUDED.device_id, store_seq = EXCLUDED.store_seq,
   ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce,
   signature = EXCLUDED.signature, checksum = EXCLUDED.checksum,
   hlc_wall = EXCLUDED.hlc_wall, hlc_counter = EXCLUDED.hlc_counter,
+  round_id = EXCLUDED.round_id, complete = EXCLUDED.complete,
+  device_manifest = EXCLUDED.device_manifest,
   created_at = now()
 ''',
       {
@@ -669,21 +985,25 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
         'store': store,
         'id': id,
         'device': device['id'],
-        'seq': (body['store_seq'] as num?)?.toInt() ?? 0,
+        'seq': seq,
         'ciphertext': '${body['ciphertext'] ?? ''}',
         'nonce': '${body['nonce'] ?? ''}',
-        'signature': '${body['signature'] ?? ''}',
-        'checksum': '${body['checksum'] ?? ''}',
-        'wall': (body['hlc_wall'] as num?)?.toInt() ?? 0,
-        'counter': (body['hlc_counter'] as num?)?.toInt() ?? 0,
+        'signature': signature,
+        'checksum': checksum,
+        'wall': wall,
+        'counter': counter,
+        'round': roundId,
+        'manifest': jsonEncode(roundStatus['devices'] ?? const []),
       },
     );
     return _json(200, {
       'id': id,
       'store_id': store,
       'device_id': device['id'],
-      'store_seq': (body['store_seq'] as num?)?.toInt() ?? 0,
-      'checksum': body['checksum'],
+      'store_seq': seq,
+      'checksum': checksum,
+      'round_id': roundId,
+      'complete': true,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
   }

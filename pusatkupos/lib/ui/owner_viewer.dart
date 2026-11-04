@@ -317,23 +317,6 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
     }
   }
 
-  Future<void> _uploadSnapshot() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final result = await SyncService.instance.uploadSnapshot();
-      if (mounted) {
-        _snack('Cadangan diunggah sampai urutan ${result['store_seq']}.');
-      }
-    } catch (error) {
-      if (mounted) setState(() => _error = '$error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   Future<void> _loadLocal() async {
     final db = AppDatabase.instance;
     final today = DateTime.now();
@@ -1087,19 +1070,15 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               icon: const Icon(Icons.download_outlined),
               label: const Text('Muat salinan'),
             ),
-            OutlinedButton.icon(
-              onPressed: _busy ? null : _uploadSnapshot,
-              icon: const Icon(Icons.upload_outlined),
-              label: const Text('Unggah cadangan'),
-            ),
           ],
         ),
         const SizedBox(height: 12),
         _card(
           'Cadangan',
           const Text(
-            'Unggah cadangan menyimpan salinan lengkap semua data. '
-            'Perangkat toko baru dapat memulihkannya lewat Muat salinan.',
+            'Mode ringkasan hanya membaca pembukuan dan memuat salinan. '
+            'Unggah cadangan dilakukan dari perangkat toko agar semua data '
+            'perangkat ikut lengkap.',
           ),
         ),
         if (_error != null) ...[

@@ -112,18 +112,51 @@ Future<void> main(List<String> args) async {
   );
   _check(boot['wrapped_key'] == storeKey, 'key-wrap tersimpan');
 
+  final round = await _post(
+    '/relay/sync/rounds',
+    {'store_id': 'utama'},
+    headers: {'X-Device-Token': token},
+  );
+  _check(round['complete'] == false, 'putaran menunggu ack perangkat');
+  final seq = feed['next_seq'] as int;
+  final checksum = base64Url.encode(_randomBytes(32));
+  final wall = DateTime.now().millisecondsSinceEpoch;
+  final snapshotBody = {
+    'store_id': 'utama',
+    'store_seq': seq,
+    'round_id': round['id'],
+    'ciphertext': base64Url.encode(_randomBytes(64)),
+    'nonce': base64Url.encode(_randomBytes(12)),
+    'signature': await _sign(
+      device.seed,
+      canonicalJson({
+        'store_id': 'utama',
+        'device_id': relayId,
+        'checksum': checksum,
+        'store_seq': seq,
+        'hlc_wall': wall,
+        'hlc_counter': 0,
+      }),
+    ),
+    'checksum': checksum,
+    'hlc_wall': wall,
+    'hlc_counter': 0,
+  };
+  final rejected = await _postStatus(
+    '/relay/snapshots',
+    snapshotBody,
+    headers: {'X-Device-Token': token},
+  );
+  _check(rejected == 409, 'snapshot ditolak sebelum semua perangkat ack');
+  final acked = await _post(
+    '/relay/sync/rounds/${round['id']}/ack',
+    {'store_id': 'utama', 'last_seq': seq, 'pending_count': 0},
+    headers: {'X-Device-Token': token},
+  );
+  _check(acked['complete'] == true, 'putaran lengkap setelah ack');
   await _post(
     '/relay/snapshots',
-    {
-      'store_id': 'utama',
-      'store_seq': feed['next_seq'],
-      'ciphertext': base64Url.encode(_randomBytes(64)),
-      'nonce': base64Url.encode(_randomBytes(12)),
-      'signature': base64Url.encode(_randomBytes(64)),
-      'checksum': base64Url.encode(_randomBytes(32)),
-      'hlc_wall': DateTime.now().millisecondsSinceEpoch,
-      'hlc_counter': 0,
-    },
+    snapshotBody,
     headers: {'X-Device-Token': token},
   );
 
@@ -225,6 +258,52 @@ Future<void> main(List<String> args) async {
     headers: {'X-Device-Token': claim['token'] as String},
   );
   _check((me['account'] as Map)['username'] == 'kasiruji', 'permissions/me');
+
+  final round2 = await _post(
+    '/relay/sync/rounds',
+    {'store_id': 'utama'},
+    headers: {'X-Device-Token': token},
+  );
+  _check((round2['total'] as num) >= 3, 'putaran memuat owner dan karyawan');
+  final roundPath = '/relay/sync/rounds/${round2['id']}/ack';
+  await _post(
+    roundPath,
+    {'store_id': 'utama', 'last_seq': seq, 'pending_count': 0},
+    headers: {'X-Device-Token': token},
+  );
+  await _post(
+    roundPath,
+    {'store_id': 'utama', 'last_seq': seq, 'pending_count': 0},
+    headers: {'X-Device-Token': token2},
+  );
+  final offline = await _get(
+    '/relay/sync/rounds/${round2['id']}',
+    headers: {'X-Device-Token': token},
+  );
+  _check(offline['complete'] == false, 'karyawan offline menahan cadangan');
+  final blocked = await _postStatus(
+    '/relay/snapshots',
+    {...snapshotBody, 'round_id': round2['id']},
+    headers: {'X-Device-Token': token},
+  );
+  _check(blocked == 409, 'snapshot ditolak saat karyawan belum sync');
+  final partial = await _post(
+    roundPath,
+    {'store_id': 'utama', 'last_seq': seq, 'pending_count': 1},
+    headers: {'X-Device-Token': claim['token'] as String},
+  );
+  _check(partial['complete'] == false, 'antrean lokal karyawan menahan cadangan');
+  final done = await _post(
+    roundPath,
+    {'store_id': 'utama', 'last_seq': seq, 'pending_count': 0},
+    headers: {'X-Device-Token': claim['token'] as String},
+  );
+  _check(done['complete'] == true, 'cadangan lengkap setelah semua perangkat ack');
+  await _post(
+    '/relay/snapshots',
+    {...snapshotBody, 'round_id': round2['id']},
+    headers: {'X-Device-Token': token},
+  );
 
   final other = await _post(
     '/relay/admin/owners',
@@ -331,6 +410,19 @@ Future<Map<String, Object?>> _post(
     body: jsonEncode(body),
   );
   return _decode(response);
+}
+
+Future<int> _postStatus(
+  String path,
+  Map<String, Object?> body, {
+  Map<String, String> headers = const {},
+}) async {
+  final response = await http.post(
+    Uri.parse('$base$path'),
+    headers: {'content-type': 'application/json', ...headers},
+    body: jsonEncode(body),
+  );
+  return response.statusCode;
 }
 
 Map<String, Object?> _decode(http.Response response) {

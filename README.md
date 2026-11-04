@@ -45,7 +45,8 @@ pusatkupos/   aplikasi Flutter (4 jalur login, offline-first)
 relay/        server sinkronisasi + lisensi (deployment internal)
 ```
 
-Relay adalah layanan internal. Alamatnya ditanam saat build
+Relay adalah layanan premium yang disediakan pemilik aplikasi, bukan sesuatu
+yang dipasang atau diatur toko. Alamatnya ditanam saat build
 (`PUSATKU_SERVICE_URL`) dan **tidak pernah** diminta atau diatur pengguna.
 
 ## Kebutuhan build
@@ -87,5 +88,10 @@ Tes multi-device memerlukan relay yang berjalan dan file `.env` lokal; lihat
 - Mode ringkasan memakai kunci dan database terpisah sehingga tidak dapat
   membuat atau mengubah pembukuan.
 - Salinan dan sinkronisasi diverifikasi dengan kunci owner yang dipin.
+- Unggah cadangan memakai putaran sinkron: relay menolak snapshot sampai
+  semua perangkat tulis toko mengaku sudah sinkron dan tidak menyisakan
+  perubahan lokal. Status per perangkat disimpan di database lokal.
+- Perangkat yang benar-benar hilang harus dicabut lewat menu Akses; setelah
+  dicabut perangkat itu tidak lagi menahan unggahan.
 - Rahasia perangkat disimpan di secure storage; snapshot mengecualikan
   pengaturan `secure.*`.

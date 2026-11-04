@@ -311,7 +311,10 @@ void main() {
           await SyncService.instance.enqueueNote(recordId);
           final sync = await SyncService.instance.syncNow();
           expect(sync['sent'], 1);
-          final snapshot = await SyncService.instance.uploadSnapshot();
+          final check = await SyncService.instance.startUploadCheck();
+          final snapshot = await SyncService.instance.uploadSnapshot(
+            roundId: '${check['id']}',
+          );
           expect(snapshot['store_seq'], 3);
           await _writeJson(config['a4_result'] as String, {
             'snapshot_id': snapshot['id'],
