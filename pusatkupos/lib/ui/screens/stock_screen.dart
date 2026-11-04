@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../core/money.dart';
+import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/models.dart';
+import '../../data/supplier_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
@@ -40,9 +42,27 @@ class _StockScreenState extends State<StockScreen> {
   }
 
   Future<void> _openForm([StockItem? item]) async {
+    if (!AppState.instance.can('ubah_stok')) {
+      showSnack(context, 'Izin ubah stok tidak tersedia.', error: true);
+      return;
+    }
+    final supplierEnabled =
+        (await AppDatabase.instance.getSetting('fitur.supplier') ?? '1') ==
+            '1';
+    final suppliers = supplierEnabled
+        ? await SupplierService.instance.listSuppliers(activeOnly: true)
+        : <Map<String, Object?>>[];
+    final selected = item == null
+        ? <int>{}
+        : await SupplierService.instance.supplierIdsForItem(item.id);
+    if (!mounted) return;
     final input = await showDialog<StockInput>(
       context: context,
-      builder: (_) => _StockDialog(item: item),
+      builder: (_) => _StockDialog(
+        item: item,
+        suppliers: suppliers,
+        selectedSupplierIds: selected,
+      ),
     );
     if (input == null) return;
     try {
@@ -52,10 +72,23 @@ class _StockScreenState extends State<StockScreen> {
         nama: input.nama,
         hargaModalCents: input.hargaModalCents,
         hargaJualCents: input.hargaJualCents,
-        jumlah: input.jumlah,
+        jumlah: input.jumlahMilli ~/ 1000,
+        jumlahMilli: input.jumlahMilli,
         stokMinimum: input.stokMinimum,
+        satuan: input.satuan,
+        desimal: input.desimal,
+        actor: AppState.instance.operator,
       );
+      await SupplierService.instance.syncItemSuppliers(id, input.supplierIds);
       await SyncService.instance.enqueueStock(id);
+      final delta = input.jumlahMilli - (item?.jumlahMilli ?? 0);
+      if (item == null || delta != 0) {
+        await SyncService.instance.enqueueStockDelta(
+          id,
+          delta,
+          qtyMilli: delta,
+        );
+      }
       AppState.instance.touch();
       _load();
     } catch (error) {
@@ -64,6 +97,10 @@ class _StockScreenState extends State<StockScreen> {
   }
 
   Future<void> _stockIn(StockItem item) async {
+    if (!AppState.instance.can('stok_masuk')) {
+      showSnack(context, 'Izin stok masuk tidak tersedia.', error: true);
+      return;
+    }
     final input = await showDialog<StockInInput>(
       context: context,
       builder: (_) => _StockInDialog(item: item),
@@ -72,14 +109,80 @@ class _StockScreenState extends State<StockScreen> {
     try {
       await AppDatabase.instance.stockIn(
         item: item,
-        qty: input.qty,
+        qty: input.qtyMilli ~/ 1000,
+        qtyMilli: input.qtyMilli,
         alasan: input.alasan,
+        actor: AppState.instance.operator,
       );
-      await SyncService.instance.enqueueStock(item.id);
+      await SyncService.instance.enqueueStockDelta(
+        item.id,
+        input.qtyMilli,
+        qtyMilli: input.qtyMilli,
+      );
       AppState.instance.touch();
       _load();
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal menambah stok: $error', error: true);
+    }
+  }
+
+  Future<void> _stockOut(StockItem item) async {
+    if (!AppState.instance.can('stok_keluar')) {
+      showSnack(context, 'Izin stok keluar tidak tersedia.', error: true);
+      return;
+    }
+    final input = await showDialog<_QtyReason>(
+      context: context,
+      builder: (_) => _StockOutDialog(item: item),
+    );
+    if (input == null) return;
+    try {
+      await AppDatabase.instance.stockOut(
+        item: item,
+        qty: input.qtyMilli ~/ 1000,
+        qtyMilli: input.qtyMilli,
+        alasan: input.alasan,
+        actor: AppState.instance.operator,
+      );
+      await SyncService.instance.enqueueStockDelta(
+        item.id,
+        -input.qtyMilli,
+        qtyMilli: -input.qtyMilli,
+      );
+      AppState.instance.touch();
+      _load();
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal stok keluar: $error', error: true);
+    }
+  }
+
+  Future<void> _opname(StockItem item) async {
+    if (!AppState.instance.can('opname')) {
+      showSnack(context, 'Izin opname tidak tersedia.', error: true);
+      return;
+    }
+    final input = await showDialog<_QtyReason>(
+      context: context,
+      builder: (_) => _OpnameDialog(item: item),
+    );
+    if (input == null) return;
+    final delta = input.qtyMilli - item.jumlahMilli;
+    try {
+      await AppDatabase.instance.opname(
+        item: item,
+        jumlahFisikMilli: input.qtyMilli,
+        alasan: input.alasan,
+        actor: AppState.instance.operator,
+      );
+      await SyncService.instance.enqueueStockDelta(
+        item.id,
+        delta,
+        qtyMilli: delta,
+      );
+      AppState.instance.touch();
+      _load();
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal opname: $error', error: true);
     }
   }
 
@@ -103,7 +206,9 @@ class _StockScreenState extends State<StockScreen> {
               ),
               const SizedBox(width: 10),
               FilledButton.icon(
-                onPressed: () => _openForm(),
+                onPressed: AppState.instance.can('ubah_stok')
+                    ? () => _openForm()
+                    : null,
                 icon: const Icon(Icons.add),
                 label: const Text('Barang'),
               ),
@@ -141,35 +246,75 @@ class _StockScreenState extends State<StockScreen> {
                       child: ListTile(
                         onTap: () => _openForm(item),
                         leading: CircleAvatar(
-                          backgroundColor: item.lowStock
+                          backgroundColor: item.negatif
                               ? Theme.of(context).colorScheme.errorContainer
-                              : null,
+                              : item.lowStock
+                                  ? Theme.of(context).colorScheme.errorContainer
+                                  : null,
                           child: Icon(
-                            item.lowStock
-                                ? Icons.warning_amber_outlined
-                                : Icons.inventory_2_outlined,
+                            item.negatif
+                                ? Icons.error_outline
+                                : item.lowStock
+                                    ? Icons.warning_amber_outlined
+                                    : Icons.inventory_2_outlined,
                           ),
                         ),
                         title: Text(item.nama),
                         subtitle: Text(
                           '${item.kode} · ${formatRupiah(item.hargaJualCents)}',
                         ),
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              '${item.jumlah}',
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w700),
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  item.jumlahLabel,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  item.negatif
+                                      ? 'negatif'
+                                      : item.lowStock
+                                          ? 'menipis'
+                                          : 'stok',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
                             ),
-                            Text(
-                              item.lowStock ? 'menipis' : 'stok',
-                              style: Theme.of(context).textTheme.bodySmall,
+                            PopupMenuButton<String>(
+                              onSelected: (value) {
+                                if (value == 'in') _stockIn(item);
+                                if (value == 'out') _stockOut(item);
+                                if (value == 'opname') _opname(item);
+                              },
+                              itemBuilder: (context) => [
+                                if (AppState.instance.can('stok_masuk'))
+                                  const PopupMenuItem(
+                                    value: 'in',
+                                    child: Text('Stok masuk'),
+                                  ),
+                                if (AppState.instance.can('stok_keluar'))
+                                  const PopupMenuItem(
+                                    value: 'out',
+                                    child: Text('Stok keluar'),
+                                  ),
+                                if (AppState.instance.can('opname'))
+                                  const PopupMenuItem(
+                                    value: 'opname',
+                                    child: Text('Opname'),
+                                  ),
+                              ],
                             ),
                           ],
                         ),
-                        onLongPress: () => _stockIn(item),
+                        onLongPress: AppState.instance.can('stok_masuk')
+                            ? () => _stockIn(item)
+                            : null,
                       ),
                     );
                   },
@@ -186,7 +331,8 @@ class _StockScreenState extends State<StockScreen> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'Ketuk barang untuk ubah; tekan lama untuk stok masuk.',
+                  'Ketuk barang untuk ubah; menu di kanan untuk stok masuk, '
+                  'keluar, atau opname.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -204,22 +350,34 @@ class StockInput {
     required this.nama,
     required this.hargaModalCents,
     required this.hargaJualCents,
-    required this.jumlah,
+    required this.jumlahMilli,
     required this.stokMinimum,
+    required this.satuan,
+    required this.desimal,
+    this.supplierIds = const {},
   });
 
   final String kode;
   final String nama;
   final int hargaModalCents;
   final int hargaJualCents;
-  final int jumlah;
+  final int jumlahMilli;
   final int stokMinimum;
+  final String satuan;
+  final int desimal;
+  final Set<int> supplierIds;
 }
 
 class _StockDialog extends StatefulWidget {
-  const _StockDialog({this.item});
+  const _StockDialog({
+    this.item,
+    this.suppliers = const [],
+    this.selectedSupplierIds = const {},
+  });
 
   final StockItem? item;
+  final List<Map<String, Object?>> suppliers;
+  final Set<int> selectedSupplierIds;
 
   @override
   State<_StockDialog> createState() => _StockDialogState();
@@ -232,6 +390,9 @@ class _StockDialogState extends State<_StockDialog> {
   late final TextEditingController _jual;
   late final TextEditingController _jumlah;
   late final TextEditingController _minimum;
+  late final TextEditingController _satuan;
+  int _desimal = 0;
+  late final Set<int> _supplierIds = {...widget.selectedSupplierIds};
   String? _error;
 
   @override
@@ -246,8 +407,14 @@ class _StockDialogState extends State<_StockDialog> {
     _jual = TextEditingController(
       text: item == null ? '' : formatRupiahPlain(item.hargaJualCents),
     );
-    _jumlah = TextEditingController(text: item?.jumlah.toString() ?? '0');
+    _desimal = item?.desimal ?? 0;
+    _jumlah = TextEditingController(
+      text: item == null
+          ? '0'
+          : formatQuantity(item.jumlahMilli, item.desimal),
+    );
     _minimum = TextEditingController(text: item?.stokMinimum.toString() ?? '0');
+    _satuan = TextEditingController(text: item?.satuan ?? 'pcs');
   }
 
   @override
@@ -258,6 +425,7 @@ class _StockDialogState extends State<_StockDialog> {
     _jual.dispose();
     _jumlah.dispose();
     _minimum.dispose();
+    _satuan.dispose();
     super.dispose();
   }
 
@@ -266,15 +434,29 @@ class _StockDialogState extends State<_StockDialog> {
       setState(() => _error = 'Kode dan nama wajib diisi.');
       return;
     }
+    final qtyMilli = parseQuantityToMilli(_jumlah.text, desimal: _desimal);
+    if (qtyMilli == null || qtyMilli < 0) {
+      setState(() => _error = 'Jumlah stok tidak valid.');
+      return;
+    }
+    final modal = tryParseRupiahToCents(_modal.text);
+    final jual = tryParseRupiahToCents(_jual.text);
+    if (modal == null || jual == null) {
+      setState(() => _error = 'Format harga tidak valid.');
+      return;
+    }
     Navigator.pop(
       context,
       StockInput(
         kode: _kode.text.trim(),
         nama: _nama.text.trim(),
-        hargaModalCents: parseRupiahToCents(_modal.text),
-        hargaJualCents: parseRupiahToCents(_jual.text),
-        jumlah: int.tryParse(_jumlah.text.trim()) ?? 0,
+        hargaModalCents: modal,
+        hargaJualCents: jual,
+        jumlahMilli: qtyMilli,
         stokMinimum: int.tryParse(_minimum.text.trim()) ?? 0,
+        satuan: _satuan.text.trim().isEmpty ? 'pcs' : _satuan.text.trim(),
+        desimal: _desimal,
+        supplierIds: _supplierIds,
       ),
     );
   }
@@ -338,6 +520,71 @@ class _StockDialogState extends State<_StockDialog> {
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _satuan,
+                    decoration: const InputDecoration(
+                      labelText: 'Satuan',
+                      hintText: 'pcs / liter / meter',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    initialValue: _desimal,
+                    decoration: const InputDecoration(
+                      labelText: 'Desimal kuantitas',
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 0, child: Text('0')),
+                      DropdownMenuItem(value: 1, child: Text('1')),
+                      DropdownMenuItem(value: 2, child: Text('2')),
+                      DropdownMenuItem(value: 3, child: Text('3')),
+                    ],
+                    onChanged: (value) =>
+                        setState(() => _desimal = value ?? 0),
+                  ),
+                ),
+              ],
+            ),
+            if (widget.suppliers.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Supplier',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: widget.suppliers.map((supplier) {
+                    final id = supplier['id'] as int;
+                    return FilterChip(
+                      label: Text('${supplier['nama']}'),
+                      selected: _supplierIds.contains(id),
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _supplierIds.add(id);
+                          } else {
+                            _supplierIds.remove(id);
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 10),
               Text(
@@ -360,9 +607,9 @@ class _StockDialogState extends State<_StockDialog> {
 }
 
 class StockInInput {
-  const StockInInput(this.qty, this.alasan);
+  const StockInInput(this.qtyMilli, this.alasan);
 
-  final int qty;
+  final int qtyMilli;
   final String? alasan;
 }
 
@@ -419,11 +666,14 @@ class _StockInDialogState extends State<_StockInDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(
+          FilledButton(
           onPressed: () {
-            final qty = int.tryParse(_qty.text.trim()) ?? 0;
-            if (qty < 1) {
-              setState(() => _error = 'Jumlah minimal 1.');
+            final qty = parseQuantityToMilli(
+              _qty.text,
+              desimal: widget.item.desimal,
+            );
+            if (qty == null || qty <= 0) {
+              setState(() => _error = 'Jumlah masuk tidak valid.');
               return;
             }
             Navigator.pop(
@@ -435,6 +685,180 @@ class _StockInDialogState extends State<_StockInDialog> {
             );
           },
           child: const Text('Tambah'),
+        ),
+      ],
+    );
+  }
+}
+
+class _QtyReason {
+  const _QtyReason(this.qtyMilli, this.alasan);
+
+  final int qtyMilli;
+  final String alasan;
+}
+
+class _StockOutDialog extends StatefulWidget {
+  const _StockOutDialog({required this.item});
+
+  final StockItem item;
+
+  @override
+  State<_StockOutDialog> createState() => _StockOutDialogState();
+}
+
+class _StockOutDialogState extends State<_StockOutDialog> {
+  final _qty = TextEditingController();
+  final _alasan = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _qty.dispose();
+    _alasan.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Stok keluar · ${widget.item.nama}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _qty,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Jumlah keluar',
+              helperText: 'Stok ${widget.item.jumlahLabel}',
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _alasan,
+            decoration: const InputDecoration(
+              labelText: 'Alasan (wajib)',
+              hintText: 'Rusak / dipakai sendiri',
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final qty = parseQuantityToMilli(
+              _qty.text,
+              desimal: widget.item.desimal,
+            );
+            if (qty == null || qty <= 0) {
+              setState(() => _error = 'Jumlah keluar tidak valid.');
+              return;
+            }
+            if (_alasan.text.trim().isEmpty) {
+              setState(() => _error = 'Alasan wajib diisi.');
+              return;
+            }
+            Navigator.pop(context, _QtyReason(qty, _alasan.text.trim()));
+          },
+          child: const Text('Keluarkan'),
+        ),
+      ],
+    );
+  }
+}
+
+class _OpnameDialog extends StatefulWidget {
+  const _OpnameDialog({required this.item});
+
+  final StockItem item;
+
+  @override
+  State<_OpnameDialog> createState() => _OpnameDialogState();
+}
+
+class _OpnameDialogState extends State<_OpnameDialog> {
+  late final TextEditingController _fisik;
+  final _alasan = TextEditingController();
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fisik = TextEditingController(
+      text: formatQuantity(widget.item.jumlahMilli, widget.item.desimal),
+    );
+  }
+
+  @override
+  void dispose() {
+    _fisik.dispose();
+    _alasan.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Opname · ${widget.item.nama}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Stok sistem: ${widget.item.jumlahLabel}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _fisik,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Jumlah fisik'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _alasan,
+            decoration: const InputDecoration(labelText: 'Catatan (opsional)'),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final qty = parseQuantityToMilli(
+              _fisik.text,
+              desimal: widget.item.desimal,
+            );
+            if (qty == null || qty < 0) {
+              setState(() => _error = 'Jumlah fisik tidak valid.');
+              return;
+            }
+            Navigator.pop(context, _QtyReason(qty, _alasan.text.trim()));
+          },
+          child: const Text('Simpan'),
         ),
       ],
     );

@@ -10,7 +10,10 @@ import 'package:pusatkupos/core/money.dart';
 import 'package:pusatkupos/data/account_service.dart';
 import 'package:pusatkupos/data/app_database.dart';
 import 'package:pusatkupos/data/device_service.dart';
+import 'package:pusatkupos/data/google_auth_service.dart';
+import 'package:pusatkupos/data/license_service.dart';
 import 'package:pusatkupos/data/models.dart';
+import 'package:pusatkupos/data/secure_store.dart';
 import 'package:pusatkupos/sync/sync_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -78,6 +81,7 @@ class _OwnerHomeState extends State<OwnerHome>
 
   OwnerSummary? _summary;
   String? _error;
+  String? _licenseEmail;
   bool _busy = false;
   bool _connected = false;
   bool _keyReady = false;
@@ -114,17 +118,28 @@ class _OwnerHomeState extends State<OwnerHome>
   }
 
   Future<void> _bootstrap() async {
-    final prefs = await SharedPreferences.getInstance();
-    _relayUrl.text = prefs.getString(_relayKey) ?? 'http://127.0.0.1:8120';
-    _enrollToken.text = prefs.getString(_tokenKey) ?? '';
-    _storeId.text = prefs.getString(_storeKey) ?? 'utama';
-    final cached = prefs.getString(_summaryKey);
-    if (cached != null) {
-      await _parseSummary(cached, persist: false);
-    } else {
-      await _loadLocal();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _relayUrl.text = prefs.getString(_relayKey) ?? '';
+      final legacyToken = prefs.getString(_tokenKey) ?? '';
+      var secureToken = await SecureStore.instance.read(_tokenKey) ?? '';
+      if (secureToken.isEmpty && legacyToken.isNotEmpty) {
+        await SecureStore.instance.write(_tokenKey, legacyToken);
+        secureToken = legacyToken;
+        await prefs.remove(_tokenKey);
+      }
+      _enrollToken.text = secureToken;
+      _storeId.text = prefs.getString(_storeKey) ?? 'utama';
+      final cached = prefs.getString(_summaryKey);
+      if (cached != null) {
+        await _parseSummary(cached, persist: false);
+      } else {
+        await _loadLocal();
+      }
+      await _refreshConnectionState();
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Gagal memuat pengaturan: $error');
     }
-    await _refreshConnectionState();
   }
 
   Future<void> _refreshConnectionState() async {
@@ -215,29 +230,55 @@ class _OwnerHomeState extends State<OwnerHome>
       'created_at': nowIso(),
     });
     await db.delete('license');
-    await db.insert('license', {
-      'id': 1,
-      'plan': payload['plan'] ?? 'premium',
-      'period_end': payload['period_end'],
-      'device_limit': payload['device_limit'] ?? 1,
-      'provider': 'summary',
-      'token': null,
-      'activated_at': nowIso(),
+    final token = payload['license_token'] as String? ?? '';
+    if (token.isNotEmpty) {
+      await LicenseService.instance.installToken(
+        token,
+        expectedOwnerId: '${payload['owner_id']}',
+      );
+    }
+  }
+
+  Future<void> _googleLogin() async {
+    setState(() {
+      _busy = true;
+      _error = null;
     });
+    try {
+      final result = await GoogleAuthService.instance.activate(
+        relayUrl: _relayUrl.text,
+      );
+      await _loadLocal();
+      if (!mounted) return;
+      _snack(
+        'Lisensi Google aktif untuk ${result['email']} sampai '
+        '${result['period_end'] ?? '-'}.',
+      );
+    } on GoogleAuthException catch (error) {
+      if (mounted) _snack(error.message, error: true);
+    } catch (error) {
+      if (mounted) _snack('Gagal masuk Google: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _saveRelaySettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_relayKey, _relayUrl.text.trim());
-    await prefs.setString(_tokenKey, _enrollToken.text.trim());
-    await prefs.setString(_storeKey, _storeId.text.trim());
-    await SyncService.instance.configure(
-      relayUrl: _relayUrl.text,
-      enrollToken: _enrollToken.text,
-      storeId: _storeId.text,
-    );
-    await _refreshAccess();
-    if (mounted) _snack('Pengaturan relay disimpan.');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_relayKey, _relayUrl.text.trim());
+      await SecureStore.instance.write(_tokenKey, _enrollToken.text.trim());
+      await prefs.setString(_storeKey, _storeId.text.trim());
+      await SyncService.instance.configure(
+        relayUrl: _relayUrl.text,
+        enrollToken: _enrollToken.text,
+        storeId: _storeId.text,
+      );
+      await _refreshAccess();
+      if (mounted) _snack('Pengaturan relay disimpan.');
+    } catch (error) {
+      if (mounted) _snack('$error', error: true);
+    }
   }
 
   Future<void> _connectViewer() async {
@@ -351,6 +392,7 @@ class _OwnerHomeState extends State<OwnerHome>
     final all = await db.reportSummary(DateTime(2000), DateTime(2100));
     final day = await db.reportSummary(today, today);
     final status = await SyncService.instance.status();
+    final email = await db.getSetting('license.email');
     if (!mounted) return;
     setState(() {
       _records = records;
@@ -360,6 +402,7 @@ class _OwnerHomeState extends State<OwnerHome>
       _reportAll = all;
       _reportToday = day;
       _syncStatus = status;
+      _licenseEmail = email;
     });
   }
 
@@ -1198,12 +1241,49 @@ class _OwnerHomeState extends State<OwnerHome>
         ),
         const SizedBox(height: 12),
         _card(
+          'Akun Google',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if ((_licenseEmail ?? '').isNotEmpty) ...[
+                _row('Email terhubung', _licenseEmail!),
+                const SizedBox(height: 8),
+              ],
+              const Text(
+                'Masuk dengan Google untuk memulihkan lisensi premium di '
+                'perangkat ini. Ringkasan owner tetap diimpor dari perangkat '
+                'toko atau berkas yang dibagikan.',
+              ),
+              const SizedBox(height: 10),
+              if (GoogleAuthService.instance.configured &&
+                  GoogleAuthService.instance.supported)
+                FilledButton.icon(
+                  onPressed: _busy ? null : _googleLogin,
+                  icon: const Icon(Icons.login),
+                  label: const Text('Masuk dengan Google'),
+                )
+              else
+                Text(
+                  !GoogleAuthService.instance.configured
+                      ? 'Login Google belum diaktifkan pada build ini.'
+                      : 'Login Google hanya tersedia di Android, iOS, macOS, '
+                          'dan web.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _card(
           'Relay',
           Column(
             children: [
               TextField(
                 controller: _relayUrl,
-                decoration: const InputDecoration(labelText: 'Alamat relay'),
+                decoration: const InputDecoration(
+                  labelText: 'Alamat relay',
+                  hintText: 'https://relay.contoh.com',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(

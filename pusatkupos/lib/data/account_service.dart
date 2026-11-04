@@ -3,12 +3,13 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
-import 'package:sqflite/sqflite.dart';
 
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import 'app_database.dart';
+import 'license_service.dart';
+import 'login_guard.dart';
 
 const roles = ['KASIR', 'MEKANIK', 'KEDUANYA'];
 const roleLabels = {
@@ -17,21 +18,40 @@ const roleLabels = {
   'KEDUANYA': 'Kasir & Mekanik',
 };
 const permissionLabels = {
-  'opname': 'Opname stok',
+  'void': 'Void nota',
+  'ubah_harga_jasa': 'Ubah harga jasa',
+  'ubah_stok': 'Ubah data stok',
   'stok_masuk': 'Stok masuk',
   'stok_keluar': 'Stok keluar',
+  'opname': 'Opname stok',
+  'diskon': 'Diskon',
   'lihat_laporan': 'Lihat laporan',
   'cetak_laporan': 'Cetak laporan',
-  'baca_supplier': 'Baca supplier',
-  'baca_followup': 'Baca follow up',
+  'followup': 'Follow up pelanggan',
+  'backup': 'Backup & restore',
 };
 const rolePermissions = {
-  'KASIR': {'lihat_laporan'},
+  'KASIR': {
+    'void',
+    'diskon',
+    'stok_masuk',
+    'stok_keluar',
+    'opname',
+    'lihat_laporan',
+    'followup',
+  },
   'MEKANIK': <String>{},
-  'KEDUANYA': {'lihat_laporan'},
+  'KEDUANYA': {
+    'void',
+    'diskon',
+    'stok_masuk',
+    'stok_keluar',
+    'opname',
+    'lihat_laporan',
+    'followup',
+  },
 };
-const _iterations = 120000;
-const _maxFailures = 5;
+const _iterations = 600000;
 
 class AccountService {
   AccountService._();
@@ -63,6 +83,11 @@ class AccountService {
     List<String> storeIds = const ['utama'],
     String actor = 'owner',
   }) async {
+    if (!await LicenseService.instance.isPremium()) {
+      throw StateError(
+        'Lisensi server yang valid diperlukan untuk membuat akun karyawan.',
+      );
+    }
     final clean = username.trim().toLowerCase();
     if (!RegExp(r'^[a-z0-9][a-z0-9._-]{2,31}$').hasMatch(clean)) {
       throw ArgumentError(
@@ -316,7 +341,8 @@ class AccountService {
     required String pin,
   }) async {
     final clean = username.trim().toLowerCase();
-    await _checkGuard('hub:$clean');
+    final guardScope = 'hub:$clean';
+    await LoginGuard.check(guardScope);
     final account = await _accountByUsername(clean);
     if (account == null ||
         account['aktif'] != 1 ||
@@ -326,13 +352,13 @@ class AccountService {
           account['password_salt'] as String,
           account['password_iterations'] as int? ?? _iterations,
         )) {
-      await _failGuard('hub:$clean');
+      await LoginGuard.fail(guardScope);
       return null;
     }
     final pinHash = account['pin_hash'] as String?;
     if (pinHash == null || pinHash.isEmpty) {
-      if (!RegExp(r'^\d{6}$').hasMatch(pin)) {
-        await _failGuard('hub:$clean');
+      if (!RegExp(r'^\d{6,}$').hasMatch(pin)) {
+        await LoginGuard.fail(guardScope);
         return null;
       }
       final salt = _newSalt();
@@ -353,10 +379,15 @@ class AccountService {
       account['pin_salt'] as String? ?? '',
       account['pin_iterations'] as int? ?? _iterations,
     )) {
-      await _failGuard('hub:$clean');
+      await LoginGuard.fail(guardScope);
       return null;
     }
-    await _clearGuard('hub:$clean');
+    await LoginGuard.clear(guardScope);
+    await _upgradePassword(
+      account['id'] as int,
+      password,
+      account['password_iterations'] as int? ?? 0,
+    );
     await _touchLogin(account['id'] as int);
     return _operator(account);
   }
@@ -367,12 +398,15 @@ class AccountService {
     required String password,
     required String token,
   }) async {
+    final guardScope = 'device:${ownerId.trim()}';
+    await LoginGuard.check(guardScope);
     final owner = await AppDatabase.instance.db.query(
       'owner_identity',
       columns: ['owner_id'],
       limit: 1,
     );
     if (owner.isEmpty || owner.first['owner_id'] != ownerId.trim()) {
+      await LoginGuard.fail(guardScope);
       return null;
     }
     final device = await AppDatabase.instance.db.query(
@@ -381,7 +415,10 @@ class AccountService {
       whereArgs: [_hashToken(token)],
       limit: 1,
     );
-    if (device.isEmpty) return null;
+    if (device.isEmpty) {
+      await LoginGuard.fail(guardScope);
+      return null;
+    }
     final clean = username.trim().toLowerCase();
     final account = await _accountByUsername(clean);
     if (account == null ||
@@ -393,8 +430,15 @@ class AccountService {
           account['password_salt'] as String,
           account['password_iterations'] as int? ?? _iterations,
         )) {
+      await LoginGuard.fail(guardScope);
       return null;
     }
+    await LoginGuard.clear(guardScope);
+    await _upgradePassword(
+      account['id'] as int,
+      password,
+      account['password_iterations'] as int? ?? 0,
+    );
     await _touchLogin(account['id'] as int);
     return _operator(account, deviceId: device.first['id'] as String);
   }
@@ -430,9 +474,13 @@ class AccountService {
       role: account['role_base'] as String? ?? 'MEKANIK',
       label: account['nama'] as String? ?? 'Karyawan',
       employeeId: account['id'] as int,
+      employeeSyncId: account['sync_id'] as String?,
       username: account['username'] as String,
       permissions: effectivePermissions(account),
       deviceId: deviceId,
+      storeIds: _jsonList(account['store_ids_json']).isEmpty
+          ? const ['utama']
+          : _jsonList(account['store_ids_json']),
       mustChangePassword: account['must_change_password'] == 1,
     );
   }
@@ -466,46 +514,20 @@ class AccountService {
     );
   }
 
-  Future<void> _checkGuard(String scope) async {
-    final rows = await AppDatabase.instance.db.query(
-      'login_guards',
-      where: 'scope = ?',
-      whereArgs: [scope],
-      limit: 1,
-    );
-    if (rows.isEmpty) return;
-    final lock = rows.first['lock_until'] as String?;
-    if (lock != null && DateTime.tryParse(lock)?.isAfter(DateTime.now()) == true) {
-      throw StateError('Terlalu banyak percobaan. Coba lagi nanti.');
-    }
-  }
-
-  Future<void> _failGuard(String scope) async {
-    final rows = await AppDatabase.instance.db.query(
-      'login_guards',
-      where: 'scope = ?',
-      whereArgs: [scope],
-      limit: 1,
-    );
-    final failures = ((rows.isEmpty ? 0 : rows.first['failures'] as int?) ?? 0) + 1;
-    String? lockUntil;
-    if (failures >= _maxFailures) {
-      lockUntil = DateTime.now()
-          .add(Duration(seconds: 30 * (failures - _maxFailures + 1)))
-          .toIso8601String();
-    }
-    await AppDatabase.instance.db.insert(
-      'login_guards',
-      {'scope': scope, 'failures': failures, 'lock_until': lockUntil},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<void> _clearGuard(String scope) async {
-    await AppDatabase.instance.db.delete(
-      'login_guards',
-      where: 'scope = ?',
-      whereArgs: [scope],
+  Future<void> _upgradePassword(int id, String password, int iterations) async {
+    if (iterations >= _iterations) return;
+    final salt = _newSalt();
+    final hash = await _derive(password, salt, _iterations);
+    await AppDatabase.instance.db.update(
+      'employee_accounts',
+      {
+        'password_hash': hash,
+        'password_salt': salt,
+        'password_iterations': _iterations,
+        'updated_at': nowIso(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
     );
   }
 

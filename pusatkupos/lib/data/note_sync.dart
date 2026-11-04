@@ -1,15 +1,24 @@
+import 'dart:convert';
+
 import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../core/ids.dart';
 import 'app_database.dart';
+import 'models.dart';
 
 extension NoteSyncDatabase on AppDatabase {
-  Future<Map<String, Object?>> noteSyncPayload(int id) async {
-    final rows = await db.rawQuery(
+  Future<Map<String, Object?>> noteSyncPayload(
+    int id, {
+    DatabaseExecutor? executor,
+  }) async {
+    final target = executor ?? db;
+    final rows = await target.rawQuery(
       '''
       SELECT r.*, c.sync_id AS customer_sync_id, c.nama AS customer_nama,
         c.nomor_hp AS customer_hp, c.alamat AS customer_alamat,
+        c.wa_consent AS customer_wa_consent,
+        c.do_not_contact AS customer_do_not_contact,
         c.created_at AS customer_created_at,
         u.sync_id AS unit_sync_id, u.unit_type, u.nopol, u.jenis_mobil,
         u.tahun_mobil, u.tipe_radiator, u.label_radiator,
@@ -23,17 +32,17 @@ extension NoteSyncDatabase on AppDatabase {
     );
     if (rows.isEmpty) throw StateError('Nota tidak ditemukan.');
     final row = rows.first;
-    final jobs = await db.query(
+    final jobs = await target.query(
       'service_jobs',
       where: 'service_record_id = ?',
       whereArgs: [id],
     );
-    final parts = await db.query(
+    final parts = await target.query(
       'service_parts',
       where: 'service_record_id = ?',
       whereArgs: [id],
     );
-    final payments = await db.query(
+    final payments = await target.query(
       'service_payments',
       where: 'service_record_id = ?',
       whereArgs: [id],
@@ -43,7 +52,7 @@ extension NoteSyncDatabase on AppDatabase {
       final stockId = part['stock_item_id'] as int?;
       Map<String, Object?>? stock;
       if (stockId != null) {
-        final stockRows = await db.query(
+        final stockRows = await target.query(
           'stock_items',
           where: 'id = ?',
           whereArgs: [stockId],
@@ -58,6 +67,9 @@ extension NoteSyncDatabase on AppDatabase {
             'harga_modal': stockRow['harga_modal'],
             'harga_jual': stockRow['harga_jual'],
             'jumlah': stockRow['jumlah'],
+            'jumlah_milli': stockRow['jumlah_milli'],
+            'satuan': stockRow['satuan'] ?? 'pcs',
+            'desimal': stockRow['desimal'] ?? 0,
             'stok_minimum': stockRow['stok_minimum'],
           };
         }
@@ -79,6 +91,8 @@ extension NoteSyncDatabase on AppDatabase {
         'nama': row['customer_nama'],
         'nomor_hp': row['customer_hp'],
         'alamat': row['customer_alamat'],
+        'wa_consent': row['customer_wa_consent'] ?? 1,
+        'do_not_contact': row['customer_do_not_contact'] ?? 0,
         'created_at': row['customer_created_at'],
       },
       'unit': {
@@ -112,6 +126,10 @@ extension NoteSyncDatabase on AppDatabase {
         'status': row['status'],
         'void_reason': row['void_reason'],
         'voided_at': row['voided_at'],
+        'created_by': row['created_by'],
+        'created_by_employee_id': row['created_by_employee_id'],
+        'mechanic': row['mechanic'],
+        'mechanic_employee_id': row['mechanic_employee_id'],
         'created_at': row['created_at'],
         'updated_at': row['updated_at'],
       },
@@ -147,6 +165,16 @@ extension NoteSyncDatabase on AppDatabase {
     Database target,
     Map<String, Object?> payload, {
     required String action,
+  }) {
+    return target.transaction(
+      (txn) => applyNotePayloadTx(txn, payload, action: action),
+    );
+  }
+
+  Future<String> applyNotePayloadTx(
+    DatabaseExecutor txn,
+    Map<String, Object?> payload, {
+    required String action,
   }) async {
     final record =
         Map<String, Object?>.from(payload['record'] as Map? ?? const {});
@@ -164,7 +192,6 @@ extension NoteSyncDatabase on AppDatabase {
         .toList();
     final recordSync = record['sync_id'] as String? ?? '';
     if (recordSync.isEmpty) throw StateError('Nota tanpa sync_id.');
-    return target.transaction((txn) async {
       final existingRecord = await txn.query(
         'service_records',
         where: 'sync_id = ?',
@@ -194,21 +221,29 @@ extension NoteSyncDatabase on AppDatabase {
             limit: 1,
           );
           if (movement.isNotEmpty) continue;
-          final qty = part['jumlah'] as int? ?? 0;
-          await txn.rawUpdate(
-            'UPDATE stock_items SET jumlah = jumlah + ? WHERE id = ?',
-            [qty, stock.first['id']],
+          final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
+          final before = StockItem.fromRow(stock.first);
+          final nextMilli = before.jumlahMilli + qtyMilli;
+          await txn.update(
+            'stock_items',
+            {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+            where: 'id = ?',
+            whereArgs: [stock.first['id']],
           );
           await txn.insert('stock_movements', {
             'sync_id': movementKey,
             'stock_item_id': stock.first['id'],
             'nama_item': part['nama_part'],
             'jenis': 'MASUK',
-            'jumlah': qty,
+            'jumlah': qtyMilli ~/ 1000,
+            'jumlah_milli': qtyMilli,
             'alasan': 'Void $recordSync',
             'service_record_id': existingRecord.first['id'],
             'created_at': nowIso(),
           });
+        }
+        for (final payment in payments) {
+          await _upsertPayment(txn, existingRecord.first['id'] as int, payment);
         }
         await txn.update(
           'service_records',
@@ -222,6 +257,14 @@ extension NoteSyncDatabase on AppDatabase {
           whereArgs: [existingRecord.first['id']],
         );
         return 'void';
+      }
+      if (action == 'payment') {
+        if (existingRecord.isEmpty) return 'missing';
+        for (final payment in payments) {
+          await _upsertPayment(txn, existingRecord.first['id'] as int, payment);
+        }
+        await _recalculateRecordTotals(txn, existingRecord.first['id'] as int);
+        return 'payment';
       }
       if (existingRecord.isNotEmpty) return 'duplicate';
       final customerSync = customer['sync_id'] as String? ?? '';
@@ -239,10 +282,27 @@ extension NoteSyncDatabase on AppDatabase {
           'nama': customer['nama'] ?? '',
           'nomor_hp': customer['nomor_hp'] ?? '',
           'alamat': customer['alamat'],
+          'wa_consent': customer['wa_consent'] ?? 1,
+          'do_not_contact': customer['do_not_contact'] ?? 0,
           'created_at': customer['created_at'] ?? nowIso(),
         });
       } else {
         customerId = customerRows.first['id'] as int;
+        await txn.update(
+          'customers',
+          {
+            'nama': customer['nama'] ?? customerRows.first['nama'],
+            'nomor_hp':
+                customer['nomor_hp'] ?? customerRows.first['nomor_hp'],
+            'alamat': customer['alamat'] ?? customerRows.first['alamat'],
+            'wa_consent':
+                customer['wa_consent'] ?? customerRows.first['wa_consent'],
+            'do_not_contact': customer['do_not_contact'] ??
+                customerRows.first['do_not_contact'],
+          },
+          where: 'id = ?',
+          whereArgs: [customerId],
+        );
       }
       final unitSync = unit['sync_id'] as String? ?? '';
       if (unitSync.isEmpty) throw StateError('Unit tanpa sync_id.');
@@ -267,11 +327,52 @@ extension NoteSyncDatabase on AppDatabase {
         });
       } else {
         unitId = unitRows.first['id'] as int;
+        await txn.update(
+          'vehicle_or_units',
+          {
+            'customer_id': customerId,
+            'unit_type': unit['unit_type'] ?? unitRows.first['unit_type'],
+            'nopol': unit['nopol'] ?? unitRows.first['nopol'],
+            'jenis_mobil':
+                unit['jenis_mobil'] ?? unitRows.first['jenis_mobil'],
+            'tahun_mobil':
+                unit['tahun_mobil'] ?? unitRows.first['tahun_mobil'],
+            'tipe_radiator':
+                unit['tipe_radiator'] ?? unitRows.first['tipe_radiator'],
+            'label_radiator':
+                unit['label_radiator'] ?? unitRows.first['label_radiator'],
+          },
+          where: 'id = ?',
+          whereArgs: [unitId],
+        );
+      }
+      var noNota =
+          record['no_nota'] as String? ?? await allocateNextNota(txn);
+      final conflict = await txn.query(
+        'service_records',
+        columns: ['id'],
+        where: 'no_nota = ?',
+        whereArgs: [noNota],
+        limit: 1,
+      );
+      if (conflict.isNotEmpty) {
+        final noNotaAsal = noNota;
+        noNota = await allocateNextNota(txn);
+        await txn.insert('sync_conflicts', {
+          'entity': 'nota',
+          'entity_id': recordSync,
+          'reason': 'no_nota_bentrok',
+          'detail_json': jsonEncode({
+            'no_nota_asal': noNotaAsal,
+            'no_nota_baru': noNota,
+          }),
+          'created_at': nowIso(),
+        });
       }
       final recordId = await txn.insert('service_records', {
         'sync_id': recordSync,
         'unit_id': unitId,
-        'no_nota': record['no_nota'],
+        'no_nota': noNota,
         'request_id': null,
         'waktu_service': record['waktu_service'] ?? nowIso(),
         'keluhan_awal': record['keluhan_awal'] ?? '',
@@ -288,6 +389,10 @@ extension NoteSyncDatabase on AppDatabase {
         'total_dibayar': record['total_dibayar'] ?? 0,
         'sisa_bayar': record['sisa_bayar'] ?? 0,
         'status': record['status'] ?? 'AKTIF',
+        'created_by': record['created_by'],
+        'created_by_employee_id': record['created_by_employee_id'],
+        'mechanic': record['mechanic'],
+        'mechanic_employee_id': record['mechanic_employee_id'],
         'created_at': record['created_at'] ?? nowIso(),
         'updated_at': record['updated_at'] ?? nowIso(),
       });
@@ -315,15 +420,19 @@ extension NoteSyncDatabase on AppDatabase {
             limit: 1,
           );
           if (stockRows.isEmpty) {
-            final postSale = stock?['jumlah'] as int? ?? 0;
-            final qty = part['jumlah'] as int? ?? 0;
+            final postSale = (stock?['jumlah_milli'] as num?)?.toInt() ??
+                ((stock?['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+            final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
             stockId = await txn.insert('stock_items', {
               'sync_id': stockSync,
               'kode': stock?['kode'] ?? stockSync,
               'nama': stock?['nama'] ?? part['nama_part'],
               'harga_modal': stock?['harga_modal'] ?? 0,
               'harga_jual': stock?['harga_jual'] ?? 0,
-              'jumlah': postSale + qty,
+              'jumlah': (postSale + qtyMilli) ~/ 1000,
+              'jumlah_milli': postSale + qtyMilli,
+              'satuan': stock?['satuan'] ?? 'pcs',
+              'desimal': stock?['desimal'] ?? 0,
               'stok_minimum': stock?['stok_minimum'] ?? 0,
               'created_at': nowIso(),
             });
@@ -338,21 +447,45 @@ extension NoteSyncDatabase on AppDatabase {
             limit: 1,
           );
           if (movement.isEmpty) {
-            final qty = part['jumlah'] as int? ?? 0;
-            await txn.rawUpdate(
-              'UPDATE stock_items SET jumlah = jumlah - ? WHERE id = ?',
-              [qty, stockId],
+            final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
+            final current = await txn.query(
+              'stock_items',
+              where: 'id = ?',
+              whereArgs: [stockId],
+              limit: 1,
+            );
+            final before = StockItem.fromRow(current.first);
+            final nextMilli = before.jumlahMilli - qtyMilli;
+            await txn.update(
+              'stock_items',
+              {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+              where: 'id = ?',
+              whereArgs: [stockId],
             );
             await txn.insert('stock_movements', {
               'sync_id': movementKey,
               'stock_item_id': stockId,
               'nama_item': part['nama_part'],
               'jenis': 'KELUAR',
-              'jumlah': -qty,
+              'jumlah': -qtyMilli ~/ 1000,
+              'jumlah_milli': -qtyMilli,
               'alasan': 'Penjualan ${record['no_nota']}',
               'service_record_id': recordId,
               'created_at': nowIso(),
             });
+            if (nextMilli < 0) {
+              await txn.insert('sync_conflicts', {
+                'entity': 'stock',
+                'entity_id': stockSync,
+                'reason': 'stok_negatif',
+                'detail_json': jsonEncode({
+                  'no_nota': noNota,
+                  'stock_sync_id': stockSync,
+                  'jumlah_milli': nextMilli,
+                }),
+                'created_at': nowIso(),
+              });
+            }
           }
         }
         await txn.insert('service_parts', {
@@ -367,19 +500,70 @@ extension NoteSyncDatabase on AppDatabase {
         });
       }
       for (final payment in payments) {
-        await txn.insert('service_payments', {
-          'sync_id': payment['sync_id'] ?? newSyncId(),
-          'service_record_id': recordId,
-          'jenis': payment['jenis'] ?? 'PELUNASAN',
-          'metode': payment['metode'] ?? 'CASH',
-          'nominal': payment['nominal'] ?? 0,
-          'waktu': payment['waktu'] ?? nowIso(),
-          'operator': payment['operator'] ?? 'Pemilik',
-          'request_id': null,
-          'catatan': payment['catatan'],
-        });
+        await _upsertPayment(txn, recordId, payment);
       }
       return 'applied';
+  }
+
+  Future<void> _upsertPayment(
+    DatabaseExecutor txn,
+    int recordId,
+    Map<String, Object?> payment,
+  ) async {
+    final syncId = payment['sync_id'] as String? ?? '';
+    if (syncId.isNotEmpty) {
+      final rows = await txn.query(
+        'service_payments',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) return;
+    }
+    await txn.insert('service_payments', {
+      'sync_id': syncId.isEmpty ? newSyncId() : syncId,
+      'service_record_id': recordId,
+      'jenis': payment['jenis'] ?? 'PELUNASAN',
+      'metode': payment['metode'] ?? 'CASH',
+      'nominal': payment['nominal'] ?? 0,
+      'waktu': payment['waktu'] ?? nowIso(),
+      'operator': payment['operator'] ?? 'Pemilik',
+      'request_id': null,
+      'catatan': payment['catatan'],
     });
+  }
+
+  Future<void> _recalculateRecordTotals(
+    DatabaseExecutor txn,
+    int recordId,
+  ) async {
+    final record = await txn.query(
+      'service_records',
+      columns: ['total_servis'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    if (record.isEmpty) return;
+    final paidRows = await txn.rawQuery(
+      'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
+      'WHERE service_record_id = ?',
+      [recordId],
+    );
+    final total = record.first['total_servis'] as int? ?? 0;
+    final paid = paidRows.first['total'] as int? ?? 0;
+    final sisa = total - paid < 0 ? 0 : total - paid;
+    await txn.update(
+      'service_records',
+      {
+        'total_dibayar': paid,
+        'sisa_bayar': sisa,
+        'status_bayar': sisa == 0 ? 'LUNAS' : 'KREDIT',
+        'updated_at': nowIso(),
+      },
+      where: 'id = ?',
+      whereArgs: [recordId],
+    );
   }
 }

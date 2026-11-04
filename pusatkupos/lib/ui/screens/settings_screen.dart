@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../../data/app_database.dart';
 import '../../data/backup_service.dart';
 import '../../data/owner_summary_service.dart';
 import '../../data/pin_service.dart';
 import '../../state/app_state.dart';
 import '../pin_gate.dart';
 import '../widgets.dart';
+import 'followup_settings_screen.dart';
+import 'printer_settings_screen.dart';
+import 'receipt_settings_screen.dart';
+import 'stores_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -17,6 +22,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _nama;
   late final TextEditingController _alamat;
+  final _garansiBulan = TextEditingController(text: '1');
+  final _garansiSyarat = TextEditingController();
+  bool _fiturKaryawan = true;
+  bool _fiturSupplier = true;
   bool _busy = false;
 
   @override
@@ -24,12 +33,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _nama = TextEditingController(text: AppState.instance.storeName);
     _alamat = TextEditingController(text: AppState.instance.storeAddress);
+    _loadGaransi();
+  }
+
+  Future<void> _loadGaransi() async {
+    final db = AppDatabase.instance;
+    final bulan = await db.getSetting('garansi.default_bulan') ?? '1';
+    final syarat = await db.getSetting('garansi.syarat') ?? '';
+    final karyawan = await db.getSetting('fitur.karyawan') ?? '1';
+    final supplier = await db.getSetting('fitur.supplier') ?? '1';
+    if (!mounted) return;
+    _garansiBulan.text = bulan;
+    _garansiSyarat.text = syarat;
+    setState(() {
+      _fiturKaryawan = karyawan == '1';
+      _fiturSupplier = supplier == '1';
+    });
+  }
+
+  Future<void> _saveGaransi() async {
+    final bulan = int.tryParse(_garansiBulan.text.trim()) ?? 1;
+    if (bulan < 1) {
+      showSnack(context, 'Durasi garansi minimal 1 bulan.', error: true);
+      return;
+    }
+    await AppDatabase.instance
+        .setSetting('garansi.default_bulan', '$bulan');
+    await AppDatabase.instance
+        .setSetting('garansi.syarat', _garansiSyarat.text.trim());
+    if (!mounted) return;
+    showSnack(context, 'Pengaturan garansi disimpan.');
   }
 
   @override
   void dispose() {
     _nama.dispose();
     _alamat.dispose();
+    _garansiBulan.dispose();
+    _garansiSyarat.dispose();
     super.dispose();
   }
 
@@ -40,6 +81,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _backup() async {
+    if (!AppState.instance.can('backup')) {
+      showSnack(context, 'Izin backup tidak tersedia.', error: true);
+      return;
+    }
     setState(() => _busy = true);
     final result = await BackupService.instance.createBackup();
     if (!mounted) return;
@@ -48,11 +93,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _restore() async {
+    if (!AppState.instance.can('backup')) {
+      showSnack(context, 'Izin restore tidak tersedia.', error: true);
+      return;
+    }
     final ok = await confirmAction(
       context,
       title: 'Pulihkan backup',
       message:
-          'Seluruh data lokal akan diganti dengan isi backup. Buat backup terbaru dulu bila ragu.',
+          'Seluruh data lokal akan diganti dengan isi backup. Restore ke '
+          'perangkat kedua atau perangkat lama dapat menyebabkan nomor nota '
+          'dan antrean sinkron bentrok. Prefix nota baru akan dibuat; jalankan '
+          'bootstrap sebelum sinkronisasi. Buat backup terbaru dulu bila ragu.',
       confirmLabel: 'Pulihkan',
     );
     if (!ok) return;
@@ -108,9 +160,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Batal'),
           ),
-          FilledButton(
+            FilledButton(
             onPressed: () async {
-              if (newPin.text.trim().length < 4 ||
+              if (newPin.text.trim().length < 6 ||
                   newPin.text.trim() != confirm.text.trim()) {
                 return;
               }
@@ -174,6 +226,141 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Toko',
+          subtitle:
+              'Setiap toko memakai database terpisah. Tambah toko khusus '
+              'Premium.',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.storefront_outlined),
+            title: const Text('Kelola toko'),
+            subtitle: const Text('Tambah, pilih, dan ganti toko aktif'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const StoresScreen()),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Struk dan printer',
+          subtitle: 'Atur bagian struk serta printer thermal jaringan.',
+          child: Column(
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.receipt_long_outlined),
+                title: const Text('Pengaturan struk'),
+                subtitle: const Text('Pilih bagian yang tampil di nota'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ReceiptSettingsScreen(),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.print_outlined),
+                title: const Text('Printer thermal'),
+                subtitle: const Text('Printer ESC/POS lewat jaringan lokal'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PrinterSettingsScreen(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Garansi',
+          subtitle: 'Nilai bawaan saat kasir membuat nota baru.',
+          child: Column(
+            children: [
+              TextField(
+                controller: _garansiBulan,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Durasi garansi (bulan)',
+                  helperText: '1 bulan = 30 hari',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _garansiSyarat,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Syarat garansi standar',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  onPressed: _saveGaransi,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('Simpan'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Karyawan',
+          subtitle:
+              'Jika dimatikan, nama kasir dan mekanik tidak dicetak di struk.',
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Tampilkan data karyawan'),
+            value: _fiturKaryawan,
+            onChanged: (value) async {
+              setState(() => _fiturKaryawan = value);
+              await AppDatabase.instance
+                  .setSetting('fitur.karyawan', value ? '1' : '0');
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Supplier',
+          subtitle:
+              'Jika dimatikan, pencatatan supplier dan follow up reseller '
+              'disembunyikan.',
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Aktifkan fitur supplier'),
+            value: _fiturSupplier,
+            onChanged: (value) async {
+              setState(() => _fiturSupplier = value);
+              await AppDatabase.instance
+                  .setSetting('fitur.supplier', value ? '1' : '0');
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Follow up',
+          subtitle: 'Jam, interval, dan batas pesan WhatsApp.',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.notifications_active_outlined),
+            title: const Text('Pengaturan follow up'),
+            subtitle: const Text('Kuota gratis 20 kredit WhatsApp'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const FollowupSettingsScreen(),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 12),

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../data/account_service.dart';
+import '../../data/app_database.dart';
 import '../../data/device_service.dart';
+import '../../data/google_auth_service.dart';
 import '../../data/license_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -17,6 +19,7 @@ class PremiumScreen extends StatefulWidget {
 class _PremiumScreenState extends State<PremiumScreen> {
   Map<String, Object?>? _status;
   Map<String, Object?>? _ownerRow;
+  String? _licenseEmail;
   List<Map<String, Object?>> _accounts = [];
   List<Map<String, Object?>> _devices = [];
   Map<String, Object?>? _syncStatus;
@@ -51,10 +54,12 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final url = await SyncService.instance.relayUrl();
     final enroll = await SyncService.instance.enrollToken();
     final store = await SyncService.instance.storeId();
+    final email = await AppDatabase.instance.getSetting('license.email');
     if (!mounted) return;
     setState(() {
       _status = status;
       _ownerRow = owner;
+      _licenseEmail = email;
       _accounts = accounts;
       _devices = devices;
       _syncStatus = sync;
@@ -65,25 +70,24 @@ class _PremiumScreenState extends State<PremiumScreen> {
   }
 
   Future<void> _activateLicense() async {
-    final days = TextEditingController(text: '30');
-    final limit = TextEditingController(text: '2');
+    final token = TextEditingController();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Aktifkan premium'),
+        title: const Text('Pasang lisensi server'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-              controller: days,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Masa aktif (hari)'),
+            const Text(
+              'Tempel token lisensi yang diterbitkan server. Aplikasi akan '
+              'memverifikasi tanda tangan dan masa berlakunya secara lokal.',
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             TextField(
-              controller: limit,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Batas perangkat owner'),
+              controller: token,
+              minLines: 3,
+              maxLines: 5,
+              decoration: const InputDecoration(labelText: 'Token lisensi'),
             ),
           ],
         ),
@@ -94,18 +98,16 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Aktifkan'),
+            child: const Text('Pasang'),
           ),
         ],
       ),
     );
-    if (confirmed != true) return;
+    final value = token.text.trim();
+    token.dispose();
+    if (confirmed != true || value.isEmpty) return;
     try {
-      await LicenseService.instance.activate(
-        days: int.tryParse(days.text) ?? 30,
-        deviceLimit: int.tryParse(limit.text) ?? 2,
-        provider: 'manual',
-      );
+      await LicenseService.instance.installToken(value);
       final recovery = await LicenseService.instance.recoveryCodeOnce();
       await _load();
       if (!mounted) return;
@@ -115,7 +117,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
           builder: (context) => AlertDialog(
             title: const Text('Kode pemulihan owner'),
             content: Text(
-              '$recovery\n\nTampil sekali. Simpan offline; dukungan tidak dapat memulihkan kunci.',
+              '$recovery\n\nTampil sekali. Simpan offline; setelah '
+              'dikonfirmasi kode ini dihapus dari penyimpanan aman.',
             ),
             actions: [
               FilledButton(
@@ -125,9 +128,34 @@ class _PremiumScreenState extends State<PremiumScreen> {
             ],
           ),
         );
+        await LicenseService.instance.clearRecoveryCode();
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal aktivasi: $error', error: true);
+      if (mounted) showSnack(context, 'Gagal memasang lisensi: $error', error: true);
+    }
+  }
+
+  Future<void> _googleLogin() async {
+    setState(() => _busy = true);
+    try {
+      final result = await GoogleAuthService.instance.activate(
+        relayUrl: _relayUrl.text,
+      );
+      await _load();
+      if (!mounted) return;
+      showSnack(
+        context,
+        'Lisensi aktif untuk ${result['email']} sampai '
+        '${result['period_end'] ?? '-'}.',
+      );
+    } on GoogleAuthException catch (error) {
+      if (mounted) showSnack(context, error.message, error: true);
+    } catch (error) {
+      if (mounted) {
+        showSnack(context, 'Gagal mengaktifkan lisensi Google: $error', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -379,9 +407,73 @@ class _PremiumScreenState extends State<PremiumScreen> {
     }
   }
 
+  Future<void> _verifyRecoveryCode() async {
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Pulihkan akses dengan kode'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Masukkan kode pemulihan owner. Jika cocok, minta token '
+              'lisensi baru ke server menggunakan ID owner.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Kode pemulihan'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Verifikasi'),
+          ),
+        ],
+      ),
+    );
+    final code = controller.text.trim();
+    controller.dispose();
+    if (ok != true || code.isEmpty) return;
+    final valid = await LicenseService.instance.verifyRecoveryCode(code);
+    if (!mounted) return;
+    if (!valid) {
+      showSnack(context, 'Kode pemulihan tidak cocok.', error: true);
+      return;
+    }
+    final ownerId = await LicenseService.instance.ownerId();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Kode pemulihan valid'),
+        content: Text(
+          'ID owner: ${ownerId ?? '-'}\n\n'
+          'Hubungi penyedia lisensi untuk menerbitkan ulang token lisensi '
+          'server, lalu pasang token itu di layar ini.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Tutup'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final premium = _status?['premium'] == true;
+    final expired = _status?['expired'] == true;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -404,6 +496,25 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ],
         ),
         const SizedBox(height: 12),
+        if (!premium)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Card(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  expired
+                      ? 'Lisensi kedaluwarsa. Data dan kasir offline tetap '
+                          'bisa dipakai; sinkronisasi dan multi-perangkat '
+                          'dinonaktifkan sampai lisensi diperbarui.'
+                      : 'Belum ada lisensi server yang valid. Kasir offline '
+                          'tetap gratis; sinkronisasi, multi-perangkat, dan '
+                          'akun karyawan memerlukan lisensi.',
+                ),
+              ),
+            ),
+          ),
         SectionCard(
           title: 'Lisensi dan ID owner',
           trailing: premium
@@ -419,6 +530,42 @@ class _PremiumScreenState extends State<PremiumScreen> {
               _line('Paket', '${_status?['plan'] ?? 'free'}'),
               _line('Berlaku sampai', '${_status?['period_end'] ?? '-'}'),
               _line('Batas perangkat', '${_status?['device_limit'] ?? 1}'),
+              if ((_licenseEmail ?? '').isNotEmpty)
+                _line('Akun Google', _licenseEmail!),
+              if (!premium) ...[
+                const SizedBox(height: 12),
+                if (GoogleAuthService.instance.configured &&
+                    GoogleAuthService.instance.supported)
+                  FilledButton.icon(
+                    onPressed: _busy ? null : _googleLogin,
+                    icon: const Icon(Icons.login),
+                    label: Text(
+                      expired
+                          ? 'Pulihkan lisensi dengan Google'
+                          : 'Masuk dengan Google',
+                    ),
+                  )
+                else
+                  Text(
+                    !GoogleAuthService.instance.configured
+                        ? 'Login Google belum diaktifkan pada build ini. '
+                            'Gunakan token lisensi manual.'
+                        : 'Login Google hanya tersedia di Android, iOS, '
+                            'macOS, dan web.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+              ],
+              if (_status?['recovery_available'] == true) ...[
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    onPressed: _verifyRecoveryCode,
+                    icon: const Icon(Icons.key_outlined),
+                    label: const Text('Pulihkan akses dengan kode'),
+                  ),
+                ),
+              ],
               if ((_ownerRow?['public_key'] as String? ?? '').isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -434,7 +581,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text(
-                    'Aktivasi lokal untuk pengujian. Play Billing dibuktikan di APK.',
+                    'Lisensi hanya diterbitkan server. Token berisi owner, '
+                    'masa berlaku, dan batas perangkat.',
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
@@ -445,7 +593,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         SectionCard(
           title: 'Akun karyawan',
           trailing: TextButton.icon(
-            onPressed: _addAccount,
+            onPressed: premium ? _addAccount : null,
             icon: const Icon(Icons.person_add_alt_1),
             label: const Text('Tambah'),
           ),
@@ -488,6 +636,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         SectionCard(
           title: 'Perangkat',
           trailing: PopupMenuButton<String>(
+            enabled: premium,
             onSelected: (value) {
               if (value == 'owner') _registerOwnerDevice();
               if (value == 'employee') _registerEmployeeDevice();
@@ -544,7 +693,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 controller: _relayUrl,
                 decoration: const InputDecoration(
                   labelText: 'Alamat relay',
-                  hintText: 'http://127.0.0.1:8120',
+                  hintText: 'https://relay.contoh.com',
                 ),
               ),
               const SizedBox(height: 10),
@@ -569,23 +718,23 @@ class _PremiumScreenState extends State<PremiumScreen> {
                     child: const Text('Simpan konfigurasi'),
                   ),
                   FilledButton.tonal(
-                    onPressed: _registerRelayDevice,
+                    onPressed: premium ? _registerRelayDevice : null,
                     child: const Text('Daftarkan ke relay'),
                   ),
                   FilledButton(
-                    onPressed: _syncNow,
+                    onPressed: premium ? _syncNow : null,
                     child: const Text('Sinkron sekarang'),
                   ),
                   OutlinedButton(
-                    onPressed: _shareStoreKey,
+                    onPressed: premium ? _shareStoreKey : null,
                     child: const Text('Bagikan kunci'),
                   ),
                   OutlinedButton(
-                    onPressed: _uploadSnapshot,
+                    onPressed: premium ? _uploadSnapshot : null,
                     child: const Text('Unggah snapshot'),
                   ),
                   OutlinedButton(
-                    onPressed: _takeSnapshot,
+                    onPressed: premium ? _takeSnapshot : null,
                     child: const Text('Ambil snapshot'),
                   ),
                 ],

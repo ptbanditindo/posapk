@@ -1,3 +1,6 @@
+import '../core/dates.dart';
+import '../core/quantity.dart';
+
 class Customer {
   const Customer({
     required this.id,
@@ -21,7 +24,6 @@ class Customer {
         alamat: row['alamat'] as String?,
       );
 }
-
 class VehicleUnit {
   const VehicleUnit({
     required this.id,
@@ -73,6 +75,10 @@ class StockItem {
     required this.hargaJualCents,
     required this.jumlah,
     required this.stokMinimum,
+    this.satuan = 'pcs',
+    this.desimal = 0,
+    this.jumlahMilliOverride,
+    this.intervalBulan = 0,
   });
 
   final int id;
@@ -82,8 +88,21 @@ class StockItem {
   final int hargaJualCents;
   final int jumlah;
   final int stokMinimum;
+  final String satuan;
+  final int desimal;
+  final int? jumlahMilliOverride;
+  final int intervalBulan;
 
-  bool get lowStock => jumlah <= stokMinimum;
+  int get jumlahMilli => jumlahMilliOverride ?? jumlah * 1000;
+  double get jumlahValue => jumlahMilli / 1000;
+  bool get negatif => jumlahMilli < 0;
+  bool get lowStock => jumlahMilli <= stokMinimum * 1000;
+
+  String get jumlahLabel => formatQuantity(
+        jumlahMilli,
+        desimal,
+        satuan: satuan,
+      );
 
   factory StockItem.fromRow(Map<String, Object?> row) => StockItem(
         id: row['id'] as int,
@@ -93,6 +112,10 @@ class StockItem {
         hargaJualCents: row['harga_jual'] as int? ?? 0,
         jumlah: row['jumlah'] as int? ?? 0,
         stokMinimum: row['stok_minimum'] as int? ?? 0,
+        satuan: row['satuan'] as String? ?? 'pcs',
+        desimal: row['desimal'] as int? ?? 0,
+        jumlahMilliOverride: row['jumlah_milli'] as int?,
+        intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
       );
 }
 
@@ -101,16 +124,19 @@ class ServiceCatalog {
     required this.id,
     required this.nama,
     required this.hargaCents,
+    this.intervalBulan = 0,
   });
 
   final int id;
   final String nama;
   final int hargaCents;
+  final int intervalBulan;
 
   factory ServiceCatalog.fromRow(Map<String, Object?> row) => ServiceCatalog(
         id: row['id'] as int,
         nama: row['nama'] as String,
         hargaCents: row['harga_standar'] as int? ?? 0,
+        intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
       );
 }
 
@@ -130,6 +156,13 @@ class ServiceRecordSummary {
     required this.statusBayar,
     required this.metodeBayar,
     required this.voidedAt,
+    this.bergaransi = false,
+    this.garansiSampai,
+    this.catatanGaransi,
+    this.statusKlaim = 'Belum claim',
+    this.tanggalKlaim,
+    this.unitDitinggal = false,
+    this.diambilAt,
   });
 
   final int id;
@@ -146,14 +179,37 @@ class ServiceRecordSummary {
   final String statusBayar;
   final String metodeBayar;
   final DateTime? voidedAt;
+  final bool bergaransi;
+  final DateTime? garansiSampai;
+  final String? catatanGaransi;
+  final String statusKlaim;
+  final DateTime? tanggalKlaim;
+  final bool unitDitinggal;
+  final DateTime? diambilAt;
 
   bool get isVoid => voidedAt != null;
+
+  bool get warrantyActive {
+    final end = garansiSampai;
+    if (isVoid || !bergaransi || end == null) return false;
+    if (statusKlaim == 'Sudah claim') return false;
+    final today = DateTime.now();
+    final day = DateTime(today.year, today.month, today.day);
+    return !day.isAfter(end);
+  }
+
+  String get warrantyStatus {
+    if (isVoid) return 'DIBATALKAN';
+    if (!bergaransi || garansiSampai == null) return 'TANPA GARANSI';
+    if (statusKlaim == 'Sudah claim') return 'SUDAH CLAIM';
+    return warrantyActive ? 'AKTIF' : 'KEDALUWARSA';
+  }
 
   factory ServiceRecordSummary.fromRow(Map<String, Object?> row) =>
       ServiceRecordSummary(
         id: row['id'] as int,
         noNota: row['no_nota'] as String,
-        waktu: DateTime.parse(row['waktu_service'] as String),
+        waktu: localTime(row['waktu_service']),
         customerNama: (row['customer_nama'] as String?) ?? '',
         unitLabel: (row['unit_label'] as String?) ?? '',
         keluhan: (row['keluhan_awal'] as String?) ?? '',
@@ -166,16 +222,37 @@ class ServiceRecordSummary {
         metodeBayar: (row['metode_bayar'] as String?) ?? 'CASH',
         voidedAt: row['voided_at'] == null
             ? null
-            : DateTime.tryParse(row['voided_at'] as String),
+            : DateTime.tryParse(row['voided_at'] as String)?.toLocal(),
+        bergaransi: (row['bergaransi'] as int? ?? 0) == 1,
+        garansiSampai: row['garansi_sampai'] == null
+            ? null
+            : DateTime.tryParse(row['garansi_sampai'] as String),
+        catatanGaransi: row['catatan_garansi'] as String?,
+        statusKlaim: (row['status_klaim'] as String?) ?? 'Belum claim',
+        tanggalKlaim: row['tanggal_klaim'] == null
+            ? null
+            : DateTime.tryParse(row['tanggal_klaim'] as String),
+        unitDitinggal: (row['unit_ditinggal'] as int? ?? 0) == 1,
+        diambilAt: row['diambil_at'] == null
+            ? null
+            : DateTime.tryParse(row['diambil_at'] as String)?.toLocal(),
       );
 }
 
 class JobDraft {
-  JobDraft({required this.deskripsi, required this.jumlah, required this.hargaCents});
+  JobDraft({
+    required this.deskripsi,
+    required this.jumlah,
+    required this.hargaCents,
+    this.jasaId,
+    this.intervalBulan = 0,
+  });
 
   String deskripsi;
   int jumlah;
   int hargaCents;
+  final int? jasaId;
+  final int intervalBulan;
 
   int get subtotalCents => jumlah * hargaCents;
 }
@@ -187,6 +264,7 @@ class PartDraft {
     required this.jumlah,
     required this.hargaCents,
     required this.modalCents,
+    this.intervalBulan = 0,
   });
 
   final int stockItemId;
@@ -194,6 +272,7 @@ class PartDraft {
   int jumlah;
   int hargaCents;
   int modalCents;
+  final int intervalBulan;
 
   int get subtotalCents => jumlah * hargaCents;
 }
@@ -216,6 +295,22 @@ class PaymentRow {
   final String? catatan;
 }
 
+class CommissionRow {
+  const CommissionRow({
+    required this.employeeSyncId,
+    required this.nama,
+    required this.nominalCents,
+    this.overrideCents,
+  });
+
+  final String employeeSyncId;
+  final String nama;
+  final int nominalCents;
+  final int? overrideCents;
+
+  int get finalCents => overrideCents ?? nominalCents;
+}
+
 class RecordDetail {
   const RecordDetail({
     required this.record,
@@ -228,6 +323,9 @@ class RecordDetail {
     required this.totalDibayarCents,
     required this.sisaCents,
     required this.voidReason,
+    this.createdBy,
+    this.mechanic,
+    this.commissions = const [],
   });
 
   final ServiceRecordSummary record;
@@ -240,6 +338,9 @@ class RecordDetail {
   final int totalDibayarCents;
   final int sisaCents;
   final String? voidReason;
+  final String? createdBy;
+  final String? mechanic;
+  final List<CommissionRow> commissions;
 }
 
 class ReportSummary {
@@ -251,6 +352,11 @@ class ReportSummary {
     required this.totalCents,
     required this.dibayarCents,
     required this.piutangCents,
+    this.totalModalPartCents = 0,
+    this.labaKotorPartCents = 0,
+    this.komisiCents = 0,
+    this.gajiCents = 0,
+    this.cashByMethod = const {},
   });
 
   final int transaksi;
@@ -260,6 +366,11 @@ class ReportSummary {
   final int totalCents;
   final int dibayarCents;
   final int piutangCents;
+  final int totalModalPartCents;
+  final int labaKotorPartCents;
+  final int komisiCents;
+  final int gajiCents;
+  final Map<String, int> cashByMethod;
 }
 
 class DashboardData {
@@ -270,6 +381,7 @@ class DashboardData {
     required this.lowStockCount,
     required this.receivableCents,
     required this.recent,
+    this.negativeStockCount = 0,
   });
 
   final List<ServiceRecordSummary> todayRecords;
@@ -278,4 +390,5 @@ class DashboardData {
   final int lowStockCount;
   final int receivableCents;
   final List<ServiceRecordSummary> recent;
+  final int negativeStockCount;
 }

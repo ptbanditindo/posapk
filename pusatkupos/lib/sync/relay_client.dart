@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../core/relay_url.dart';
+
 class RelayException implements Exception {
   RelayException(this.statusCode, this.message);
   final int statusCode;
@@ -12,7 +14,8 @@ class RelayException implements Exception {
 }
 
 class RelayClient {
-  RelayClient({required this.baseUrl, this.deviceToken});
+  RelayClient({required String baseUrl, this.deviceToken})
+      : baseUrl = normalizeRelayUrl(baseUrl);
 
   final String baseUrl;
   final String? deviceToken;
@@ -49,6 +52,15 @@ class RelayClient {
     return _json(await http.get(_uri('/relay/health')));
   }
 
+  Future<Map<String, Object?>> googleLogin({required String idToken}) async {
+    final response = await http.post(
+      _uri('/relay/auth/google'),
+      headers: _headers,
+      body: jsonEncode({'id_token': idToken}),
+    );
+    return _json(response);
+  }
+
   Future<Map<String, Object?>> enroll({
     required String enrollToken,
     required String ownerId,
@@ -71,8 +83,7 @@ class RelayClient {
         'encryption_key': encryptionKey,
         'owner_public_key': ownerPublicKey,
         'store_ids': storeIds,
-        if (employeeAccountId != null)
-          'employee_account_id': employeeAccountId,
+        'employee_account_id': ?employeeAccountId,
       }),
     );
     return _json(response);

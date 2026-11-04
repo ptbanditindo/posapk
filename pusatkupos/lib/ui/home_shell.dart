@@ -1,9 +1,16 @@
 import 'package:flutter/material.dart';
 
 import '../auth/operator.dart';
+import '../data/app_database.dart';
+import '../data/store_registry.dart';
+import '../data/store_service.dart';
 import '../state/app_state.dart';
+import 'pin_gate.dart';
+import 'widgets.dart';
 import 'screens/customers_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/employees_screen.dart';
+import 'screens/followup_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/jasa_screen.dart';
 import 'screens/pos_screen.dart';
@@ -11,6 +18,8 @@ import 'screens/premium_screen.dart';
 import 'screens/reports_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/stock_screen.dart';
+import 'screens/supplier_screen.dart';
+import 'widgets/store_switcher.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -22,6 +31,78 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   int _position = 0;
+  List<StoreRecord> _stores = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStores();
+  }
+
+  Future<void> _loadStores() async {
+    try {
+      final stores = await StoreService.instance.listStores();
+      if (!mounted) return;
+      final operator = _operator;
+      setState(() {
+        _stores = operator.isOwner
+            ? stores
+            : stores
+                .where((store) => operator.storeIds.contains(store.storeId))
+                .toList();
+      });
+    } catch (_) {
+      // Registry toko belum siap; menu ganti toko tetap tersembunyi.
+    }
+  }
+
+  String _activeStoreName() {
+    for (final store in _stores) {
+      if (store.storeId == AppDatabase.instance.activeStoreId) {
+        return store.nama;
+      }
+    }
+    return 'Pilih toko aktif';
+  }
+
+  Future<void> _openStoreSwitcher() async {
+    final operator = _operator;
+    if (_stores.length <= 1) return;
+    final activeId = AppDatabase.instance.activeStoreId ?? 'utama';
+    final selected = await showDialog<StoreRecord>(
+      context: context,
+      builder: (context) => StoreSwitcherDialog(
+        stores: _stores,
+        activeId: activeId,
+      ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected.storeId == activeId) return;
+    final allowed = operator.isOwner ? null : operator.storeIds.toSet();
+    try {
+      await StoreService.instance.switchStore(
+        selected.storeId,
+        allowedStoreIds: allowed,
+      );
+      if (!operator.isOwner) {
+        AppState.instance.setOperator(null);
+        await AppState.instance.reloadStore();
+        if (!mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const PinGate()),
+          (_) => false,
+        );
+        return;
+      }
+      await AppState.instance.reloadStore();
+      await _loadStores();
+      if (!mounted) return;
+      showSnack(context, 'Toko aktif: ${selected.nama}.');
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(context, '$error', error: true);
+    }
+  }
 
   static const _allLabels = [
     'Ringkasan',
@@ -31,6 +112,9 @@ class _HomeShellState extends State<HomeShell> {
     'Stok',
     'Jasa',
     'Laporan',
+    'Supplier',
+    'Follow up',
+    'Karyawan',
     'Pengaturan',
     'Premium',
   ];
@@ -42,6 +126,9 @@ class _HomeShellState extends State<HomeShell> {
     Icons.inventory_2_outlined,
     Icons.build_outlined,
     Icons.bar_chart_outlined,
+    Icons.local_shipping_outlined,
+    Icons.notifications_active_outlined,
+    Icons.badge_outlined,
     Icons.settings_outlined,
     Icons.workspace_premium_outlined,
   ];
@@ -56,6 +143,8 @@ class _HomeShellState extends State<HomeShell> {
     final screens = <int>[0, 2, 3, 4];
     if (operator.canWriteMoney) screens.add(1);
     if (operator.can('lihat_laporan')) screens.add(6);
+    if (operator.can('ubah_stok')) screens.add(7);
+    if (operator.can('followup')) screens.add(8);
     screens.sort();
     return screens;
   }
@@ -68,6 +157,9 @@ class _HomeShellState extends State<HomeShell> {
         const StockScreen(),
         const JasaScreen(),
         const ReportsScreen(),
+        const SupplierScreen(),
+        FollowupScreen(onOpenPremium: () => _goScreen(11)),
+        const EmployeesScreen(),
         const SettingsScreen(),
         const PremiumScreen(),
       ];
@@ -87,7 +179,11 @@ class _HomeShellState extends State<HomeShell> {
         if (_position >= visible.length) _position = 0;
         final screenIndex = visible[_position.clamp(0, visible.length - 1)];
         final wide = MediaQuery.sizeOf(context).width >= 900;
-        final body = IndexedStack(index: screenIndex, children: _screens());
+        final body = IndexedStack(
+          key: ValueKey(appState.storeRevision),
+          index: screenIndex,
+          children: _screens(),
+        );
         return Scaffold(
           key: _scaffoldKey,
           drawer: _buildDrawer(context, visible),
@@ -232,15 +328,31 @@ class _HomeShellState extends State<HomeShell> {
             const Divider(),
             Expanded(
               child: ListView.builder(
-                itemCount: visible.length,
+                itemCount: visible.length + (_stores.length > 1 ? 1 : 0),
                 itemBuilder: (context, index) {
-                  final screenIndex = visible[index];
+                  if (_stores.length > 1 && index == 0) {
+                    return ListTile(
+                      leading: const Icon(Icons.swap_horiz),
+                      title: const Text('Ganti toko'),
+                      subtitle: Text(_activeStoreName()),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        _openStoreSwitcher();
+                      },
+                    );
+                  }
+                  final itemIndex =
+                      _stores.length > 1 ? index - 1 : index;
+                  if (itemIndex >= visible.length) {
+                    return const SizedBox.shrink();
+                  }
+                  final screenIndex = visible[itemIndex];
                   return ListTile(
-                    selected: _position == index,
+                    selected: _position == itemIndex,
                     leading: Icon(_allIcons[screenIndex]),
                     title: Text(_allLabels[screenIndex]),
                     onTap: () {
-                      setState(() => _position = index);
+                      setState(() => _position = itemIndex);
                       Navigator.of(context).pop();
                     },
                   );

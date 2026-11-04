@@ -5,6 +5,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:http/http.dart' as http;
 import 'package:pusatkupos/core/dates.dart';
 import 'package:pusatkupos/core/ids.dart';
+import 'package:pusatkupos/core/relay_url.dart';
 import 'package:pusatkupos/data/secure_store.dart';
 import 'package:pusatkupos/sync/crypto.dart';
 
@@ -23,7 +24,7 @@ class OwnerApi {
     required String baseUrl,
     required this.enrollToken,
     required this.ownerId,
-  }) : baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+  }) : baseUrl = normalizeRelayUrl(baseUrl);
 
   final String baseUrl;
   final String enrollToken;
@@ -112,7 +113,7 @@ class OwnerApi {
     String salt = '';
     if (password != null && password.isNotEmpty) {
       salt = _newSalt();
-      hash = await _derive(password, salt, 120000);
+      hash = await _derive(password, salt, 600000);
     }
     final keys = await _accessKeys();
     final payload = {
@@ -144,7 +145,7 @@ class OwnerApi {
         'store_ids': stores,
         'password_hash': hash,
         'password_salt': salt,
-        'password_iterations': 120000,
+        'password_iterations': 600000,
         'aktif': aktif,
         'permission_version': version,
         'permission_payload': payload,

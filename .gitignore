@@ -31,3 +31,4 @@ macos/Flutter/ephemeral/
 # Secrets
 .env
 .env.*
+!.env.example

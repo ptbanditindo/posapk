@@ -37,6 +37,10 @@ class _JasaScreenState extends State<JasaScreen> {
   }
 
   Future<void> _openForm([ServiceCatalog? item]) async {
+    if (!AppState.instance.can('ubah_harga_jasa')) {
+      showSnack(context, 'Izin ubah harga jasa tidak tersedia.', error: true);
+      return;
+    }
     final input = await showDialog<CatalogInput>(
       context: context,
       builder: (_) => _CatalogDialog(item: item),
@@ -47,6 +51,7 @@ class _JasaScreenState extends State<JasaScreen> {
         id: item?.id,
         nama: input.nama,
         hargaCents: input.hargaCents,
+        actor: AppState.instance.operator,
       );
       AppState.instance.touch();
       _load();
@@ -73,7 +78,9 @@ class _JasaScreenState extends State<JasaScreen> {
                 ),
               ),
               FilledButton.icon(
-                onPressed: () => _openForm(),
+                onPressed: AppState.instance.can('ubah_harga_jasa')
+                    ? () => _openForm()
+                    : null,
                 icon: const Icon(Icons.add),
                 label: const Text('Jasa'),
               ),
@@ -212,7 +219,7 @@ class _CatalogDialogState extends State<_CatalogDialog> {
               context,
               CatalogInput(
                 _nama.text.trim(),
-                parseRupiahToCents(_harga.text),
+                tryParseRupiahToCents(_harga.text) ?? 0,
               ),
             );
           },

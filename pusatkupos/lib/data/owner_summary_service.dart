@@ -8,6 +8,7 @@ import 'app_database.dart';
 import 'device_service.dart';
 import 'license_service.dart';
 import 'secure_store.dart';
+import 'store_service.dart';
 
 class OwnerSummaryService {
   OwnerSummaryService._();
@@ -25,15 +26,30 @@ class OwnerSummaryService {
     final devices = await DeviceService.instance.listDevices();
     final storeName =
         await AppDatabase.instance.getSetting('bengkel.nama') ?? 'PusatkuPOS';
+    List<Map<String, String>> stores;
+    try {
+      final records = await StoreService.instance.listStores();
+      stores = records
+          .map(
+            (store) => {
+              'store_id': store.storeId,
+              'nama': store.nama,
+            },
+          )
+          .toList();
+    } catch (_) {
+      stores = [
+        {'store_id': 'utama', 'nama': storeName},
+      ];
+    }
     final payload = {
       'v': 1,
       'owner_id': ownerId,
       'plan': status['plan'],
       'period_end': status['period_end'],
       'device_limit': status['device_limit'],
-      'stores': [
-        {'store_id': 'utama', 'nama': storeName},
-      ],
+      'license_token': status['token'],
+      'stores': stores,
       'devices': devices
           .map(
             (device) => {

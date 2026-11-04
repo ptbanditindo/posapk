@@ -1,9 +1,17 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:cryptography/cryptography.dart';
 
 import 'app_database.dart';
+import 'login_guard.dart';
+
+const int ownerPinMinLength = 6;
+const int pinIterations = 600000;
+const String ownerGuardScope = 'owner';
+
+enum PinVerification { ok, weakLegacyPin, wrong, locked }
 
 class PinService {
   PinService._();
@@ -11,17 +19,54 @@ class PinService {
   static final PinService instance = PinService._();
 
   Future<bool> verify(String pin) async {
+    final result = await verifyDetailed(pin);
+    return result == PinVerification.ok ||
+        result == PinVerification.weakLegacyPin;
+  }
+
+  Future<PinVerification> verifyDetailed(String pin) async {
+    if (pin.trim().isEmpty) return PinVerification.wrong;
+    try {
+      await LoginGuard.check(ownerGuardScope);
+    } on LoginLockedException {
+      return PinVerification.locked;
+    }
     final db = AppDatabase.instance;
     final salt = await db.getSetting('auth.pin_salt');
     final hash = await db.getSetting('auth.pin_hash');
-    if (salt == null || hash == null) return false;
-    return _hash(salt, pin) == hash;
+    if (salt == null || salt.isEmpty || hash == null || hash.isEmpty) {
+      return PinVerification.wrong;
+    }
+    final storedIterations = int.tryParse(
+      await db.getSetting('auth.pin_iterations') ?? '',
+    );
+    final legacy = storedIterations == null;
+    final valid = legacy
+        ? _legacyHash(salt, pin) == hash
+        : await _derive(pin, salt, storedIterations) == hash;
+    if (!valid) {
+      await LoginGuard.fail(ownerGuardScope);
+      return PinVerification.wrong;
+    }
+    await LoginGuard.clear(ownerGuardScope);
+    if (legacy || storedIterations < pinIterations) {
+      await _store(pin);
+    }
+    return pin.trim().length < ownerPinMinLength
+        ? PinVerification.weakLegacyPin
+        : PinVerification.ok;
   }
 
   Future<void> setup(String pin) async {
-    final salt = _newSalt();
-    await AppDatabase.instance.setSetting('auth.pin_salt', salt);
-    await AppDatabase.instance.setSetting('auth.pin_hash', _hash(salt, pin));
+    final clean = pin.trim();
+    if (!RegExp(r'^\d+$').hasMatch(clean)) {
+      throw ArgumentError('PIN hanya boleh berisi angka.');
+    }
+    if (clean.length < ownerPinMinLength) {
+      throw ArgumentError('PIN baru minimal $ownerPinMinLength digit.');
+    }
+    await _store(clean);
+    await LoginGuard.clear(ownerGuardScope);
   }
 
   Future<bool> change({required String oldPin, required String newPin}) async {
@@ -30,13 +75,34 @@ class PinService {
     return true;
   }
 
+  Future<void> _store(String pin) async {
+    final salt = _newSalt();
+    final hash = await _derive(pin, salt, pinIterations);
+    final db = AppDatabase.instance;
+    await db.setSetting('auth.pin_salt', salt);
+    await db.setSetting('auth.pin_hash', hash);
+    await db.setSetting('auth.pin_iterations', '$pinIterations');
+  }
+
   String _newSalt() {
     final random = Random.secure();
     final values = List<int>.generate(16, (_) => random.nextInt(256));
     return base64UrlEncode(values);
   }
 
-  String _hash(String salt, String pin) {
-    return sha256.convert(utf8.encode('$salt:$pin')).toString();
+  String _legacyHash(String salt, String pin) {
+    return crypto.sha256.convert(utf8.encode('$salt:$pin')).toString();
+  }
+
+  Future<String> _derive(String value, String salt, int iterations) async {
+    final key = await Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: iterations,
+      bits: 256,
+    ).deriveKey(
+      secretKey: SecretKey(utf8.encode(value)),
+      nonce: base64Url.decode(salt),
+    );
+    return base64UrlEncode(await key.extractBytes());
   }
 }

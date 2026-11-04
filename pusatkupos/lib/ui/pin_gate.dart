@@ -6,6 +6,7 @@ import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/pairing_service.dart';
 import '../data/pin_service.dart';
+import '../data/secure_store.dart';
 import '../state/app_state.dart';
 import '../sync/sync_service.dart';
 import 'home_shell.dart';
@@ -58,12 +59,17 @@ class _PinGateState extends State<PinGate> {
 
   Future<void> _ownerSubmit() async {
     final pin = _pin.text.trim();
-    if (pin.length < 4) {
-      setState(() => _error = 'PIN minimal 4 angka.');
-      return;
-    }
-    if (_setup && pin != _confirm.text.trim()) {
-      setState(() => _error = 'PIN yang diulang tidak sama.');
+    if (_setup) {
+      if (!RegExp(r'^\d{6,}$').hasMatch(pin)) {
+        setState(() => _error = 'PIN baru minimal 6 angka.');
+        return;
+      }
+      if (pin != _confirm.text.trim()) {
+        setState(() => _error = 'PIN yang diulang tidak sama.');
+        return;
+      }
+    } else if (pin.isEmpty) {
+      setState(() => _error = 'Masukkan PIN.');
       return;
     }
     setState(() {
@@ -71,15 +77,34 @@ class _PinGateState extends State<PinGate> {
       _error = null;
     });
     try {
+      var weakPin = false;
       if (_setup) {
         await PinService.instance.setup(pin);
         await AppState.instance.refreshPinState();
-      } else if (!await PinService.instance.verify(pin)) {
-        setState(() => _error = 'PIN salah.');
-        return;
+      } else {
+        final result = await PinService.instance.verifyDetailed(pin);
+        if (result == PinVerification.locked) {
+          setState(() => _error = 'Terlalu banyak percobaan. Coba lagi nanti.');
+          return;
+        }
+        if (result == PinVerification.wrong) {
+          setState(() => _error = 'PIN salah.');
+          return;
+        }
+        weakPin = result == PinVerification.weakLegacyPin;
       }
+      await AppDatabase.instance.setSetting('app.role', 'owner');
       AppState.instance.setOperator(Operator.owner);
       if (!mounted) return;
+      if (weakPin) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'PIN Anda masih 4 digit. Segera ganti ke minimal 6 digit di Pengaturan.',
+            ),
+          ),
+        );
+      }
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomeShell()),
       );
@@ -90,12 +115,33 @@ class _PinGateState extends State<PinGate> {
     }
   }
 
+  Future<({String ownerId, String token})?> _pairedDevice() async {
+    final rows = await AppDatabase.instance.db.query(
+      'owner_identity',
+      columns: ['owner_id'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final ownerId = rows.first['owner_id'] as String? ?? '';
+    final token =
+        await SecureStore.instance.read('device.current_token') ?? '';
+    if (ownerId.isEmpty || token.isEmpty) return null;
+    return (ownerId: ownerId, token: token);
+  }
+
   Future<void> _employeeSubmit() async {
     final username = _username.text.trim();
     final password = _password.text;
     final pin = _employeePin.text.trim();
-    if (username.isEmpty || password.isEmpty || pin.length != 6) {
-      setState(() => _error = 'Isi username, password, dan PIN 6 angka.');
+    final paired = _employeeDevice ? await _pairedDevice() : null;
+    if (username.isEmpty ||
+        password.isEmpty ||
+        (paired == null && pin.length != 6)) {
+      setState(
+        () => _error = paired == null
+            ? 'Isi username, password, dan PIN 6 angka.'
+            : 'Isi username dan password.',
+      );
       return;
     }
     setState(() {
@@ -103,11 +149,18 @@ class _PinGateState extends State<PinGate> {
       _error = null;
     });
     try {
-      final operator = await AccountService.instance.loginHub(
-        username: username,
-        password: password,
-        pin: pin,
-      );
+      final operator = paired == null
+          ? await AccountService.instance.loginHub(
+              username: username,
+              password: password,
+              pin: pin,
+            )
+          : await AccountService.instance.loginDevice(
+              ownerId: paired.ownerId,
+              username: username,
+              password: password,
+              token: paired.token,
+            );
       if (operator == null) {
         setState(() => _error = 'Username, password, atau PIN salah.');
         return;
@@ -201,11 +254,8 @@ class _PinGateState extends State<PinGate> {
 
   Future<void> _openPairing() async {
     final savedUrl = await SyncService.instance.relayUrl();
-    final relay = TextEditingController(
-      text: savedUrl == null || savedUrl.isEmpty
-          ? 'http://127.0.0.1:8120'
-          : savedUrl,
-    );
+    if (!mounted) return;
+    final relay = TextEditingController(text: savedUrl ?? '');
     final code = TextEditingController();
     final name = TextEditingController(text: 'HP Karyawan');
     final result = await showDialog<Map<String, Object?>>(
@@ -224,7 +274,7 @@ class _PinGateState extends State<PinGate> {
                     controller: relay,
                     decoration: const InputDecoration(
                       labelText: 'Alamat relay',
-                      hintText: 'http://127.0.0.1:8120',
+                      hintText: 'https://relay.contoh.com',
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -518,19 +568,21 @@ class _PinGateState extends State<PinGate> {
         ),
       ),
       const SizedBox(height: 12),
-      TextField(
-        controller: _employeePin,
-        obscureText: true,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        maxLength: 6,
-        decoration: const InputDecoration(
-          labelText: 'PIN 6 angka',
-          counterText: '',
-          prefixIcon: Icon(Icons.pin_outlined),
+      if (!_employeeDevice) ...[
+        TextField(
+          controller: _employeePin,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          maxLength: 6,
+          decoration: const InputDecoration(
+            labelText: 'PIN 6 angka',
+            counterText: '',
+            prefixIcon: Icon(Icons.pin_outlined),
+          ),
+          onSubmitted: (_) => _employeeSubmit(),
         ),
-        onSubmitted: (_) => _employeeSubmit(),
-      ),
+      ],
     ];
   }
 }

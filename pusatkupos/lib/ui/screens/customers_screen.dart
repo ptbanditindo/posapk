@@ -49,12 +49,131 @@ class _CustomersScreenState extends State<CustomersScreen> {
         nama: input.nama,
         nomorHp: input.nomorHp,
         alamat: input.alamat,
+        waConsent: input.waConsent,
+        doNotContact: input.doNotContact,
       );
       await SyncService.instance.enqueueCustomer(id);
       AppState.instance.touch();
       _load();
+    } on DuplicateCustomerException catch (duplicate) {
+      if (!mounted) return;
+      final useExisting = await confirmAction(
+        context,
+        title: 'Pelanggan sudah ada',
+        message: '$duplicate. Pakai pelanggan "${duplicate.existingName}"?',
+        confirmLabel: 'Pakai yang ada',
+      );
+      if (!useExisting) return;
+      await _openUnits(
+        Customer(
+          id: duplicate.existingId,
+          syncId: '',
+          nama: duplicate.existingName,
+          nomorHp: '',
+        ),
+      );
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
+    }
+  }
+
+  Future<void> _editCustomer(Customer customer) async {
+    final row = await AppDatabase.instance.customerRow(customer.id);
+    if (row == null || !mounted) return;
+    final input = await showDialog<_CustomerEdit>(
+      context: context,
+      builder: (_) => _CustomerEditDialog(customer: customer, row: row),
+    );
+    if (input == null) return;
+    try {
+      await AppDatabase.instance.updateCustomer(
+        id: customer.id,
+        nama: input.nama,
+        nomorHp: input.nomorHp,
+        alamat: input.alamat,
+        waConsent: input.waConsent,
+        doNotContact: input.doNotContact,
+      );
+      await SyncService.instance.enqueueCustomer(customer.id);
+      AppState.instance.touch();
+      _load();
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
+    }
+  }
+
+  Future<void> _mergeCustomer(Customer source, List<Customer> all) async {
+    final targets =
+        all.where((customer) => customer.id != source.id).toList();
+    if (targets.isEmpty) {
+      showSnack(context, 'Belum ada pelanggan lain untuk digabung.', error: true);
+      return;
+    }
+    int? targetId = targets.first.id;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Gabung pelanggan'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Unit dan nota milik "${source.nama}" akan dipindahkan ke '
+                'pelanggan tujuan, lalu pelanggan asal dihapus.',
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: targetId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Tujuan'),
+                items: targets
+                    .map(
+                      (customer) => DropdownMenuItem(
+                        value: customer.id,
+                        child: Text(
+                          '${customer.nama} · ${customer.nomorHp}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) => setDialogState(() => targetId = value),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Gabungkan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    final target = targetId;
+    if (target == null) return;
+    try {
+      final moved = await AppDatabase.instance.mergeCustomers(
+        sourceId: source.id,
+        targetId: target,
+      );
+      for (final unitId in moved['units'] ?? const <int>[]) {
+        await SyncService.instance.enqueueUnit(unitId);
+      }
+      for (final recordId in moved['records'] ?? const <int>[]) {
+        await SyncService.instance.enqueueNote(recordId);
+      }
+      AppState.instance.touch();
+      _load();
+      if (mounted) showSnack(context, 'Pelanggan digabungkan.');
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal menggabung: $error', error: true);
     }
   }
 
@@ -131,7 +250,30 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               customer.alamat!,
                           ].join(' · '),
                         ),
-                        trailing: const Icon(Icons.chevron_right),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.chevron_right),
+                            PopupMenuButton<String>(
+                              onSelected: (value) {
+                                if (value == 'edit') _editCustomer(customer);
+                                if (value == 'merge') {
+                                  _mergeCustomer(customer, rows);
+                                }
+                              },
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Ubah pelanggan'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'merge',
+                                  child: Text('Gabung pelanggan'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   },
@@ -155,11 +297,19 @@ class _CustomersScreenState extends State<CustomersScreen> {
 }
 
 class CustomerInput {
-  const CustomerInput(this.nama, this.nomorHp, this.alamat);
+  const CustomerInput(
+    this.nama,
+    this.nomorHp,
+    this.alamat, {
+    this.waConsent = true,
+    this.doNotContact = false,
+  });
 
   final String nama;
   final String nomorHp;
   final String? alamat;
+  final bool waConsent;
+  final bool doNotContact;
 }
 
 class _CustomerDialog extends StatefulWidget {
@@ -173,6 +323,8 @@ class _CustomerDialogState extends State<_CustomerDialog> {
   final _nama = TextEditingController();
   final _hp = TextEditingController();
   final _alamat = TextEditingController();
+  bool _waConsent = true;
+  bool _doNotContact = false;
   String? _error;
 
   @override
@@ -198,6 +350,8 @@ class _CustomerDialogState extends State<_CustomerDialog> {
         _nama.text.trim(),
         _hp.text.trim(),
         _alamat.text.trim().isEmpty ? null : _alamat.text.trim(),
+        waConsent: _waConsent,
+        doNotContact: _doNotContact,
       ),
     );
   }
@@ -225,6 +379,18 @@ class _CustomerDialogState extends State<_CustomerDialog> {
             TextField(
               controller: _alamat,
               decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Setuju dihubungi via WhatsApp'),
+              value: _waConsent,
+              onChanged: (value) => setState(() => _waConsent = value),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Jangan dihubungi (promo/follow up)'),
+              value: _doNotContact,
+              onChanged: (value) => setState(() => _doNotContact = value),
             ),
             if (_error != null) ...[
               const SizedBox(height: 10),
@@ -284,6 +450,7 @@ class _UnitsSheetState extends State<_UnitsSheet> {
       jenisMobil: input.jenisMobil,
       tahunMobil: input.tahunMobil,
       tipeRadiator: input.tipeRadiator,
+      labelRadiator: input.labelRadiator,
     );
     await SyncService.instance.enqueueUnit(id);
     AppState.instance.touch();
@@ -370,6 +537,7 @@ class UnitInput {
     this.jenisMobil,
     this.tahunMobil,
     this.tipeRadiator,
+    this.labelRadiator,
   });
 
   final String unitType;
@@ -377,6 +545,7 @@ class UnitInput {
   final String? jenisMobil;
   final int? tahunMobil;
   final String? tipeRadiator;
+  final String? labelRadiator;
 }
 
 class _UnitDialog extends StatefulWidget {
@@ -391,6 +560,7 @@ class _UnitDialogState extends State<_UnitDialog> {
   final _jenis = TextEditingController();
   final _tahun = TextEditingController();
   final _radiator = TextEditingController();
+  final _labelRadiator = TextEditingController();
   String _type = 'MOBIL';
 
   @override
@@ -399,6 +569,7 @@ class _UnitDialogState extends State<_UnitDialog> {
     _jenis.dispose();
     _tahun.dispose();
     _radiator.dispose();
+    _labelRadiator.dispose();
     super.dispose();
   }
 
@@ -461,6 +632,13 @@ class _UnitDialogState extends State<_UnitDialog> {
               controller: _radiator,
               decoration: const InputDecoration(labelText: 'Tipe radiator'),
             ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _labelRadiator,
+              decoration: const InputDecoration(
+                labelText: 'Label radiator (opsional)',
+              ),
+            ),
           ],
         ),
       ),
@@ -481,8 +659,139 @@ class _UnitDialogState extends State<_UnitDialog> {
                   int.tryParse(_tahun.text.trim()),
               tipeRadiator:
                   _radiator.text.trim().isEmpty ? null : _radiator.text.trim(),
+              labelRadiator: _labelRadiator.text.trim().isEmpty
+                  ? null
+                  : _labelRadiator.text.trim(),
             ),
           ),
+          child: const Text('Simpan'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CustomerEdit {
+  const _CustomerEdit({
+    required this.nama,
+    required this.nomorHp,
+    required this.alamat,
+    required this.waConsent,
+    required this.doNotContact,
+  });
+
+  final String nama;
+  final String nomorHp;
+  final String? alamat;
+  final bool waConsent;
+  final bool doNotContact;
+}
+
+class _CustomerEditDialog extends StatefulWidget {
+  const _CustomerEditDialog({required this.customer, required this.row});
+
+  final Customer customer;
+  final Map<String, Object?> row;
+
+  @override
+  State<_CustomerEditDialog> createState() => _CustomerEditDialogState();
+}
+
+class _CustomerEditDialogState extends State<_CustomerEditDialog> {
+  late final TextEditingController _nama;
+  late final TextEditingController _hp;
+  late final TextEditingController _alamat;
+  late bool _waConsent;
+  late bool _doNotContact;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _nama = TextEditingController(text: widget.customer.nama);
+    _hp = TextEditingController(text: widget.customer.nomorHp);
+    _alamat = TextEditingController(text: widget.customer.alamat ?? '');
+    _waConsent = widget.row['wa_consent'] != 0;
+    _doNotContact = widget.row['do_not_contact'] == 1;
+  }
+
+  @override
+  void dispose() {
+    _nama.dispose();
+    _hp.dispose();
+    _alamat.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Ubah pelanggan'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nama,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Nama'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _hp,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(labelText: 'Nomor HP'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _alamat,
+              decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Setuju dihubungi via WhatsApp'),
+              value: _waConsent,
+              onChanged: (value) => setState(() => _waConsent = value),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Jangan dihubungi (promo/follow up)'),
+              value: _doNotContact,
+              onChanged: (value) => setState(() => _doNotContact = value),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (_nama.text.trim().length < 2 || _hp.text.trim().isEmpty) {
+              setState(() => _error = 'Nama dan nomor HP wajib diisi.');
+              return;
+            }
+            Navigator.pop(
+              context,
+              _CustomerEdit(
+                nama: _nama.text.trim(),
+                nomorHp: _hp.text.trim(),
+                alamat:
+                    _alamat.text.trim().isEmpty ? null : _alamat.text.trim(),
+                waConsent: _waConsent,
+                doNotContact: _doNotContact,
+              ),
+            );
+          },
           child: const Text('Simpan'),
         ),
       ],

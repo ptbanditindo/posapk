@@ -1,19 +1,28 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../sync/crypto.dart';
 import 'app_database.dart';
+import 'license_verifier.dart';
 import 'secure_store.dart';
 
 const _ownerAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+const _recoveryIterations = 600000;
 
 class LicenseService {
   LicenseService._();
 
   static final LicenseService instance = LicenseService._();
+
+  /// Bisa diganti di tes dengan kunci uji.
+  static LicenseVerifier verifier = const ServerLicenseVerifier();
+
+  LicenseClaims? _cachedClaims;
+  String? _cachedToken;
 
   Future<Map<String, Object?>?> owner() async {
     final rows = await AppDatabase.instance.db.query(
@@ -47,7 +56,7 @@ class LicenseService {
       (_) => _ownerAlphabet[random.nextInt(_ownerAlphabet.length)],
     ).join();
     final salt = b64e(List<int>.generate(16, (_) => random.nextInt(256)));
-    final recoveryHash = sha256Hex(utf8.encode('$salt:$recoveryCode'));
+    final recoveryHash = await _derive(recoveryCode, salt, _recoveryIterations);
     await SecureStore.instance
         .write('owner.signing.private', keys.privateKey);
     await SecureStore.instance.write('owner.recovery.code', recoveryCode);
@@ -66,105 +75,147 @@ class LicenseService {
     return SecureStore.instance.read('owner.recovery.code');
   }
 
-  Future<Map<String, Object?>> activate({
-    required int days,
-    required int deviceLimit,
-    String provider = 'manual',
+  Future<void> clearRecoveryCode() async {
+    await SecureStore.instance.delete('owner.recovery.code');
+  }
+
+  Future<bool> verifyRecoveryCode(String code) async {
+    final row = await owner();
+    final hash = row?['recovery_hash'] as String? ?? '';
+    final salt = row?['recovery_salt'] as String? ?? '';
+    if (hash.isEmpty || salt.isEmpty) return false;
+    final legacy = hash.length == 64 && RegExp(r'^[0-9a-f]+$').hasMatch(hash);
+    final derived = legacy
+        ? sha256Hex(utf8.encode('$salt:$code'))
+        : await _derive(code, salt, _recoveryIterations);
+    return derived == hash;
+  }
+
+  Future<void> installRemoteOwner({
+    required String ownerId,
+    required String publicKey,
   }) async {
-    final ownerIdValue = await ensureOwner();
-    final privateKey = await SecureStore.instance
-        .read('owner.signing.private');
-    if (privateKey == null) {
-      throw StateError('Kunci owner tidak tersedia.');
+    final existing = await owner();
+    if (existing != null) {
+      final localId = existing['owner_id'] as String? ?? '';
+      if (localId.isNotEmpty && localId != ownerId) {
+        throw StateError(
+          'Perangkat ini memakai ID owner $localId, bukan $ownerId. '
+          'Gunakan instalasi yang sama atau minta bantuan penjual.',
+        );
+      }
+      final localKey = existing['public_key'] as String? ?? '';
+      if (publicKey.isNotEmpty && localKey.isNotEmpty && localKey != publicKey) {
+        throw StateError(
+          'Kunci publik owner di perangkat ini berbeda dengan yang terdaftar '
+          'di server. Minta bantuan penjual.',
+        );
+      }
+      return;
     }
-    final now = DateTime.now();
-    final periodEnd = now.add(Duration(days: days));
-    final payload = {
-      'v': 1,
-      'owner_id': ownerIdValue,
-      'plan': 'premium',
-      'period_end': periodEnd.toIso8601String(),
-      'device_limit': deviceLimit,
-      'provider': provider,
-      'issued_at': now.toIso8601String(),
-    };
-    final raw = canonicalJson(payload).codeUnits;
-    final signature = await signPayload(privateKey, raw);
-    final token = '${b64e(raw)}.$signature';
+    await AppDatabase.instance.db.insert('owner_identity', {
+      'id': 1,
+      'owner_id': ownerId,
+      'public_key': publicKey,
+      'recovery_hash': '',
+      'recovery_salt': '',
+      'created_at': nowIso(),
+    });
+  }
+
+  Future<LicenseClaims> installToken(
+    String token, {
+    String? expectedOwnerId,
+  }) async {
+    final claims = await verifier.verify(token.trim());
+    final localOwner = await ownerId();
+    final expected = expectedOwnerId ?? localOwner;
+    if ((expected ?? '').isNotEmpty && claims.ownerId != expected) {
+      throw LicenseVerifyException('Lisensi milik owner lain.');
+    }
     await AppDatabase.instance.db.insert(
       'license',
       {
         'id': 1,
-        'plan': 'premium',
-        'period_end': periodEnd.toIso8601String(),
-        'device_limit': deviceLimit,
-        'provider': provider,
-        'token': token,
-        'activated_at': now.toIso8601String(),
+        'plan': claims.plan,
+        'period_end': claims.periodEnd.toIso8601String(),
+        'device_limit': claims.deviceLimit,
+        'provider': 'server',
+        'token': token.trim(),
+        'activated_at': nowIso(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-    return {
-      'owner_id': ownerIdValue,
-      'period_end': periodEnd.toIso8601String(),
-      'device_limit': deviceLimit,
-      'provider': provider,
-    };
+    _cachedToken = token.trim();
+    _cachedClaims = claims;
+    return claims;
   }
 
-  Future<void> renew({required int days}) async {
+  Future<LicenseClaims?> verifiedClaims({bool force = false}) async {
     final row = await license();
-    if (row == null) throw StateError('Lisensi belum aktif.');
-    final current = DateTime.tryParse(row['period_end'] as String? ?? '');
-    final base = current != null && current.isAfter(DateTime.now())
-        ? current
-        : DateTime.now();
-    final periodEnd = base.add(Duration(days: days));
-    final ownerIdValue = await ownerId();
-    final privateKey = await SecureStore.instance
-        .read('owner.signing.private');
-    if (ownerIdValue == null || privateKey == null) {
-      throw StateError('Identitas owner tidak lengkap.');
+    final token = row?['token'] as String? ?? '';
+    if (token.isEmpty) return null;
+    if (!force && token == _cachedToken) return _cachedClaims;
+    try {
+      final claims = await verifier.verify(token);
+      final localOwner = await ownerId();
+      if (localOwner != null && localOwner.isNotEmpty &&
+          claims.ownerId != localOwner) {
+        return null;
+      }
+      _cachedToken = token;
+      _cachedClaims = claims;
+      return claims;
+    } catch (_) {
+      return null;
     }
-    final payload = {
-      'v': 1,
-      'owner_id': ownerIdValue,
-      'plan': 'premium',
-      'period_end': periodEnd.toIso8601String(),
-      'device_limit': row['device_limit'],
-      'provider': row['provider'],
-      'issued_at': nowIso(),
-    };
-    final raw = canonicalJson(payload).codeUnits;
-    final signature = await signPayload(privateKey, raw);
-    await AppDatabase.instance.db.update(
-      'license',
-      {
-        'period_end': periodEnd.toIso8601String(),
-        'token': '${b64e(raw)}.$signature',
-      },
-      where: 'id = 1',
-    );
   }
 
   Future<Map<String, Object?>> status() async {
     final ownerRow = await owner();
     final licenseRow = await license();
-    final periodEnd = DateTime.tryParse(
+    final claims = await verifiedClaims();
+    final storedEnd = DateTime.tryParse(
       licenseRow?['period_end'] as String? ?? '',
     );
-    final expired = periodEnd != null && periodEnd.isBefore(DateTime.now());
+    final expired = claims != null
+        ? !claims.aktif
+        : storedEnd != null && storedEnd.isBefore(DateTime.now());
     return {
       'owner_id': ownerRow?['owner_id'] ?? '',
       'owner_public_key': ownerRow?['public_key'] ?? '',
-      'plan': licenseRow == null ? 'free' : 'premium',
-      'period_end': licenseRow?['period_end'],
-      'device_limit': licenseRow?['device_limit'] ?? 1,
+      'plan': claims?.plan ?? (licenseRow == null ? 'free' : 'free'),
+      'period_end': claims?.periodEnd.toIso8601String() ??
+          licenseRow?['period_end'],
+      'device_limit': claims?.deviceLimit ?? licenseRow?['device_limit'] ?? 1,
       'provider': licenseRow?['provider'] ?? '',
       'expired': expired,
-      'premium': licenseRow != null,
+      'premium': claims?.premium ?? false,
+      'token': licenseRow?['token'] ?? '',
+      'recovery_available': (ownerRow?['recovery_hash'] as String? ?? '').isNotEmpty,
     };
   }
 
-  Future<bool> isPremium() async => (await license()) != null;
+  Future<bool> isPremium() async =>
+      (await verifiedClaims())?.premium ?? false;
+
+  void clearCache() {
+    _cachedToken = null;
+    _cachedClaims = null;
+  }
+
+  Future<String?> licenseToken() async =>
+      (await license())?['token'] as String?;
+
+  Future<String> _derive(String value, String salt, int iterations) async {
+    final key = await Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: iterations,
+      bits: 256,
+    ).deriveKey(
+      secretKey: SecretKey(utf8.encode(value)),
+      nonce: base64Url.decode(salt),
+    );
+    return base64UrlEncode(await key.extractBytes());
+  }
 }

@@ -19,6 +19,8 @@ import 'package:pusatkupos/sync/crypto.dart';
 import 'package:pusatkupos/sync/snapshot_sync.dart';
 import 'package:pusatkupos/sync/sync_service.dart';
 
+import 'test_support.dart';
+
 const _configPath = String.fromEnvironment('PEER_CONFIG');
 const _phase = String.fromEnvironment('PEER_PHASE');
 
@@ -49,8 +51,12 @@ Future<void> _openAndSeed(Map<String, dynamic> config, String dbPath) async {
       'created_at': nowIso(),
     });
   }
-  if (await LicenseService.instance.license() == null) {
-    await LicenseService.instance.activate(days: 3650, deviceLimit: 10);
+  if (!await LicenseService.instance.isPremium()) {
+    await installTestLicense(
+      ownerId: config['owner_id'] as String,
+      days: 3650,
+      deviceLimit: 10,
+    );
   }
   await SyncService.instance.configure(
     relayUrl: config['relay_url'] as String,
@@ -77,6 +83,7 @@ String _newSalt() {
 }
 
 void main() {
+  SecureStore.useDatabaseForTests = true;
   test(
     'peer sync fase $_phase',
     () async {
@@ -345,7 +352,6 @@ void main() {
           final password = 'Rahasia123';
           final salt = _newSalt();
           final syncId = newSyncId();
-          final access = await generateSigningKey();
           final payload = {
             'v': 1,
             'owner_id': config['owner_id'],
@@ -359,7 +365,7 @@ void main() {
             'issued_at': nowIso(),
           };
           final signature = await signPayload(
-            access.privateKey,
+            config['owner_private'] as String,
             utf8.encode(canonicalJson(payload)),
           );
           final accountResponse = await http.post(
@@ -380,7 +386,7 @@ void main() {
               'permission_version': 1,
               'permission_payload': payload,
               'permission_signature': signature,
-              'permission_signer_public_key': access.publicKey,
+              'permission_signer_public_key': config['owner_public'],
             }),
           );
           expect(accountResponse.statusCode, 200, reason: accountResponse.body);

@@ -78,6 +78,8 @@ Future<Map<String, int>> importSnapshotBytes(
 
 bool isLocalSetting(String key) {
   return key == 'app.created_at' ||
+      key == 'app.role' ||
+      key.startsWith('employee.') ||
       key.startsWith('sync.') ||
       key.startsWith('device.') ||
       key.startsWith('auth.') ||

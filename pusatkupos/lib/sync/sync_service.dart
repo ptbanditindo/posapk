@@ -5,10 +5,12 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/relay_url.dart';
 import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/device_service.dart';
 import '../data/license_service.dart';
+import '../data/models.dart';
 import '../data/note_sync.dart';
 import '../data/secure_store.dart';
 import 'crypto.dart';
@@ -23,6 +25,15 @@ class SyncService {
 
   Future<String?> _setting(String key) => AppDatabase.instance.getSetting(key);
 
+  Future<void> _requirePremium() async {
+    if (!await LicenseService.instance.isPremium()) {
+      throw StateError(
+        'Lisensi server yang valid diperlukan untuk sinkronisasi dan '
+        'multi-perangkat. Kasir offline tetap dapat dipakai.',
+      );
+    }
+  }
+
   Future<void> configure({
     required String relayUrl,
     required String enrollToken,
@@ -30,7 +41,7 @@ class SyncService {
   }) async {
     await AppDatabase.instance.setSetting(
       'sync.relay_url',
-      relayUrl.trim(),
+      normalizeRelayUrl(relayUrl),
     );
     await AppDatabase.instance.setSetting(
       'sync.enroll_token',
@@ -71,6 +82,53 @@ class SyncService {
     return random;
   }
 
+  Future<String> pinnedOwnerPublicKey() async {
+    final rows = await AppDatabase.instance.db.query(
+      'owner_identity',
+      columns: ['public_key'],
+      limit: 1,
+    );
+    final key = rows.isEmpty ? '' : rows.first['public_key'] as String? ?? '';
+    if (key.isEmpty) {
+      throw StateError(
+        'Kunci publik owner belum dipin. Impor ringkasan owner atau '
+        'lakukan pairing terlebih dahulu.',
+      );
+    }
+    return key;
+  }
+
+  Future<void> _verifyKeyWrap({
+    required String store,
+    required String deviceId,
+    required String wrapped,
+    required String signature,
+  }) async {
+    if (signature.isEmpty) {
+      throw StateError(
+        'Relay tidak mengirim tanda tangan key-wrap. Perubahan relay '
+        'diperlukan sebelum kunci toko dapat dipercaya.',
+      );
+    }
+    final ownerKey = await pinnedOwnerPublicKey();
+    final valid = await verifyPayload(
+      ownerKey,
+      utf8.encode(
+        canonicalJson({
+          'store_id': store,
+          'device_id': deviceId,
+          'wrapped_key': wrapped,
+        }),
+      ),
+      signature,
+    );
+    if (!valid) {
+      throw StateError(
+        'Tanda tangan key-wrap tidak cocok dengan kunci owner yang dipin.',
+      );
+    }
+  }
+
   Future<bool> refreshStoreKey() async {
     final url = await relayUrl();
     final relayId = await relayDeviceId();
@@ -84,10 +142,17 @@ class SyncService {
         token.isEmpty) {
       return (await existingStoreKey()) != null;
     }
+    final store = await storeId();
     final boot = await RelayClient(baseUrl: url, deviceToken: token)
-        .bootstrap(await storeId());
+        .bootstrap(store);
     final wrapped = boot['wrapped_key'] as String? ?? '';
     if (wrapped.isEmpty) return (await existingStoreKey()) != null;
+    await _verifyKeyWrap(
+      store: store,
+      deviceId: relayId,
+      wrapped: wrapped,
+      signature: boot['wrapped_key_signature'] as String? ?? '',
+    );
     final encryptionPrivate =
         await DeviceService.instance.encryptionPrivateKey(localId);
     if (encryptionPrivate == null) {
@@ -102,6 +167,7 @@ class SyncService {
     required String targetRelayDeviceId,
     required String targetEncryptionKey,
   }) async {
+    await _requirePremium();
     final url = await relayUrl();
     final token = await relayDeviceToken();
     if (url == null || url.isEmpty || token == null || token.isEmpty) {
@@ -140,6 +206,7 @@ class SyncService {
   }
 
   Future<Map<String, Object?>> bootstrapNow() async {
+    await _requirePremium();
     final url = await relayUrl();
     final relayId = await relayDeviceId();
     final token = await relayDeviceToken();
@@ -190,6 +257,9 @@ class SyncService {
     if (result['applied'] == true) {
       await client.ack(storeId: store, lastSeq: seq);
       await _setCursor(store, relayId, seq);
+      await AppDatabase.instance.deleteSetting(
+        'sync.restore_requires_bootstrap',
+      );
     }
     return {
       'applied': result['applied'] == true,
@@ -200,6 +270,7 @@ class SyncService {
   }
 
   Future<Map<String, Object?>> uploadSnapshot() async {
+    await _requirePremium();
     final url = await relayUrl();
     final relayId = await relayDeviceId();
     final localId = await _setting('sync.local_device_id');
@@ -253,6 +324,7 @@ class SyncService {
     required String nama,
     bool viewer = false,
   }) async {
+    await _requirePremium();
     final url = await relayUrl();
     final enroll = await enrollToken();
     final ownerId = await LicenseService.instance.ownerId();
@@ -296,11 +368,20 @@ class SyncService {
     await AppDatabase.instance.setSetting('sync.relay_device_id', relayId);
     await AppDatabase.instance.setSetting('sync.local_device_id', device['id'] as String);
     await SecureStore.instance.write('sync.relay_device_token', token);
+    await AppDatabase.instance.deleteSetting(
+      'sync.restore_requires_bootstrap',
+    );
     final clientWithToken = RelayClient(baseUrl: url, deviceToken: token);
     final boot = await clientWithToken.bootstrap(await storeId());
     final wrappedExisting = boot['wrapped_key'] as String? ?? '';
     var keyPending = false;
     if (wrappedExisting.isNotEmpty) {
+      await _verifyKeyWrap(
+        store: await storeId(),
+        deviceId: relayId,
+        wrapped: wrappedExisting,
+        signature: boot['wrapped_key_signature'] as String? ?? '',
+      );
       final encryptionPrivate = await DeviceService.instance
           .encryptionPrivateKey(device['id'] as String);
       if (encryptionPrivate == null) {
@@ -370,25 +451,38 @@ class SyncService {
     required String action,
     required String entityId,
     required Map<String, Object?> payload,
+    DatabaseExecutor? txn,
   }) async {
+    final executor = txn ?? AppDatabase.instance.db;
     final deviceId = await relayDeviceId() ??
         await AppDatabase.instance.getSetting('device.current_id') ??
         'local';
-    final last = await AppDatabase.instance.db.rawQuery(
+    final last = await executor.rawQuery(
       'SELECT COALESCE(MAX(seq), 0) AS seq, '
       'COALESCE(MAX(hlc_wall), 0) AS wall, '
       'COALESCE(MAX(hlc_counter), 0) AS counter '
       'FROM sync_outbox WHERE device_id = ?',
       [deviceId],
     );
-    final seq = ((last.first['seq'] as int?) ?? 0) + 1;
+    final floorRows = await executor.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['device.seq_floor'],
+      limit: 1,
+    );
+    final floor = floorRows.isEmpty
+        ? 0
+        : int.tryParse(floorRows.first['value'] as String? ?? '') ?? 0;
+    final maxSeq = (last.first['seq'] as int?) ?? 0;
+    final seq = (maxSeq > floor ? maxSeq : floor) + 1;
     final hlc = nextHlc(
       Hlc(
         (last.first['wall'] as int?) ?? 0,
         (last.first['counter'] as int?) ?? 0,
       ),
     );
-    await AppDatabase.instance.db.insert('sync_outbox', {
+    await executor.insert('sync_outbox', {
       'device_id': deviceId,
       'seq': seq,
       'hlc_wall': hlc.wall,
@@ -403,8 +497,9 @@ class SyncService {
     });
   }
 
-  Future<void> enqueueCustomer(int id) async {
-    final rows = await AppDatabase.instance.db.query(
+  Future<void> enqueueCustomer(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
       'customers',
       where: 'id = ?',
       whereArgs: [id],
@@ -413,6 +508,7 @@ class SyncService {
     if (rows.isEmpty) return;
     final row = rows.first;
     await enqueue(
+      txn: txn,
       entity: 'customer',
       action: 'upsert',
       entityId: row['sync_id'] as String,
@@ -421,13 +517,16 @@ class SyncService {
         'nama': row['nama'],
         'nomor_hp': row['nomor_hp'],
         'alamat': row['alamat'],
+        'wa_consent': row['wa_consent'] ?? 1,
+        'do_not_contact': row['do_not_contact'] ?? 0,
         'created_at': row['created_at'],
       },
     );
   }
 
-  Future<void> enqueueUnit(int id) async {
-    final rows = await AppDatabase.instance.db.query(
+  Future<void> enqueueUnit(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
       'vehicle_or_units',
       where: 'id = ?',
       whereArgs: [id],
@@ -435,7 +534,7 @@ class SyncService {
     );
     if (rows.isEmpty) return;
     final row = rows.first;
-    final customer = await AppDatabase.instance.db.query(
+    final customer = await executor.query(
       'customers',
       columns: ['sync_id'],
       where: 'id = ?',
@@ -443,6 +542,7 @@ class SyncService {
       limit: 1,
     );
     await enqueue(
+      txn: txn,
       entity: 'unit',
       action: 'upsert',
       entityId: row['sync_id'] as String,
@@ -455,13 +555,15 @@ class SyncService {
         'jenis_mobil': row['jenis_mobil'],
         'tahun_mobil': row['tahun_mobil'],
         'tipe_radiator': row['tipe_radiator'],
+        'label_radiator': row['label_radiator'],
         'created_at': row['created_at'],
       },
     );
   }
 
-  Future<void> enqueueStock(int id) async {
-    final rows = await AppDatabase.instance.db.query(
+  Future<void> enqueueStock(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
       'stock_items',
       where: 'id = ?',
       whereArgs: [id],
@@ -470,6 +572,7 @@ class SyncService {
     if (rows.isEmpty) return;
     final row = rows.first;
     await enqueue(
+      txn: txn,
       entity: 'stock',
       action: 'upsert',
       entityId: row['sync_id'] as String,
@@ -479,14 +582,21 @@ class SyncService {
         'nama': row['nama'],
         'harga_modal': row['harga_modal'],
         'harga_jual': row['harga_jual'],
-        'jumlah': row['jumlah'],
         'stok_minimum': row['stok_minimum'],
+        'satuan': row['satuan'] ?? 'pcs',
+        'desimal': row['desimal'] ?? 0,
       },
     );
   }
 
-  Future<void> enqueueStockDelta(int stockItemId, int qty) async {
-    final rows = await AppDatabase.instance.db.query(
+  Future<void> enqueueStockDelta(
+    int stockItemId,
+    int qty, {
+    int? qtyMilli,
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
       'stock_items',
       where: 'id = ?',
       whereArgs: [stockItemId],
@@ -495,19 +605,27 @@ class SyncService {
     if (rows.isEmpty) return;
     final row = rows.first;
     await enqueue(
+      txn: txn,
       entity: 'stock',
       action: 'delta',
       entityId: row['sync_id'] as String,
-      payload: {'sync_id': row['sync_id'], 'qty': qty},
+      payload: {
+        'sync_id': row['sync_id'],
+        'qty_milli': qtyMilli ?? qty * 1000,
+      },
     );
   }
 
-  Future<void> enqueueNote(int id) async {
-    final payload = await AppDatabase.instance.noteSyncPayload(id);
+  Future<void> enqueueNote(int id, {DatabaseExecutor? txn}) async {
+    final payload = await AppDatabase.instance.noteSyncPayload(
+      id,
+      executor: txn,
+    );
     final record = payload['record'] as Map<String, Object?>? ?? const {};
     final syncId = record['sync_id'] as String? ?? '';
     if (syncId.isEmpty) return;
     await enqueue(
+      txn: txn,
       entity: 'nota',
       action: 'upsert',
       entityId: syncId,
@@ -515,16 +633,54 @@ class SyncService {
     );
   }
 
-  Future<void> enqueueNoteVoid(int id) async {
-    final payload = await AppDatabase.instance.noteSyncPayload(id);
+  Future<void> enqueueNoteVoid(int id, {DatabaseExecutor? txn}) async {
+    final payload = await AppDatabase.instance.noteSyncPayload(
+      id,
+      executor: txn,
+    );
     final record = payload['record'] as Map<String, Object?>? ?? const {};
     final syncId = record['sync_id'] as String? ?? '';
     if (syncId.isEmpty) return;
     await enqueue(
+      txn: txn,
       entity: 'nota',
       action: 'void',
       entityId: syncId,
       payload: payload,
+    );
+  }
+
+  Future<void> enqueueNotePayment(
+    int recordId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'service_records',
+      columns: ['sync_id'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final payload = await AppDatabase.instance.noteSyncPayload(
+      recordId,
+      executor: txn,
+    );
+    final payments = (payload['payments'] as List? ?? const [])
+        .whereType<Map>()
+        .map((row) => Map<String, Object?>.from(row))
+        .toList();
+    await enqueue(
+      txn: txn,
+      entity: 'nota',
+      action: 'payment',
+      entityId: rows.first['sync_id'] as String,
+      payload: {
+        'record_sync_id': rows.first['sync_id'],
+        'payments': payments,
+        'record': payload['record'],
+      },
     );
   }
 
@@ -547,8 +703,15 @@ class SyncService {
     );
     final signer = permission['signer_public_key'] as String? ?? '';
     final signature = permission['signature'] as String? ?? '';
+    final pinned = await pinnedOwnerPublicKey();
+    if (signer.isEmpty || signer != pinned) {
+      throw StateError(
+        'Penandatangan izin bukan kunci owner yang dipin. '
+        'Izin karyawan ditolak.',
+      );
+    }
     final valid = await verifyPayload(
-      signer,
+      pinned,
       utf8.encode(canonicalJson(payload)),
       signature,
     );
@@ -559,6 +722,7 @@ class SyncService {
   }
 
   Future<Map<String, Object?>> syncNow() async {
+    await _requirePremium();
     final url = await relayUrl();
     if (url == null || url.isEmpty) {
       throw StateError('Alamat relay belum diatur.');
@@ -571,6 +735,13 @@ class SyncService {
     final token = await relayDeviceToken();
     if (token == null || token.isEmpty) {
       throw StateError('Token relay perangkat tidak tersedia.');
+    }
+    if (await _setting('sync.restore_requires_bootstrap') == '1') {
+      throw StateError(
+        'Perangkat baru saja dipulihkan dari backup. Jalankan "Ambil '
+        'snapshot"/bootstrap sebelum sinkronisasi agar nomor nota dan '
+        'urutan delta tidak bentrok.',
+      );
     }
     final client = RelayClient(baseUrl: url, deviceToken: token);
     await refreshEmployeePermission();
@@ -619,10 +790,7 @@ class SyncService {
       sent++;
     }
     final devices = await client.devices();
-    final keys = {
-      for (final device in devices)
-        if (device['id'] != null) device['id']: device['public_key'],
-    };
+    var keys = _senderKeys(devices);
     final cursor = await _cursor(store, deviceId);
     final feed = await client.feed(storeId: store, sinceSeq: cursor);
     if (feed['snapshot_required'] == true) {
@@ -637,7 +805,7 @@ class SyncService {
         }
         final result = await AppDatabase.instance.applySnapshotPayload(
           snapshot,
-          senderPublicKey: senderKey as String,
+          senderPublicKey: senderKey,
           storeKey: storeKey,
           storeId: store,
           deviceId: deviceId,
@@ -663,18 +831,28 @@ class SyncService {
       };
     }
     var applied = 0;
+    var conflictCount = 0;
+    int? haltedSeq;
+    String? unknownSender;
+    var refreshedDevices = false;
     for (final raw in (feed['envelopes'] as List? ?? const [])) {
       final envelope = (raw as Map).map(
         (key, value) => MapEntry('$key', value),
       );
-      if (envelope['sender_device_id'] == deviceId) continue;
-      final key = keys[envelope['sender_device_id']];
-      if (key == null) continue;
-      final data = await verifyEnvelope(
-        envelope: envelope,
-        senderPublicKey: key as String,
-        storeKey: storeKey,
-      );
+      final sender = envelope['sender_device_id'] as String? ?? '';
+      final seq = (envelope['seq'] as num?)?.toInt() ?? 0;
+      if (sender == deviceId) continue;
+      var key = keys[sender];
+      if (key == null && !refreshedDevices) {
+        refreshedDevices = true;
+        keys = _senderKeys(await client.devices());
+        key = keys[sender];
+      }
+      if (key == null) {
+        haltedSeq = seq;
+        unknownSender = sender;
+        break;
+      }
       final idem = envelope['idempotency_key'] as String? ?? '';
       final existing = await AppDatabase.instance.db.query(
         'applied_deltas',
@@ -682,50 +860,158 @@ class SyncService {
         whereArgs: [idem],
         limit: 1,
       );
-      if (existing.isEmpty) {
-        await _apply(data, envelope['id'] as String? ?? '');
+      if (existing.isNotEmpty) continue;
+      try {
+        final data = await verifyEnvelope(
+          envelope: envelope,
+          senderPublicKey: key,
+          storeKey: storeKey,
+        );
+        await AppDatabase.instance.db.transaction((txn) async {
+          await _apply(txn, data, envelope['id'] as String? ?? '');
+          await txn.insert(
+            'applied_deltas',
+            {
+              'idempotency_key': idem,
+              'envelope_id': envelope['id'] as String? ?? '',
+              'entity': data['entity'] ?? '',
+              'entity_id': data['entity_id'] ?? '',
+              'applied_at': nowIso(),
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        });
         applied++;
+      } catch (error) {
+        conflictCount++;
+        await AppDatabase.instance.db.insert('sync_conflicts', {
+          'entity': envelope['entity'] as String? ?? 'unknown',
+          'entity_id': envelope['entity_id'] as String? ?? '',
+          'reason': _conflictReason(error),
+          'detail_json': jsonEncode({
+            'seq': seq,
+            'envelope_id': envelope['id'],
+            'sender_device_id': sender,
+            'error': '$error',
+          }),
+          'created_at': nowIso(),
+        });
       }
+    }
+    if (haltedSeq != null) {
+      final haltCursor = haltedSeq > 0 ? haltedSeq - 1 : cursor;
+      if (haltCursor > cursor) {
+        await client.ack(storeId: store, lastSeq: haltCursor);
+        await _setCursor(store, deviceId, haltCursor);
+      }
+      throw StateError(
+        'Amplop dari perangkat "${unknownSender ?? '-'}" tidak dikenal '
+        'pada urutan $haltedSeq. Sinkronisasi dihentikan sebelum amplop itu; '
+        'periksa daftar perangkat di relay.',
+      );
     }
     final next = feed['next_seq'] as int? ?? cursor;
     if (next > 0) {
       await client.ack(storeId: store, lastSeq: next);
       await _setCursor(store, deviceId, next);
     }
+    await cleanupSyncHistory();
     return {
       'sent': sent,
       'applied': applied,
+      'conflicts': conflictCount,
       'cursor': next,
       'snapshot_required': feed['snapshot_required'] == true,
     };
   }
 
-  Future<void> _apply(Map<String, Object?> data, String envelopeId) async {
+  Map<String, String?> _senderKeys(List<Map<String, Object?>> devices) {
+    return {
+      for (final device in devices)
+        if (device['id'] != null)
+          '${device['id']}': device['public_key'] as String?,
+    };
+  }
+
+  String _conflictReason(Object error) {
+    final text = '$error'.toLowerCase();
+    if (text.contains('tanda tangan')) return 'tanda_tangan_tidak_valid';
+    if (text.contains('dekripsi')) return 'dekripsi_gagal';
+    if (text.contains('unique') || text.contains('constraint')) {
+      return 'konflik_unik';
+    }
+    return 'gagal_terapkan';
+  }
+
+  Future<void> cleanupSyncHistory() async {
+    final cutoff = DateTime.now()
+        .toUtc()
+        .subtract(const Duration(days: 90))
+        .toIso8601String();
+    await AppDatabase.instance.db.transaction((txn) async {
+      await txn.delete(
+        'sync_outbox',
+        where: "status = 'sent' AND sent_at IS NOT NULL AND sent_at < ?",
+        whereArgs: [cutoff],
+      );
+      await txn.delete(
+        'applied_deltas',
+        where: 'applied_at < ?',
+        whereArgs: [cutoff],
+      );
+      final countRows = await txn.rawQuery(
+        'SELECT COUNT(*) AS total FROM applied_deltas',
+      );
+      final total = countRows.first['total'] as int? ?? 0;
+      if (total > 20000) {
+        final excess = total - 20000;
+        await txn.rawDelete(
+          'DELETE FROM applied_deltas WHERE idempotency_key IN '
+          '(SELECT idempotency_key FROM applied_deltas '
+          'ORDER BY applied_at ASC LIMIT ?)',
+          [excess],
+        );
+      }
+    });
+  }
+
+  Future<void> _apply(
+    DatabaseExecutor txn,
+    Map<String, Object?> data,
+    String envelopeId,
+  ) async {
     final entity = data['entity'] as String? ?? '';
     final action = data['action'] as String? ?? '';
     final payload = data['payload'] as Map<String, Object?>? ?? const {};
-    final idem = data['idempotency_key'] as String? ?? '';
-    final db = AppDatabase.instance.db;
     if (entity == 'customer') {
       final syncId = payload['sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
-      final rows = await db.query('customers',
-          columns: ['id'], where: 'sync_id = ?', whereArgs: [syncId], limit: 1);
+      final rows = await txn.query(
+        'customers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
       if (rows.isEmpty) {
-        await db.insert('customers', {
+        await txn.insert('customers', {
           'sync_id': syncId,
           'nama': payload['nama'] ?? '',
           'nomor_hp': payload['nomor_hp'] ?? '',
           'alamat': payload['alamat'],
+          'wa_consent': payload['wa_consent'] ?? 1,
+          'do_not_contact': payload['do_not_contact'] ?? 0,
           'created_at': payload['created_at'] ?? nowIso(),
         });
       } else {
-        await db.update(
+        await txn.update(
           'customers',
           {
             'nama': payload['nama'],
             'nomor_hp': payload['nomor_hp'],
             'alamat': payload['alamat'],
+            'wa_consent': payload['wa_consent'] ?? 1,
+            'do_not_contact': payload['do_not_contact'] ?? 0,
           },
           where: 'sync_id = ?',
           whereArgs: [syncId],
@@ -735,73 +1021,112 @@ class SyncService {
       final syncId = payload['sync_id'] as String? ?? '';
       final customerSync = payload['customer_sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
-      final customer = await db.query('customers',
-          columns: ['id'],
-          where: 'sync_id = ?',
-          whereArgs: [customerSync],
-          limit: 1);
+      final customer = await txn.query(
+        'customers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [customerSync],
+        limit: 1,
+      );
       if (customer.isEmpty) return;
-      final rows = await db.query('vehicle_or_units',
-          columns: ['id'], where: 'sync_id = ?', whereArgs: [syncId], limit: 1);
+      final rows = await txn.query(
+        'vehicle_or_units',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      final values = {
+        'customer_id': customer.first['id'],
+        'unit_type': payload['unit_type'] ?? 'MOBIL',
+        'nopol': payload['nopol'],
+        'jenis_mobil': payload['jenis_mobil'],
+        'tahun_mobil': payload['tahun_mobil'],
+        'tipe_radiator': payload['tipe_radiator'],
+        'label_radiator': payload['label_radiator'],
+      };
       if (rows.isEmpty) {
-        await db.insert('vehicle_or_units', {
+        await txn.insert('vehicle_or_units', {
           'sync_id': syncId,
-          'customer_id': customer.first['id'],
-          'unit_type': payload['unit_type'] ?? 'MOBIL',
-          'nopol': payload['nopol'],
-          'jenis_mobil': payload['jenis_mobil'],
-          'tahun_mobil': payload['tahun_mobil'],
-          'tipe_radiator': payload['tipe_radiator'],
+          ...values,
           'created_at': payload['created_at'] ?? nowIso(),
         });
+      } else {
+        await txn.update(
+          'vehicle_or_units',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
       }
     } else if (entity == 'stock') {
       final syncId = payload['sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
-      final rows = await db.query('stock_items',
-          columns: ['id', 'jumlah'],
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-          limit: 1);
+      final rows = await txn.query(
+        'stock_items',
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
       if (rows.isEmpty) {
-        if ((payload['kode'] as String? ?? '').isEmpty) return;
-        await db.insert('stock_items', {
+        if (action == 'delta') {
+          throw StateError(
+            'Delta stok diterima sebelum metadata barang ($syncId).',
+          );
+        }
+        if ((payload['kode'] as String? ?? '').isEmpty) {
+          throw StateError('Barang tanpa kode.');
+        }
+        final milli = (payload['jumlah_milli'] as num?)?.toInt() ??
+            ((payload['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        await txn.insert('stock_items', {
           'sync_id': syncId,
           'kode': payload['kode'],
           'nama': payload['nama'] ?? '',
           'harga_modal': payload['harga_modal'] ?? 0,
           'harga_jual': payload['harga_jual'] ?? 0,
-          'jumlah': payload['jumlah'] ?? 0,
+          'jumlah': milli ~/ 1000,
+          'jumlah_milli': milli,
+          'satuan': payload['satuan'] ?? 'pcs',
+          'desimal': payload['desimal'] ?? 0,
           'stok_minimum': payload['stok_minimum'] ?? 0,
           'created_at': nowIso(),
         });
       } else if (action == 'delta') {
-        await db.rawUpdate(
-          'UPDATE stock_items SET jumlah = jumlah + ? WHERE sync_id = ?',
-          [payload['qty'] ?? 0, syncId],
+        final delta = (payload['qty_milli'] as num?)?.toInt() ??
+            ((payload['qty'] as num?)?.toInt() ?? 0) * 1000;
+        final before = StockItem.fromRow(rows.first);
+        final next = before.jumlahMilli + delta;
+        await txn.update(
+          'stock_items',
+          {'jumlah': next ~/ 1000, 'jumlah_milli': next},
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
         );
       } else {
-        await db.update(
+        await txn.update(
           'stock_items',
           {
+            'kode': payload['kode'],
             'nama': payload['nama'],
             'harga_modal': payload['harga_modal'],
             'harga_jual': payload['harga_jual'],
-            'jumlah': payload['jumlah'],
             'stok_minimum': payload['stok_minimum'],
+            'satuan': payload['satuan'] ?? 'pcs',
+            'desimal': payload['desimal'] ?? 0,
           },
           where: 'sync_id = ?',
           whereArgs: [syncId],
         );
       }
     } else if (entity == 'nota') {
-      await AppDatabase.instance.applyNotePayload(
-        db,
+      await AppDatabase.instance.applyNotePayloadTx(
+        txn,
         payload,
         action: action,
       );
     } else {
-      await db.insert('sync_conflicts', {
+      await txn.insert('sync_conflicts', {
         'entity': entity,
         'entity_id': data['entity_id'] ?? '',
         'reason': 'entity_belum_didukung',
@@ -809,17 +1134,6 @@ class SyncService {
         'created_at': nowIso(),
       });
     }
-    await db.insert(
-      'applied_deltas',
-      {
-        'idempotency_key': idem,
-        'envelope_id': envelopeId,
-        'entity': entity,
-        'entity_id': data['entity_id'] ?? '',
-        'applied_at': nowIso(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
   }
 
   Future<int> _cursor(String store, String device) async {

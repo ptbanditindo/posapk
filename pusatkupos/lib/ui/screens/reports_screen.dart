@@ -17,8 +17,14 @@ class ReportsScreen extends StatefulWidget {
 }
 
 class _ReportsScreenState extends State<ReportsScreen> {
+  static const _pageSize = 50;
+
   _ReportPreset _preset = _ReportPreset.today;
-  Future<_ReportData>? _future;
+  Future<ReportSummary>? _future;
+  ReportSummary? _summary;
+  List<ServiceRecordSummary> _rows = [];
+  bool _hasMore = false;
+  bool _loadingMore = false;
 
   @override
   void initState() {
@@ -47,18 +53,46 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (!mounted) return;
     final range = _range;
     setState(() {
-      _future = _loadData(range.$1, range.$2);
+      _rows = [];
+      _summary = null;
+      _hasMore = false;
+      _future = _loadFirst(range.$1, range.$2);
     });
   }
 
-  Future<_ReportData> _loadData(DateTime from, DateTime to) async {
+  Future<ReportSummary> _loadFirst(DateTime from, DateTime to) async {
     final summary = await AppDatabase.instance.reportSummary(from, to);
     final rows = await AppDatabase.instance.listRecords(
       from: from,
       to: to,
-      limit: 200,
+      limit: _pageSize,
     );
-    return _ReportData(summary: summary, rows: rows);
+    if (mounted) {
+      setState(() {
+        _summary = summary;
+        _rows = rows;
+        _hasMore = rows.length == _pageSize;
+      });
+    }
+    return summary;
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    setState(() => _loadingMore = true);
+    final range = _range;
+    final rows = await AppDatabase.instance.listRecords(
+      from: range.$1,
+      to: range.$2,
+      limit: _pageSize,
+      offset: _rows.length,
+    );
+    if (!mounted) return;
+    setState(() {
+      _rows = [..._rows, ...rows];
+      _hasMore = rows.length == _pageSize;
+      _loadingMore = false;
+    });
   }
 
   @override
@@ -84,7 +118,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        FutureBuilder<_ReportData>(
+        FutureBuilder<ReportSummary>(
           future: _future,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
@@ -100,7 +134,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 icon: Icons.error_outline,
               );
             }
-            final data = snapshot.data!;
+            final summary = snapshot.data ?? _summary;
+            if (summary == null) {
+              return const SizedBox.shrink();
+            }
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -117,7 +154,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           width: width,
                           child: StatCard(
                             label: 'Total transaksi',
-                            value: '${data.summary.transaksi}',
+                            value: '${summary.transaksi}',
                             icon: Icons.receipt_long_outlined,
                           ),
                         ),
@@ -125,7 +162,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           width: width,
                           child: StatCard(
                             label: 'Omzet',
-                            value: formatRupiah(data.summary.totalCents),
+                            value: formatRupiah(summary.totalCents),
                             icon: Icons.payments_outlined,
                             tone: Theme.of(context).colorScheme.tertiary,
                           ),
@@ -134,7 +171,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           width: width,
                           child: StatCard(
                             label: 'Dibayar',
-                            value: formatRupiah(data.summary.dibayarCents),
+                            value: formatRupiah(summary.dibayarCents),
                             icon: Icons.account_balance_wallet_outlined,
                             tone: Colors.green,
                           ),
@@ -143,7 +180,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           width: width,
                           child: StatCard(
                             label: 'Piutang',
-                            value: formatRupiah(data.summary.piutangCents),
+                            value: formatRupiah(summary.piutangCents),
                             icon: Icons.schedule_outlined,
                             tone: Colors.orange,
                           ),
@@ -157,13 +194,35 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   title: 'Rincian',
                   child: Column(
                     children: [
-                      _line('Jasa', formatRupiah(data.summary.totalJasaCents)),
-                      _line('Part', formatRupiah(data.summary.totalPartCents)),
-                      _line('Diskon', '-${formatRupiah(data.summary.diskonCents)}'),
+                      _line('Jasa', formatRupiah(summary.totalJasaCents)),
+                      _line('Part', formatRupiah(summary.totalPartCents)),
+                      _line('Diskon', '-${formatRupiah(summary.diskonCents)}'),
                       const Divider(),
                       _line(
                         'Total',
-                        formatRupiah(data.summary.totalCents),
+                        formatRupiah(summary.totalCents),
+                        bold: true,
+                      ),
+                      const SizedBox(height: 8),
+                      _line(
+                        'Modal part',
+                        formatRupiah(summary.totalModalPartCents),
+                      ),
+                      _line(
+                        'Laba kotor part (sebelum diskon)',
+                        formatRupiah(summary.labaKotorPartCents),
+                      ),
+                      const Divider(),
+                      _line('Komisi', formatRupiah(summary.komisiCents)),
+                      _line('Gaji dibayar', formatRupiah(summary.gajiCents)),
+                      _line(
+                        'Laba setelah komisi & gaji',
+                        formatRupiah(
+                          summary.totalCents -
+                              summary.totalModalPartCents -
+                              summary.komisiCents -
+                              summary.gajiCents,
+                        ),
                         bold: true,
                       ),
                     ],
@@ -171,32 +230,62 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ),
                 const SizedBox(height: 16),
                 SectionCard(
+                  title: 'Kas per metode',
+                  subtitle: 'Berdasarkan tanggal pembayaran, termasuk refund',
+                  child: summary.cashByMethod.isEmpty
+                      ? const Text('Belum ada pembayaran pada periode ini.')
+                      : Column(
+                          children: summary.cashByMethod.entries
+                              .map(
+                                (entry) => _line(
+                                  entry.key,
+                                  formatRupiah(entry.value),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                ),
+                const SizedBox(height: 16),
+                SectionCard(
                   title: 'Transaksi periode ini',
-                  subtitle: '${data.rows.length} nota',
-                  child: data.rows.isEmpty
+                  subtitle: '${_rows.length} nota ditampilkan',
+                  child: _rows.isEmpty
                       ? const EmptyState(
                           title: 'Tidak ada transaksi',
                           icon: Icons.inbox_outlined,
                         )
                       : Column(
-                          children: data.rows
-                              .map(
-                                (row) => ListTile(
-                                  contentPadding: EdgeInsets.zero,
-                                  title: Text(row.noNota),
-                                  subtitle: Text(
-                                    '${row.customerNama} · '
-                                    '${dateId.format(row.waktu)}',
-                                  ),
-                                  trailing: Text(
-                                    formatRupiah(row.totalCents),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                          children: [
+                            ..._rows.map(
+                              (row) => ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(row.noNota),
+                                subtitle: Text(
+                                  '${row.customerNama} · '
+                                  '${dateId.format(row.waktu)}',
+                                ),
+                                trailing: Text(
+                                  formatRupiah(row.totalCents),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                              )
-                              .toList(),
+                              ),
+                            ),
+                            if (_hasMore)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: OutlinedButton.icon(
+                                  onPressed: _loadingMore ? null : _loadMore,
+                                  icon: const Icon(Icons.expand_more),
+                                  label: Text(
+                                    _loadingMore
+                                        ? 'Memuat...'
+                                        : 'Muat lebih banyak',
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                 ),
               ],
@@ -234,11 +323,4 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ),
     );
   }
-}
-
-class _ReportData {
-  const _ReportData({required this.summary, required this.rows});
-
-  final ReportSummary summary;
-  final List<ServiceRecordSummary> rows;
 }

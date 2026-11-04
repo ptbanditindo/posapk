@@ -6,13 +6,20 @@ import 'package:pusatkupos/data/account_service.dart';
 import 'package:pusatkupos/data/app_database.dart';
 import 'package:pusatkupos/data/device_service.dart';
 import 'package:pusatkupos/data/license_service.dart';
+import 'package:pusatkupos/data/secure_store.dart';
+
+import 'test_support.dart';
 
 void main() {
+  SecureStore.useDatabaseForTests = true;
   test('akun karyawan, lisensi, dan batas perangkat', () async {
     final dir = await Directory.systemTemp.createTemp('pusatkupos_auth_');
     final db = AppDatabase.instance;
     await db.initForTest(p.join(dir.path, 'auth.db'));
     try {
+      final ownerId = await LicenseService.instance.ensureOwner();
+      await installTestLicense(ownerId: ownerId, deviceLimit: 1);
+      expect(await LicenseService.instance.isPremium(), isTrue);
       final account = await AccountService.instance.createAccount(
         username: 'kasir1',
         nama: 'Kasir Satu',
@@ -41,12 +48,9 @@ void main() {
       );
       expect(changed?.mustChangePassword, isFalse);
 
-      final license = await LicenseService.instance.activate(
-        days: 30,
-        deviceLimit: 1,
-      );
-      expect((license['owner_id'] as String).length, 8);
-      expect(await LicenseService.instance.isPremium(), isTrue);
+      final license = await LicenseService.instance.license();
+      expect(license?['plan'], 'premium');
+      expect(license?['device_limit'], 1);
       final first = await DeviceService.instance.registerDevice(
         nama: 'HP Owner',
         kind: 'owner',
@@ -73,5 +77,5 @@ void main() {
       await db.close();
       await dir.delete(recursive: true);
     }
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

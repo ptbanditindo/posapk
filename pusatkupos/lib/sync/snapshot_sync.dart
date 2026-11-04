@@ -18,14 +18,34 @@ const snapshotTables = [
   'service_jobs',
   'service_parts',
   'service_payments',
+  'service_record_mechanics',
+  'service_record_commissions',
+  'employee_debts',
+  'salary_payments',
   'stock_movements',
+  'followup_items',
+  'followup_events',
+  'wa_message_logs',
+  'suppliers',
+  'supplier_items',
+  'supplier_followups',
 ];
 
 const snapshotDeleteOrder = [
   'service_payments',
   'service_jobs',
   'service_parts',
+  'service_record_mechanics',
+  'service_record_commissions',
+  'employee_debts',
+  'salary_payments',
   'stock_movements',
+  'followup_events',
+  'wa_message_logs',
+  'followup_items',
+  'supplier_followups',
+  'supplier_items',
+  'suppliers',
   'service_records',
   'vehicle_or_units',
   'customers',
@@ -47,7 +67,8 @@ const snapshotLocalTables = [
 ];
 
 const snapshotLocalSettingsWhere =
-    "key = 'app.created_at' OR key LIKE 'sync.%' OR key LIKE 'device.%' "
+    "key = 'app.created_at' OR key = 'app.role' "
+    "OR key LIKE 'employee.%' OR key LIKE 'sync.%' OR key LIKE 'device.%' "
     "OR key LIKE 'auth.%' OR key LIKE 'license.%' OR key LIKE 'backup.%' "
     "OR key LIKE 'telegram.%' OR key LIKE 'secure.%'";
 

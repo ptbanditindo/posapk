@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 
+import '../../auth/operator.dart';
+import '../../core/dates.dart';
 import '../../core/ids.dart';
 import '../../core/money.dart';
+import '../../data/account_service.dart';
 import '../../data/app_database.dart';
+import '../../data/employee_service.dart';
+import '../../data/followup_service.dart';
 import '../../data/models.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
+import '../receipt_dialog.dart';
 import '../widgets.dart';
 
 class PosScreen extends StatefulWidget {
@@ -19,6 +25,9 @@ class _PosScreenState extends State<PosScreen> {
   final _keluhan = TextEditingController();
   final _diskon = TextEditingController();
   final _bayar = TextEditingController();
+  final _garansiBulan = TextEditingController(text: '1');
+  final _garansiCatatan = TextEditingController();
+  final _garansiBarangNilai = TextEditingController(text: '7');
   final List<JobDraft> _jobs = [];
   final List<PartDraft> _parts = [];
 
@@ -26,12 +35,23 @@ class _PosScreenState extends State<PosScreen> {
   List<VehicleUnit> _units = [];
   List<StockItem> _stock = [];
   List<ServiceCatalog> _catalog = [];
+  List<Map<String, Object?>> _mechanics = [];
   int? _customerId;
   int? _unitId;
+  final Set<int> _mechanicIds = {};
   String _metode = 'CASH';
   String _requestId = newSyncId();
+  double _maxDiscountPercent = 10;
   bool _loading = true;
   bool _saving = false;
+  bool _bergaransi = true;
+  bool _sparepartOnly = false;
+  bool _garansiBarang = false;
+  String _garansiBarangSatuan = 'HARI';
+  bool _unitDitinggal = false;
+  int _garansiDefaultBulan = 1;
+
+  Operator? get _actor => AppState.instance.operator;
 
   @override
   void initState() {
@@ -46,6 +66,9 @@ class _PosScreenState extends State<PosScreen> {
     _keluhan.dispose();
     _diskon.dispose();
     _bayar.dispose();
+    _garansiBulan.dispose();
+    _garansiCatatan.dispose();
+    _garansiBarangNilai.dispose();
     super.dispose();
   }
 
@@ -54,15 +77,39 @@ class _PosScreenState extends State<PosScreen> {
   int get _totalPart =>
       _parts.fold<int>(0, (sum, part) => sum + part.subtotalCents);
   int get _bruto => _biayaJasa + _totalPart;
-  int get _diskonCents => parseRupiahToCents(_diskon.text);
+  int get _estimatedCommission {
+    final selected =
+        _mechanics.where((row) => _mechanicIds.contains(row['id'])).toList();
+    final margin = _parts.fold<int>(
+      0,
+      (sum, part) => sum + (part.hargaCents - part.modalCents) * part.jumlah,
+    );
+    return EmployeeService.estimateRecordCommissions(
+      selected,
+      jasaCents: _biayaJasa,
+      marginCents: margin,
+      hasJobs: _jobs.isNotEmpty,
+      hasParts: _parts.isNotEmpty,
+    );
+  }
+  int get _diskonCents => tryParseRupiahToCents(_diskon.text) ?? 0;
+  bool get _diskonInvalid =>
+      _diskon.text.trim().isNotEmpty &&
+      tryParseRupiahToCents(_diskon.text) == null;
   int get _total => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
-  int get _bayarCents => parseRupiahToCents(_bayar.text);
+  int get _bayarCents => tryParseRupiahToCents(_bayar.text) ?? 0;
+  bool get _bayarInvalid =>
+      _bayar.text.trim().isNotEmpty &&
+      tryParseRupiahToCents(_bayar.text) == null;
 
   Future<void> _load() async {
     final db = AppDatabase.instance;
     final customers = await db.listCustomers();
     final stock = await db.listStock();
     final catalog = await db.listCatalog();
+    final accounts = await AccountService.instance.listAccounts();
+    final maxDiscount = await db.getSetting('diskon.maks_persen');
+    final defaultGaransi = await db.getSetting('garansi.default_bulan');
     var units = <VehicleUnit>[];
     var customerId = _customerId;
     if (customerId != null &&
@@ -77,11 +124,30 @@ class _PosScreenState extends State<PosScreen> {
       _customers = customers;
       _stock = stock;
       _catalog = catalog;
+      _mechanics = accounts
+          .where(
+            (account) =>
+                account['aktif'] == 1 &&
+                (account['role_base'] == 'MEKANIK' ||
+                    account['role_base'] == 'KEDUANYA'),
+          )
+          .toList();
+      _maxDiscountPercent = double.tryParse(maxDiscount ?? '') ?? 10;
+      _garansiDefaultBulan = int.tryParse(defaultGaransi ?? '') ?? 1;
+      if (_garansiBulan.text == '1' && _garansiDefaultBulan != 1) {
+        _garansiBulan.text = '$_garansiDefaultBulan';
+      }
       _customerId = customerId;
       _units = units;
       final unitId = _unitId;
       if (unitId == null || !units.any((unit) => unit.id == unitId)) {
         _unitId = null;
+      }
+      if (_mechanicIds.isNotEmpty &&
+          !_mechanicIds.every(
+            (id) => _mechanics.any((row) => row['id'] == id),
+          )) {
+        _mechanicIds.clear();
       }
       _loading = false;
     });
@@ -93,15 +159,31 @@ class _PosScreenState extends State<PosScreen> {
       builder: (_) => const _QuickCustomerDialog(),
     );
     if (input == null) return;
-    final id = await AppDatabase.instance.addCustomer(
-      nama: input.nama,
-      nomorHp: input.nomorHp,
-      alamat: input.alamat,
-    );
-    _customerId = id;
-    _unitId = null;
-    AppState.instance.touch();
-    await _load();
+    try {
+      final id = await AppDatabase.instance.addCustomer(
+        nama: input.nama,
+        nomorHp: input.nomorHp,
+        alamat: input.alamat,
+      );
+      _customerId = id;
+      _unitId = null;
+      AppState.instance.touch();
+      await _load();
+    } on DuplicateCustomerException catch (duplicate) {
+      if (!mounted) return;
+      final useExisting = await confirmAction(
+        context,
+        title: 'Pelanggan sudah ada',
+        message: '$duplicate. Pakai pelanggan "${duplicate.existingName}"?',
+        confirmLabel: 'Pakai yang ada',
+      );
+      if (!useExisting) return;
+      _customerId = duplicate.existingId;
+      _unitId = null;
+      await _load();
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
+    }
   }
 
   Future<void> _addUnit() async {
@@ -128,6 +210,14 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _addJob() async {
+    if (_sparepartOnly) {
+      showSnack(
+        context,
+        'Mode sparepart saja tidak boleh memuat jasa.',
+        error: true,
+      );
+      return;
+    }
     final job = await showDialog<JobDraft>(
       context: context,
       builder: (_) => _JobDialog(catalog: _catalog),
@@ -159,10 +249,71 @@ class _PosScreenState extends State<PosScreen> {
       showSnack(context, 'Tambahkan minimal satu jasa atau part.', error: true);
       return;
     }
-    if (_bayarCents <= 0) {
-      showSnack(context, 'Isi nominal pembayaran.', error: true);
+    if (_diskonInvalid) {
+      showSnack(context, 'Format diskon tidak valid.', error: true);
       return;
     }
+    if (_bayarInvalid) {
+      showSnack(context, 'Format nominal bayar tidak valid.', error: true);
+      return;
+    }
+    if (_metode == 'TRANSFER' && _bayarCents > _total) {
+      showSnack(
+        context,
+        'Pembayaran transfer tidak boleh melebihi tagihan.',
+        error: true,
+      );
+      return;
+    }
+    if (_sparepartOnly && _jobs.isNotEmpty) {
+      showSnack(
+        context,
+        'Mode sparepart saja tidak boleh memuat jasa.',
+        error: true,
+      );
+      return;
+    }
+    if (_sparepartOnly && _parts.isEmpty) {
+      showSnack(
+        context,
+        'Mode sparepart saja membutuhkan minimal satu part.',
+        error: true,
+      );
+      return;
+    }
+    final garansiBulan = int.tryParse(_garansiBulan.text.trim()) ?? 0;
+    if (!_sparepartOnly && _bergaransi && garansiBulan < 1) {
+      showSnack(context, 'Durasi garansi minimal 1 bulan.', error: true);
+      return;
+    }
+    final garansiBarangNilai =
+        int.tryParse(_garansiBarangNilai.text.trim()) ?? 0;
+    if (_sparepartOnly && _garansiBarang && garansiBarangNilai < 1) {
+      showSnack(
+        context,
+        'Durasi garansi barang minimal 1 hari atau 1 bulan.',
+        error: true,
+      );
+      return;
+    }
+    final actor = _actor;
+    final isOwner = actor?.isOwner ?? true;
+    if (!isOwner && _diskonCents > 0 && _bruto > 0) {
+      final percent = _diskonCents / _bruto * 100;
+      if (percent > _maxDiscountPercent) {
+        showSnack(
+          context,
+          'Diskon ${percent.toStringAsFixed(1)}% melebihi batas '
+          '${_maxDiscountPercent.toStringAsFixed(0)}%. Hanya pemilik yang '
+          'dapat menyetujui diskon ini dari perangkat pemilik.',
+          error: true,
+        );
+        return;
+      }
+    }
+    final mechanics = _mechanics
+        .where((row) => _mechanicIds.contains(row['id']))
+        .toList();
     setState(() => _saving = true);
     try {
       final id = await AppDatabase.instance.createTransaction(
@@ -176,10 +327,30 @@ class _PosScreenState extends State<PosScreen> {
         metodeBayar: _metode,
         bayarCents: _bayarCents,
         requestId: _requestId,
+        actor: actor,
+        mechanic: mechanics.isEmpty
+            ? null
+            : mechanics.map((row) => '${row['nama']}').join(', '),
+        mechanicEmployeeSyncId: mechanics.isEmpty
+            ? null
+            : mechanics.first['sync_id'] as String?,
+        mechanicEmployeeSyncIds: mechanics
+            .map((row) => '${row['sync_id']}')
+            .toList(),
+        sparepartOnly: _sparepartOnly,
+        bergaransi: _bergaransi,
+        garansiBulan: garansiBulan,
+        catatanGaransi: _garansiCatatan.text.trim(),
+        garansiBarangAktif: _sparepartOnly && _garansiBarang,
+        garansiBarangNilai: garansiBarangNilai,
+        garansiBarangSatuan: _garansiBarangSatuan,
+        unitDitinggal: _unitDitinggal,
+        enqueue: (txn, recordId) =>
+            SyncService.instance.enqueueNote(recordId, txn: txn),
       );
       final detail = await AppDatabase.instance.recordDetail(id);
-      await SyncService.instance.enqueueNote(id);
       AppState.instance.touch();
+      FollowupService.instance.scheduleSync();
       await _load();
       if (!mounted) return;
       setState(() {
@@ -189,7 +360,14 @@ class _PosScreenState extends State<PosScreen> {
         _diskon.clear();
         _bayar.clear();
         _unitId = null;
+        _mechanicIds.clear();
         _requestId = newSyncId();
+        _bergaransi = true;
+        _garansiBulan.text = '$_garansiDefaultBulan';
+        _garansiCatatan.clear();
+        _sparepartOnly = false;
+        _garansiBarang = false;
+        _unitDitinggal = false;
       });
       if (detail != null) await _showReceipt(detail);
     } catch (error) {
@@ -219,9 +397,29 @@ class _PosScreenState extends State<PosScreen> {
             _receiptRow('Dibayar', formatRupiah(detail.totalDibayarCents)),
             _receiptRow('Sisa', formatRupiah(detail.sisaCents)),
             _receiptRow('Status', record.statusBayar),
+            if (record.bergaransi && record.garansiSampai != null)
+              _receiptRow(
+                'Garansi',
+                's.d. ${dateId.format(record.garansiSampai!)}',
+              ),
+            if (record.unitDitinggal) _receiptRow('Unit', 'Masih di bengkel'),
           ],
         ),
         actions: [
+          TextButton.icon(
+            onPressed: () => showReceiptPreview(
+              context,
+              detail.record.id,
+              title: 'Struk ${record.noNota}',
+            ),
+            icon: const Icon(Icons.receipt_long_outlined),
+            label: const Text('Lihat'),
+          ),
+          TextButton.icon(
+            onPressed: () => printReceiptFor(context, detail.record.id),
+            icon: const Icon(Icons.print_outlined),
+            label: const Text('Cetak'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Tutup'),
@@ -361,6 +559,46 @@ class _PosScreenState extends State<PosScreen> {
                   hintText: 'Contoh: radiator bocor',
                 ),
               ),
+              if (_mechanics.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Mekanik (bisa lebih dari satu)',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: _mechanics
+                      .map(
+                        (row) => FilterChip(
+                          label: Text('${row['nama'] ?? row['username']}'),
+                          selected: _mechanicIds.contains(row['id']),
+                          onSelected: (selected) => setState(() {
+                            if (selected) {
+                              _mechanicIds.add(row['id'] as int);
+                            } else {
+                              _mechanicIds.remove(row['id'] as int);
+                            }
+                          }),
+                        ),
+                      )
+                      .toList(),
+                ),
+                if (_mechanicIds.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Estimasi komisi: ${formatRupiah(_estimatedCommission)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ],
             ],
           ),
         ),
@@ -434,6 +672,106 @@ class _PosScreenState extends State<PosScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
+          title: 'Garansi dan unit',
+          child: Column(
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Unit ditinggal di bengkel'),
+                subtitle: const Text(
+                  'Aktifkan bila kendaraan belum diambil; masuk daftar '
+                  'kendaraan selesai di Follow up.',
+                ),
+                value: _unitDitinggal,
+                onChanged: (value) => setState(() => _unitDitinggal = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Mode sparepart saja'),
+                subtitle: const Text('Nota hanya berisi part, tanpa jasa.'),
+                value: _sparepartOnly,
+                onChanged: (value) => setState(() {
+                  _sparepartOnly = value;
+                  if (value) _bergaransi = false;
+                }),
+              ),
+              if (!_sparepartOnly) ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Garansi servis'),
+                  value: _bergaransi,
+                  onChanged: (value) => setState(() => _bergaransi = value),
+                ),
+                if (_bergaransi)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _garansiBulan,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Garansi (bulan)',
+                            helperText: '1 bulan = 30 hari',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: _garansiCatatan,
+                          decoration: const InputDecoration(
+                            labelText: 'Syarat garansi (opsional)',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ] else ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Garansi barang'),
+                  value: _garansiBarang,
+                  onChanged: (value) => setState(() => _garansiBarang = value),
+                ),
+                if (_garansiBarang)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _garansiBarangNilai,
+                          keyboardType: TextInputType.number,
+                          decoration:
+                              const InputDecoration(labelText: 'Durasi'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: _garansiBarangSatuan,
+                          decoration: const InputDecoration(labelText: 'Satuan'),
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'HARI',
+                              child: Text('Hari'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'BULAN',
+                              child: Text('Bulan'),
+                            ),
+                          ],
+                          onChanged: (value) => setState(
+                            () => _garansiBarangSatuan = value ?? 'HARI',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
           title: 'Pembayaran',
           child: Column(
             children: [
@@ -442,9 +780,15 @@ class _PosScreenState extends State<PosScreen> {
                   Expanded(
                     child: TextField(
                       controller: _diskon,
+                      enabled: AppState.instance.can('diskon'),
                       keyboardType: TextInputType.number,
-                      decoration:
-                          const InputDecoration(labelText: 'Diskon (Rp)'),
+                      decoration: InputDecoration(
+                        labelText: 'Diskon (Rp)',
+                        errorText: _diskonInvalid ? 'Format tidak valid' : null,
+                        helperText: AppState.instance.isOwner
+                            ? null
+                            : 'Batas ${_maxDiscountPercent.toStringAsFixed(0)}%',
+                      ),
                       onChanged: (_) => setState(() {}),
                     ),
                   ),
@@ -473,8 +817,11 @@ class _PosScreenState extends State<PosScreen> {
                     child: TextField(
                       controller: _bayar,
                       keyboardType: TextInputType.number,
-                      decoration:
-                          const InputDecoration(labelText: 'Dibayar (Rp)'),
+                      decoration: InputDecoration(
+                        labelText: 'Dibayar (Rp)',
+                        errorText: _bayarInvalid ? 'Format tidak valid' : null,
+                        helperText: 'Kosongkan untuk kredit penuh',
+                      ),
                       onChanged: (_) => setState(() {}),
                     ),
                   ),
@@ -494,10 +841,16 @@ class _PosScreenState extends State<PosScreen> {
               _summaryRow('Diskon', -_diskonCents),
               const Divider(),
               _summaryRow('Total', _total, bold: true),
-              _summaryRow('Kembalian', _bayarCents > _total
-                  ? _bayarCents - _total
-                  : 0),
-              _summaryRow('Sisa', (_total - _bayarCents).clamp(0, _total).toInt()),
+              _summaryRow(
+                'Kembalian',
+                _metode == 'CASH' && _total > 0 && _bayarCents > _total
+                    ? _bayarCents - _total
+                    : 0,
+              ),
+              _summaryRow(
+                'Sisa (Kredit)',
+                (_total - _bayarCents).clamp(0, _total).toInt(),
+              ),
             ],
           ),
         ),
@@ -728,6 +1081,7 @@ class _JobDialogState extends State<_JobDialog> {
   final _qty = TextEditingController(text: '1');
   final _harga = TextEditingController();
   int? _catalogId;
+  String? _error;
 
   @override
   void dispose() {
@@ -794,7 +1148,10 @@ class _JobDialogState extends State<_JobDialog> {
                 child: TextField(
                   controller: _harga,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Harga'),
+                  decoration: InputDecoration(
+                    labelText: 'Harga',
+                    errorText: _error,
+                  ),
                 ),
               ),
             ],
@@ -807,16 +1164,42 @@ class _JobDialogState extends State<_JobDialog> {
           child: const Text('Batal'),
         ),
         FilledButton(
-          onPressed: () {
+          onPressed: () async {
             final desc = _desc.text.trim();
             final qty = int.tryParse(_qty.text.trim()) ?? 0;
-            if (desc.isEmpty || qty < 1) return;
+            final harga = tryParseRupiahToCents(_harga.text);
+            if (desc.isEmpty || qty < 1) {
+              setState(() => _error = 'Deskripsi dan qty wajib diisi.');
+              return;
+            }
+            if (harga == null) {
+              setState(() => _error = 'Format harga tidak valid.');
+              return;
+            }
+            if (harga == 0) {
+              final ok = await confirmAction(
+                context,
+                title: 'Harga jasa nol',
+                message: 'Jasa ini dicatat dengan harga Rp 0. Lanjutkan?',
+                confirmLabel: 'Lanjut',
+              );
+              if (!ok || !context.mounted) return;
+            }
+            if (!context.mounted) return;
             Navigator.pop(
               context,
               JobDraft(
                 deskripsi: desc,
                 jumlah: qty,
-                hargaCents: parseRupiahToCents(_harga.text),
+                hargaCents: harga,
+                jasaId: _catalogId,
+                intervalBulan: _catalogId == null
+                    ? 0
+                    : widget.catalog
+                            .where((item) => item.id == _catalogId)
+                            .firstOrNull
+                            ?.intervalBulan ??
+                        0,
               ),
             );
           },
@@ -865,7 +1248,7 @@ class _PartDialogState extends State<_PartDialog> {
                   (item) => DropdownMenuItem(
                     value: item.id,
                     child: Text(
-                      '${item.nama} · stok ${item.jumlah}',
+                      '${item.nama} · stok ${item.jumlahLabel}',
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -885,7 +1268,7 @@ class _PartDialogState extends State<_PartDialog> {
               alignment: Alignment.centerLeft,
               child: Text(
                 'Harga jual ${formatRupiah(selected.hargaJualCents)} · '
-                'stok ${selected.jumlah}',
+                'stok ${selected.jumlahLabel}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
@@ -902,7 +1285,7 @@ class _PartDialogState extends State<_PartDialog> {
             final item = selected;
             final qty = int.tryParse(_qty.text.trim()) ?? 0;
             if (item == null || qty < 1) return;
-            if (qty > item.jumlah) return;
+            if (qty * 1000 > item.jumlahMilli) return;
             Navigator.pop(
               context,
               PartDraft(
@@ -911,6 +1294,7 @@ class _PartDialogState extends State<_PartDialog> {
                 jumlah: qty,
                 hargaCents: item.hargaJualCents,
                 modalCents: item.hargaModalCents,
+                intervalBulan: item.intervalBulan,
               ),
             );
           },

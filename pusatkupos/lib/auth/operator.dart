@@ -4,9 +4,11 @@ class Operator {
     required this.role,
     required this.label,
     this.employeeId,
+    this.employeeSyncId,
     this.username,
     this.permissions = const {},
     this.deviceId,
+    this.storeIds = const ['utama'],
     this.mustChangePassword = false,
   });
 
@@ -14,29 +16,34 @@ class Operator {
   final String role; // owner | KASIR | MEKANIK | KEDUANYA
   final String label;
   final int? employeeId;
+  final String? employeeSyncId;
   final String? username;
   final Set<String> permissions;
   final String? deviceId;
+  final List<String> storeIds;
   final bool mustChangePassword;
 
   bool get isOwner => kind == 'owner';
   bool get canWriteMoney =>
       isOwner || role == 'KASIR' || role == 'KEDUANYA';
-  bool get canVoid => canWriteMoney;
-  bool can(String permission) => permissions.contains(permission);
+  bool get canVoid => can('void');
+  bool can(String permission) => isOwner || permissions.contains(permission);
 
   static const owner = Operator(
     kind: 'owner',
     role: 'owner',
     label: 'Pemilik',
     permissions: {
-      'opname',
+      'void',
+      'ubah_harga_jasa',
+      'ubah_stok',
       'stok_masuk',
       'stok_keluar',
+      'opname',
+      'diskon',
       'lihat_laporan',
       'cetak_laporan',
-      'baca_supplier',
-      'baca_followup',
+      'backup',
       'kelola_akun',
       'kelola_perangkat',
       'lisensi',

@@ -1,17 +1,30 @@
-# pusatkupos_owner
+# PusatkuPOS Owner
 
-A new Flutter project.
+Aplikasi Flutter read-only untuk pemilik yang memiliki karyawan. Memakai core
+data/sync dari `../pusatkupos` lewat path dependency.
 
-## Getting Started
+- Impor ringkasan owner bertanda tangan (`owner_public_key` + `license_token`).
+- Melihat ringkasan, riwayat, laporan, stok, dan pelanggan hasil sinkronisasi.
+- Mengelola akun karyawan, izin, kode undangan, dan perangkat lewat relay.
+- Mengunggah/mengambil snapshot backup.
+- Tidak memiliki layar transaksi.
 
-This project is a starting point for a Flutter application.
+## Menjalankan
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+# Sekali saja: salin contoh konfigurasi build.
+cp .env.example .env   # PowerShell: Copy-Item .env.example .env
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+flutter pub get
+flutter analyze
+flutter run --dart-define-from-file=.env
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+`.env` berisi `PUSATKU_LICENSE_PUBLIC_KEY` dari relay dan tidak ikut di-commit.
+
+Relay harus HTTPS. Token pendaftaran disimpan di secure storage, bukan
+SharedPreferences. Aplikasi ini hanya bisa sinkronisasi bila ringkasan owner
+membawa token lisensi server yang valid.
+
+Lihat `../README.md` dan `../pusatkupos/README.md` untuk model lisensi,
+keamanan, dan kewajiban relay.

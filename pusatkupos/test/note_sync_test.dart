@@ -100,24 +100,22 @@ void main() {
     }
   });
 
-  test('nomor nota dua perangkat berbeda', () async {
+  test('nomor nota numerik dan tidak pernah dipakai ulang', () async {
     final dir = await Directory.systemTemp.createTemp('pusatkupos_nota_no_');
-    final a = AppDatabase();
-    final b = AppDatabase();
-    await a.initForTest(p.join(dir.path, 'a.db'));
-    await b.initForTest(p.join(dir.path, 'b.db'));
+    final db = AppDatabase();
+    await db.initForTest(p.join(dir.path, 'nota.db'));
     try {
-      Future<String> buatNota(AppDatabase db, String nama) async {
+      Future<int> buatNota(String nama, String phone) async {
         final customerId = await db.addCustomer(
           nama: nama,
-          nomorHp: '081200000002',
+          nomorHp: phone,
         );
         final unitId = await db.addUnit(
           customerId: customerId,
           unitType: 'MOBIL',
           nopol: 'B 1 $nama',
         );
-        final recordId = await db.createTransaction(
+        return db.createTransaction(
           unitId: unitId,
           keluhan: 'Servis rutin',
           jobs: [
@@ -128,17 +126,75 @@ void main() {
           metodeBayar: 'CASH',
           bayarCents: 10000000,
         );
-        return (await db.recordDetail(recordId))!.record.noNota;
       }
 
-      final noA = await buatNota(a, 'Andi');
-      final noB = await buatNota(b, 'Beni');
-      expect(noA, startsWith('INV-'));
-      expect(noB, startsWith('INV-'));
-      expect(noA, isNot(noB));
+      final pertama = await buatNota('Andi', '081200000002');
+      final kedua = await buatNota('Beni', '081200000003');
+      final ketiga = await buatNota('Cici', '081200000004');
+      expect((await db.recordDetail(pertama))!.record.noNota, '1');
+      expect((await db.recordDetail(kedua))!.record.noNota, '2');
+      expect((await db.recordDetail(ketiga))!.record.noNota, '3');
+
+      await db.voidRecord(kedua, 'Salah input');
+      final keempat = await buatNota('Dedi', '081200000005');
+      expect((await db.recordDetail(keempat))!.record.noNota, '4');
+      final semua = await db.db.query('service_records', columns: ['no_nota']);
+      expect(semua.map((row) => row['no_nota']).toSet().length, semua.length);
     } finally {
-      await a.close();
-      await b.close();
+      await db.close();
+      await dir.delete(recursive: true);
+    }
+  });
+
+  test('nomor nota melanjutkan nomor tertinggi yang sudah ada', () async {
+    final dir = await Directory.systemTemp.createTemp('pusatkupos_nota_seq_');
+    final db = AppDatabase();
+    await db.initForTest(p.join(dir.path, 'nota.db'));
+    try {
+      final customerId = await db.addCustomer(
+        nama: 'Eka',
+        nomorHp: '081200000003',
+      );
+      final unitId = await db.addUnit(
+        customerId: customerId,
+        unitType: 'MOBIL',
+        nopol: 'B 2 EKA',
+      );
+      await db.db.insert('service_records', {
+        'sync_id': 'legacy-note-41',
+        'no_nota': '41',
+        'unit_id': unitId,
+        'waktu_service': '2026-01-01T00:00:00.000',
+        'keluhan_awal': 'Nota lama',
+        'biaya_jasa': 0,
+        'total_part': 0,
+        'diskon': 0,
+        'total_servis': 0,
+        'metode_bayar': 'CASH',
+        'bayar': 0,
+        'kembalian': 0,
+        'status_bayar': 'LUNAS',
+        'jenis_bayar': 'LUNAS',
+        'total_dibayar': 0,
+        'sisa_bayar': 0,
+        'status': 'AKTIF',
+        'created_at': '2026-01-01T00:00:00.000',
+        'updated_at': '2026-01-01T00:00:00.000',
+      });
+      final recordId = await db.createTransaction(
+        unitId: unitId,
+        keluhan: 'Servis baru',
+        jobs: [
+          JobDraft(deskripsi: 'Servis', jumlah: 1, hargaCents: 1000000),
+        ],
+        parts: const [],
+        diskonCents: 0,
+        metodeBayar: 'CASH',
+        bayarCents: 1000000,
+      );
+      expect((await db.recordDetail(recordId))!.record.noNota, '42');
+    } finally {
+      await db.close();
       await dir.delete(recursive: true);
     }
   });

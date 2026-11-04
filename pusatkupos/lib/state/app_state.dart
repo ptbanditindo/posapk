@@ -13,6 +13,7 @@ class AppState extends ChangeNotifier {
   ThemeMode themeMode = ThemeMode.system;
   String? _pinHash;
   int revision = 0;
+  int storeRevision = 0;
   Operator? operator;
 
   bool get pinConfigured => _pinHash != null;
@@ -31,6 +32,12 @@ class AppState extends ChangeNotifier {
       'dark' => ThemeMode.dark,
       _ => ThemeMode.system,
     };
+    notifyListeners();
+  }
+
+  Future<void> reloadStore() async {
+    storeRevision++;
+    await load();
     notifyListeners();
   }
 

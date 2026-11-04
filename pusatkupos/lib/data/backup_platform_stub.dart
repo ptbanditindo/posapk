@@ -9,3 +9,15 @@ Future<void> writeDatabase(String path, List<int> bytes) async {
 Future<List<int>> readFile(String path) async {
   throw UnsupportedError('Berkas tidak tersedia di platform ini.');
 }
+
+Future<String?> backupExistingDatabase(String path) async {
+  throw UnsupportedError('Restore file tidak tersedia di platform ini.');
+}
+
+Future<void> deleteDatabaseSidecars(String path) async {
+  throw UnsupportedError('Restore file tidak tersedia di platform ini.');
+}
+
+Future<void> replaceDatabase(String path, String tempPath) async {
+  throw UnsupportedError('Restore file tidak tersedia di platform ini.');
+}

@@ -4,11 +4,23 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../core/dates.dart';
+import '../core/ids.dart';
 import 'app_database.dart';
 import 'backup_platform_stub.dart'
     if (dart.library.io) 'backup_platform_io.dart' as platform;
+
+const int _maxRestoredDatabaseBytes = 512 * 1024 * 1024;
+const int _maxManifestBytes = 1024 * 1024;
+const List<String> _requiredRestoreTables = [
+  'app_settings',
+  'customers',
+  'vehicle_or_units',
+  'stock_items',
+  'service_records',
+];
 
 class BackupResult {
   const BackupResult({required this.ok, required this.message});
@@ -105,6 +117,18 @@ class BackupService {
           message: 'Arsip bukan backup PusatkuPOS.',
         );
       }
+      if (databaseFile.size > _maxRestoredDatabaseBytes) {
+        return const BackupResult(
+          ok: false,
+          message: 'Berkas database di dalam ZIP terlalu besar.',
+        );
+      }
+      if (manifestFile.size > _maxManifestBytes) {
+        return const BackupResult(
+          ok: false,
+          message: 'Manifest backup terlalu besar.',
+        );
+      }
       final manifest = jsonDecode(
         utf8.decode(manifestFile.content as List<int>),
       ) as Map<String, dynamic>;
@@ -115,6 +139,12 @@ class BackupService {
         );
       }
       final databaseBytes = databaseFile.content as List<int>;
+      if (databaseBytes.length > _maxRestoredDatabaseBytes) {
+        return const BackupResult(
+          ok: false,
+          message: 'Berkas database hasil dekompresi terlalu besar.',
+        );
+      }
       final checksum = sha256.convert(databaseBytes).toString();
       if (checksum != manifest['sha256']) {
         return const BackupResult(
@@ -131,15 +161,78 @@ class BackupService {
       }
       final db = AppDatabase.instance;
       final path = db.databasePath;
+      final tempPath = '$path.restore.tmp';
+      await platform.writeDatabase(tempPath, databaseBytes);
+      try {
+        await _validateRestoredDatabase(tempPath);
+      } catch (error) {
+        return BackupResult(
+          ok: false,
+          message: 'Backup ditolak: $error',
+        );
+      }
+      final oldMaxSeq = await _maxOutboxSeq();
+      final oldFloor = int.tryParse(
+            await db.getSetting('device.seq_floor') ?? '',
+          ) ??
+          0;
+      await db.checkpoint();
       await db.close();
-      await platform.writeDatabase(path, databaseBytes);
+      await platform.backupExistingDatabase(path);
+      await platform.replaceDatabase(path, tempPath);
       await db.reopen();
-      return const BackupResult(ok: true, message: 'Backup berhasil dipulihkan.');
+      final newMaxSeq = await _maxOutboxSeq();
+      var floor = oldMaxSeq;
+      if (oldFloor > floor) floor = oldFloor;
+      if (newMaxSeq > floor) floor = newMaxSeq;
+      await db.setSetting('device.seq_floor', '$floor');
+      await db.setSetting('device.nota_prefix', newNotaPrefix());
+      await db.setSetting('sync.restore_requires_bootstrap', '1');
+      return const BackupResult(
+        ok: true,
+        message: 'Backup dipulihkan. Prefix nota baru dibuat dan antrean '
+            'sinkron dilanjutkan dari nomor urut terakhir. Restore ke '
+            'perangkat kedua dapat menyebabkan bentrok; jalankan bootstrap.',
+      );
     } catch (error) {
       if (!AppDatabase.instance.isOpen) {
         await AppDatabase.instance.reopen();
       }
       return BackupResult(ok: false, message: 'Restore gagal: $error');
+    }
+  }
+
+  Future<int> _maxOutboxSeq() async {
+    final rows = await AppDatabase.instance.db.rawQuery(
+      'SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_outbox',
+    );
+    return rows.first['seq'] as int? ?? 0;
+  }
+
+  Future<void> _validateRestoredDatabase(String path) async {
+    final probe = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: true),
+    );
+    try {
+      final integrity = await probe.rawQuery('PRAGMA integrity_check');
+      final result = integrity.isEmpty
+          ? ''
+          : '${integrity.first.values.first}';
+      if (result.toLowerCase() != 'ok') {
+        throw StateError('Integritas database gagal: $result');
+      }
+      final tableRows = await probe.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+      );
+      final tables = tableRows.map((row) => '${row['name']}').toSet();
+      for (final required in _requiredRestoreTables) {
+        if (!tables.contains(required)) {
+          throw StateError('Tabel wajib "$required" tidak ditemukan.');
+        }
+      }
+    } finally {
+      await probe.close();
     }
   }
 }

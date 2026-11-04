@@ -44,21 +44,24 @@ class DeviceService {
   }) async {
     final ownerId = await LicenseService.instance.ownerId();
     if (ownerId == null) {
-      throw StateError('Aktifkan lisensi premium terlebih dahulu.');
+      throw StateError('Impor ringkasan owner terlebih dahulu.');
     }
-    final license = await LicenseService.instance.license();
-    final limit = (license?['device_limit'] as int?) ?? 1;
-    if (kind == 'owner') {
-      final rows = await AppDatabase.instance.db.rawQuery(
-        "SELECT COUNT(*) AS total FROM devices WHERE kind = 'owner' "
-        'AND revoked_at IS NULL',
+    final claims = await LicenseService.instance.verifiedClaims();
+    if (claims == null || !claims.premium) {
+      throw StateError(
+        'Lisensi server yang valid diperlukan untuk menambah perangkat.',
       );
-      final count = rows.first['total'] as int? ?? 0;
-      if (count >= limit) {
-        throw StateError(
-          'Batas $limit perangkat owner sudah terpakai. Cabut perangkat lama.',
-        );
-      }
+    }
+    final limit = claims.deviceLimit;
+    final rows = await AppDatabase.instance.db.rawQuery(
+      'SELECT COUNT(*) AS total FROM devices WHERE revoked_at IS NULL',
+    );
+    final count = rows.first['total'] as int? ?? 0;
+    if (count >= limit) {
+      throw StateError(
+        'Batas $limit perangkat aktif (owner + karyawan) sudah terpakai. '
+        'Cabut perangkat lama.',
+      );
     }
     final signing = await generateSigningKey();
     final encryption = await generateEncryptionKey();

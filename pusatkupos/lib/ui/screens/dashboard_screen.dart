@@ -127,6 +127,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           onTap: () => widget.onNavigate(2),
                         ),
                       ),
+                      if (data.negativeStockCount > 0)
+                        SizedBox(
+                          width: width,
+                          child: StatCard(
+                            label: 'Stok negatif / konflik',
+                            value: '${data.negativeStockCount}',
+                            icon: Icons.error_outline,
+                            tone: Theme.of(context).colorScheme.error,
+                            onTap: () => widget.onNavigate(4),
+                          ),
+                        ),
                     ],
                   );
                 },

@@ -2,7 +2,7 @@ import 'dart:math';
 
 const _alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
-String newNotaPrefix({int length = 4}) {
+String newNotaPrefix({int length = 6}) {
   final random = Random.secure();
   return List.generate(
     length,

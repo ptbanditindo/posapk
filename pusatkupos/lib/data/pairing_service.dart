@@ -4,10 +4,12 @@ import 'package:crypto/crypto.dart' as crypto;
 
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/relay_url.dart';
 import '../sync/crypto.dart';
 import '../sync/relay_client.dart';
 import 'account_service.dart';
 import 'app_database.dart';
+import 'license_service.dart';
 import 'secure_store.dart';
 
 class PairingService {
@@ -20,8 +22,7 @@ class PairingService {
     required String code,
     required String deviceName,
   }) async {
-    final url = relayUrl.trim().replaceAll(RegExp(r'/+$'), '');
-    if (url.isEmpty) throw ArgumentError('Alamat relay wajib diisi.');
+    final url = normalizeRelayUrl(relayUrl);
     if (code.trim().length < 4) throw ArgumentError('Kode undangan tidak valid.');
     final signing = await generateSigningKey();
     final encryption = await generateEncryptionKey();
@@ -45,8 +46,33 @@ class PairingService {
     );
     final signer = permission['signer_public_key'] as String? ?? '';
     final signature = permission['signature'] as String? ?? '';
+    final ownerPublic = response['owner_public_key'] as String? ?? '';
+    if (ownerPublic.isEmpty) {
+      throw StateError(
+        'Kode undangan tidak membawa kunci publik owner. '
+        'Perubahan relay diperlukan untuk pairing aman.',
+      );
+    }
+    final pinnedRows = await AppDatabase.instance.db.query(
+      'owner_identity',
+      limit: 1,
+    );
+    if (pinnedRows.isNotEmpty) {
+      final pinned = pinnedRows.first['public_key'] as String? ?? '';
+      if (pinned.isNotEmpty && pinned != ownerPublic) {
+        throw StateError(
+          'Kunci owner dari undangan berbeda dengan kunci yang sudah dipin. '
+          'Pairing dibatalkan.',
+        );
+      }
+    }
+    if (signer.isEmpty || signer != ownerPublic) {
+      throw StateError(
+        'Tanda tangan izin bukan dari kunci owner yang dipin.',
+      );
+    }
     if (!await verifyPayload(
-      signer,
+      ownerPublic,
       utf8.encode(canonicalJson(payload)),
       signature,
     )) {
@@ -98,21 +124,39 @@ class PairingService {
       await AppDatabase.instance.db.insert('owner_identity', {
         'id': 1,
         'owner_id': ownerId,
-        'public_key': response['owner_public_key'] as String? ?? '',
+        'public_key': ownerPublic,
         'created_at': now,
       });
+    } else if ((owner.first['public_key'] as String? ?? '').isEmpty) {
+      await AppDatabase.instance.db.update(
+        'owner_identity',
+        {'public_key': ownerPublic},
+        where: 'id = ?',
+        whereArgs: [owner.first['id']],
+      );
     }
-    final license = await AppDatabase.instance.db.query('license', limit: 1);
-    if (license.isEmpty) {
-      await AppDatabase.instance.db.insert('license', {
-        'id': 1,
-        'plan': 'premium',
-        'period_end': null,
-        'device_limit': 1,
-        'provider': 'relay',
-        'token': null,
-        'activated_at': now,
-      });
+    final licenseToken = response['license_token'] as String? ?? '';
+    if (licenseToken.isNotEmpty) {
+      await LicenseService.instance.installToken(
+        licenseToken,
+        expectedOwnerId: ownerId,
+      );
+    }
+    final claims = await LicenseService.instance.verifiedClaims(force: true);
+    if (claims == null || !claims.premium) {
+      throw StateError(
+        'Relay tidak mengirim token lisensi server yang valid. '
+        'Pairing ditolak; perubahan relay diperlukan.',
+      );
+    }
+    final activeRows = await AppDatabase.instance.db.rawQuery(
+      'SELECT COUNT(*) AS total FROM devices WHERE revoked_at IS NULL',
+    );
+    final active = activeRows.first['total'] as int? ?? 0;
+    if (active >= claims.deviceLimit) {
+      throw StateError(
+        'Batas ${claims.deviceLimit} perangkat aktif sudah terpakai.',
+      );
     }
     return {
       'account_id': accountId,
