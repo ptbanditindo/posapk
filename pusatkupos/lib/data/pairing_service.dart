@@ -10,6 +10,7 @@ import '../sync/relay_client.dart';
 import 'account_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
+import 'license_verifier.dart';
 import 'secure_store.dart';
 
 class PairingService {
@@ -66,13 +67,13 @@ class PairingService {
         );
       }
     }
-    if (signer.isEmpty || signer != ownerPublic) {
+    if (!isTrustedPermissionSigner(signer, ownerPublic)) {
       throw StateError(
         'Tanda tangan izin bukan dari kunci owner yang dipin.',
       );
     }
     if (!await verifyPayload(
-      ownerPublic,
+      signer,
       utf8.encode(canonicalJson(payload)),
       signature,
     )) {
@@ -147,15 +148,6 @@ class PairingService {
       throw StateError(
         'Relay tidak mengirim token lisensi server yang valid. '
         'Pairing ditolak; perubahan relay diperlukan.',
-      );
-    }
-    final activeRows = await AppDatabase.instance.db.rawQuery(
-      'SELECT COUNT(*) AS total FROM devices WHERE revoked_at IS NULL',
-    );
-    final active = activeRows.first['total'] as int? ?? 0;
-    if (active >= claims.deviceLimit) {
-      throw StateError(
-        'Batas ${claims.deviceLimit} perangkat aktif sudah terpakai.',
       );
     }
     return {

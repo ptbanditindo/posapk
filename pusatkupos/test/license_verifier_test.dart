@@ -8,14 +8,14 @@ Future<String> _token(
   String privateKey, {
   required String ownerId,
   required DateTime periodEnd,
-  int deviceLimit = 3,
+  int storeLimit = 3,
 }) async {
   final payload = {
     'v': 1,
     'owner_id': ownerId,
     'plan': 'premium',
     'period_end': periodEnd.toIso8601String(),
-    'device_limit': deviceLimit,
+    'store_limit': storeLimit,
     'issued_at': DateTime.now().toUtc().toIso8601String(),
   };
   final raw = canonicalJson(payload);
@@ -34,7 +34,7 @@ void main() {
     );
     final claims = await verifier.verify(token);
     expect(claims.ownerId, 'OWNER123');
-    expect(claims.deviceLimit, 3);
+    expect(claims.storeLimit, 3);
     expect(claims.premium, isTrue);
 
     final expired = await _token(

@@ -52,6 +52,19 @@ class RelayClient {
     return _json(await http.get(_uri('/relay/health')));
   }
 
+  Future<Map<String, Object?>> followupQuota({
+    required String code,
+    required int used,
+    bool consume = false,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/followup/quota'),
+      headers: _headers,
+      body: jsonEncode({'code': code, 'used': used, 'consume': consume}),
+    );
+    return _json(response);
+  }
+
   Future<Map<String, Object?>> googleLogin({required String idToken}) async {
     final response = await http.post(
       _uri('/relay/auth/google'),
@@ -59,6 +72,52 @@ class RelayClient {
       body: jsonEncode({'id_token': idToken}),
     );
     return _json(response);
+  }
+
+  Future<Map<String, Object?>> employeeLogin({
+    required String ownerId,
+    required String username,
+    required String password,
+    required String deviceName,
+    required String publicKey,
+    required String encryptionKey,
+    List<String> storeIds = const [],
+  }) async {
+    final response = await http.post(
+      _uri('/relay/auth/employee'),
+      headers: _headers,
+      body: jsonEncode({
+        'owner_id': ownerId,
+        'username': username,
+        'password': password,
+        'store_id': storeIds.isEmpty ? '' : storeIds.first,
+        'device': {
+          'nama': deviceName,
+          'public_key': publicKey,
+          'encryption_key': encryptionKey,
+        },
+      }),
+    );
+    return _json(response);
+  }
+
+  Future<void> changeEmployeePassword({
+    required String ownerId,
+    required String username,
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/auth/employee/password'),
+      headers: _headers,
+      body: jsonEncode({
+        'owner_id': ownerId,
+        'username': username,
+        'old_password': oldPassword,
+        'new_password': newPassword,
+      }),
+    );
+    await _json(response);
   }
 
   Future<Map<String, Object?>> enroll({

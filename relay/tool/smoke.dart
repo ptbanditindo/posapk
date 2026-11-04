@@ -23,7 +23,7 @@ Future<void> main(List<String> args) async {
       'owner_id': ownerId,
       'owner_public_key': owner.publicKey,
       'days': 30,
-      'device_limit': 5,
+      'store_limit': 3,
     },
     headers: {'Authorization': 'Bearer $admin'},
   );
@@ -231,7 +231,7 @@ Future<void> main(List<String> args) async {
     {
       'owner_id': '${ownerId}b',
       'days': 30,
-      'device_limit': 5,
+      'store_limit': 3,
     },
     headers: {'Authorization': 'Bearer $admin'},
   );

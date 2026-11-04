@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../auth/operator.dart';
 import '../data/app_database.dart';
+import '../data/pin_service.dart';
 
 class AppState extends ChangeNotifier {
   AppState._();
@@ -11,6 +12,7 @@ class AppState extends ChangeNotifier {
   String storeName = 'PUSATKU POS';
   String storeAddress = '';
   ThemeMode themeMode = ThemeMode.system;
+  int autoLockMinutes = 5;
   String? _pinHash;
   int revision = 0;
   int storeRevision = 0;
@@ -25,7 +27,10 @@ class AppState extends ChangeNotifier {
     final db = AppDatabase.instance;
     storeName = await db.getSetting('bengkel.nama') ?? 'PUSATKU POS';
     storeAddress = await db.getSetting('bengkel.alamat') ?? '';
-    _pinHash = await db.getSetting('auth.pin_hash');
+    _pinHash = await PinService.instance.isConfigured() ? 'set' : null;
+    autoLockMinutes =
+        int.tryParse(await db.getSetting('security.auto_lock_minutes') ?? '') ??
+            5;
     final theme = await db.getSetting('app.theme') ?? 'system';
     themeMode = switch (theme) {
       'light' => ThemeMode.light,
@@ -64,8 +69,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setAutoLockMinutes(int minutes) async {
+    autoLockMinutes = minutes < 0 ? 0 : minutes;
+    await AppDatabase.instance.setSetting(
+      'security.auto_lock_minutes',
+      '$autoLockMinutes',
+    );
+    notifyListeners();
+  }
+
   Future<void> refreshPinState() async {
-    _pinHash = await AppDatabase.instance.getSetting('auth.pin_hash');
+    _pinHash = await PinService.instance.isConfigured() ? 'set' : null;
     notifyListeners();
   }
 

@@ -139,7 +139,7 @@ class LicenseService {
         'id': 1,
         'plan': claims.plan,
         'period_end': claims.periodEnd.toIso8601String(),
-        'device_limit': claims.deviceLimit,
+        'store_limit': claims.storeLimit,
         'provider': 'server',
         'token': token.trim(),
         'activated_at': nowIso(),
@@ -187,7 +187,7 @@ class LicenseService {
       'plan': claims?.plan ?? (licenseRow == null ? 'free' : 'free'),
       'period_end': claims?.periodEnd.toIso8601String() ??
           licenseRow?['period_end'],
-      'device_limit': claims?.deviceLimit ?? licenseRow?['device_limit'] ?? 1,
+      'store_limit': claims?.storeLimit ?? licenseRow?['store_limit'] ?? 1,
       'provider': licenseRow?['provider'] ?? '',
       'expired': expired,
       'premium': claims?.premium ?? false,

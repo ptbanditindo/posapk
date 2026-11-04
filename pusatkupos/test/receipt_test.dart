@@ -10,6 +10,7 @@ import 'package:pusatkupos/data/receipt_service.dart';
 import 'package:pusatkupos/data/receipt_settings.dart';
 import 'package:pusatkupos/printer/escpos_builder.dart';
 import 'package:pusatkupos/printer/printer_config.dart';
+import 'package:pusatkupos/printer/printer_storage.dart';
 
 void main() {
   late Directory dir;
@@ -164,6 +165,7 @@ void main() {
   });
 
   test('konfigurasi printer valid dan menyimpan satu printer utama', () async {
+    final store = PrinterStore(storage: MemoryPrinterStorage());
     final first = PrinterConfig(
       id: 'p1',
       nama: 'Kasir',
@@ -177,25 +179,44 @@ void main() {
       host: '192.168.1.11',
       utama: true,
     );
-    await PrinterStore.instance.saveAll([first, second]);
-    final loaded = await PrinterStore.instance.load();
+    await store.saveAll([first, second]);
+    final loaded = await store.load();
     expect(loaded.length, 2);
     expect(loaded.first.utama, isTrue);
     expect(loaded.last.utama, isFalse);
     expect(loaded.first.width, 48);
-    expect((await PrinterStore.instance.primary())?.id, 'p1');
+    expect((await store.primary())?.id, 'p1');
 
     expect(
-      () => const PrinterConfig(id: 'x', nama: '', host: 'h').validate(),
+      () => PrinterConfig(id: 'x', nama: '', host: 'h').validate(),
       throwsArgumentError,
     );
     expect(
-      () => const PrinterConfig(id: 'x', nama: 'n', host: '').validate(),
+      () => PrinterConfig(id: 'x', nama: 'n', host: '').validate(),
       throwsArgumentError,
     );
     expect(
-      () => const PrinterConfig(id: 'x', nama: 'n', host: 'h', port: 0)
-          .validate(),
+      () => PrinterConfig(id: 'x', nama: 'n', host: 'h', port: 0).validate(),
+      throwsArgumentError,
+    );
+    expect(
+      () => PrinterConfig(
+        id: 'b1',
+        nama: 'BT',
+        connectionType: 'BLUETOOTH',
+        address: 'AA:BB',
+      ).validate(),
+      throwsArgumentError,
+    );
+    expect(
+      () => store.saveAll([
+        first,
+        PrinterConfig(
+          id: 'p3',
+          nama: 'Duplikat',
+          host: '192.168.1.10',
+        ),
+      ]),
       throwsArgumentError,
     );
   });

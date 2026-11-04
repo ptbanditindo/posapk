@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:args/args.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import 'package:pusatkupos_relay/config.dart';
@@ -16,15 +17,15 @@ Future<void> main(List<String> arguments) async {
     ..addCommand('migrate')
     ..addCommand('key')
     ..addCommand('list-owners')
-    ..addCommand(
-      'owner',
+    ..addCommand('owner',
       ArgParser()
         ..addOption('owner-id', mandatory: true)
         ..addOption('public-key', defaultsTo: '')
         ..addOption('days', defaultsTo: '30')
-        ..addOption('devices', defaultsTo: '5')
+        ..addOption('stores', defaultsTo: '1')
         ..addFlag('force', negatable: false),
     )
+    ..addCommand('seed-demo')
     ..addCommand(
       'identity',
       ArgParser()
@@ -37,7 +38,7 @@ Future<void> main(List<String> arguments) async {
       ArgParser()
         ..addOption('owner-id', mandatory: true)
         ..addOption('days')
-        ..addOption('devices'),
+        ..addOption('stores'),
     )
     ..addCommand(
       'token',
@@ -67,12 +68,15 @@ Future<void> main(List<String> arguments) async {
         break;
       case 'list-owners':
         final rows = await db.query(
-          'SELECT owner_id, owner_public_key, license_plan, license_period_end, license_device_limit FROM owners ORDER BY created_at',
+          'SELECT owner_id, owner_public_key, license_plan, license_period_end, license_store_limit FROM owners ORDER BY created_at',
         );
         print(jsonEncode(rows));
         break;
       case 'owner':
         await _createOwner(db, command);
+        break;
+      case 'seed-demo':
+        await _seedDemo(db);
         break;
       case 'identity':
         await _bindIdentity(db, command);
@@ -91,11 +95,104 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
+Future<void> _seedDemo(Database db) async {
+  final end = DateTime.now().toUtc().add(const Duration(days: 3650));
+  await db.execute(
+    '''
+INSERT INTO owners (owner_id, owner_public_key, license_plan,
+  license_period_end, license_store_limit)
+VALUES ('owner_demo', '', 'premium', @end, 3)
+ON CONFLICT (owner_id) DO UPDATE SET
+  license_plan = 'premium', license_period_end = EXCLUDED.license_period_end,
+  license_store_limit = 3
+''',
+    {'end': end},
+  );
+  final accounts = [
+    (
+      sync: 'acc_kasir_demo',
+      username: 'kasir',
+      nama: 'Kasir Demo',
+      role: 'KASIR',
+      password: 'kasir123456',
+      permissions: const ['lihat_laporan', 'cetak_laporan'],
+    ),
+    (
+      sync: 'acc_mekanik_demo',
+      username: 'mekanik',
+      nama: 'Mekanik Demo',
+      role: 'MEKANIK',
+      password: 'mekanik123456',
+      permissions: const <String>[],
+    ),
+  ];
+  for (final account in accounts) {
+    final (hash, salt) = await _hashDemoPassword(account.password);
+    await db.execute(
+      '''
+INSERT INTO accounts (owner_id, sync_id, username, nama, role_base,
+  extra_permissions, store_ids, password_hash, password_salt,
+  password_iterations, aktif, must_change_password)
+VALUES ('owner_demo', @sync, @username, @nama, @role,
+  CAST(@permissions AS jsonb), CAST(@stores AS jsonb), @hash, @salt,
+  10000, true, false)
+ON CONFLICT (owner_id, sync_id) DO UPDATE SET
+  username = EXCLUDED.username, nama = EXCLUDED.nama,
+  role_base = EXCLUDED.role_base,
+  extra_permissions = EXCLUDED.extra_permissions,
+  store_ids = EXCLUDED.store_ids,
+  password_hash = EXCLUDED.password_hash,
+  password_salt = EXCLUDED.password_salt,
+  password_iterations = EXCLUDED.password_iterations,
+  aktif = true, must_change_password = false, updated_at = now()
+''',
+      {
+        'sync': account.sync,
+        'username': account.username,
+        'nama': account.nama,
+        'role': account.role,
+        'permissions': jsonEncode(account.permissions),
+        'stores': jsonEncode(const ['utama']),
+        'hash': hash,
+        'salt': salt,
+      },
+    );
+  }
+  final owner = await db.one(
+    'SELECT * FROM owners WHERE owner_id = @id',
+    {'id': 'owner_demo'},
+  );
+  print(jsonEncode({
+    'ok': true,
+    'owner_id': 'owner_demo',
+    'accounts': ['kasir', 'mekanik'],
+    'period_end': owner?['license_period_end'] is DateTime
+        ? (owner!['license_period_end'] as DateTime).toUtc().toIso8601String()
+        : null,
+    'license_token': await _licenseToken(db, owner!),
+  }));
+}
+
+Future<(String, String)> _hashDemoPassword(String value) async {
+  final saltBytes =
+      List<int>.generate(16, (_) => Random.secure().nextInt(256));
+  final salt = base64Url.encode(saltBytes);
+  final key = await Pbkdf2(
+    macAlgorithm: Hmac.sha256(),
+    iterations: 10000,
+    bits: 256,
+  ).deriveKey(
+    secretKey: SecretKey(utf8.encode(value)),
+    nonce: saltBytes,
+  );
+  return (base64Url.encode(await key.extractBytes()), salt);
+}
+
 Future<void> _createOwner(Database db, ArgResults args) async {
   final ownerId = args['owner-id'] as String;
   final publicKey = args['public-key'] as String;
   final days = int.tryParse(args['days'] as String) ?? 30;
-  final devices = int.tryParse(args['devices'] as String) ?? 5;
+  final stores = int.tryParse(args['stores'] as String) ?? 1;
   final existing = await db.one(
     'SELECT owner_id, owner_public_key FROM owners WHERE owner_id = @id',
     {'id': ownerId},
@@ -115,14 +212,14 @@ Future<void> _createOwner(Database db, ArgResults args) async {
   await db.execute(
     '''
 INSERT INTO owners (owner_id, owner_public_key, license_plan, license_period_end,
-  license_device_limit)
-VALUES (@id, @public, 'premium', @end, @devices)
+  license_store_limit)
+VALUES (@id, @public, 'premium', @end, @stores)
 ON CONFLICT (owner_id) DO UPDATE SET
   owner_public_key = CASE WHEN EXCLUDED.owner_public_key = '' THEN owners.owner_public_key ELSE EXCLUDED.owner_public_key END,
   license_plan = 'premium', license_period_end = EXCLUDED.license_period_end,
-  license_device_limit = EXCLUDED.license_device_limit
+  license_store_limit = EXCLUDED.license_store_limit
 ''',
-    {'id': ownerId, 'public': publicKey, 'end': end, 'devices': devices},
+    {'id': ownerId, 'public': publicKey, 'end': end, 'stores': stores},
   );
   final token = _randomToken();
   await db.execute(
@@ -145,7 +242,7 @@ ON CONFLICT (owner_id) DO UPDATE SET
     'license_token': license,
     'license_public_key': await LicenseService(db).publicKey(),
     'period_end': (owner['license_period_end'] as DateTime).toUtc().toIso8601String(),
-    'device_limit': owner['license_device_limit'],
+    'store_limit': owner['license_store_limit'],
   }));
 }
 
@@ -192,7 +289,7 @@ ON CONFLICT (email) DO UPDATE SET
 Future<void> _printLicense(Database db, ArgResults args) async {
   final ownerId = args['owner-id'] as String;
   final days = int.tryParse(args['days'] as String? ?? '');
-  final devices = int.tryParse(args['devices'] as String? ?? '');
+  final stores = int.tryParse(args['stores'] as String? ?? '');
   if (days != null) {
     await db.execute(
       'UPDATE owners SET license_period_end = @end WHERE owner_id = @id',
@@ -202,10 +299,10 @@ Future<void> _printLicense(Database db, ArgResults args) async {
       },
     );
   }
-  if (devices != null) {
+  if (stores != null) {
     await db.execute(
-      'UPDATE owners SET license_device_limit = @devices WHERE owner_id = @id',
-      {'devices': devices, 'id': ownerId},
+      'UPDATE owners SET license_store_limit = @stores WHERE owner_id = @id',
+      {'stores': stores, 'id': ownerId},
     );
   }
   final owner = await db.one(
@@ -255,7 +352,7 @@ Future<String> _licenseToken(Database db, Map<String, Object?> owner) {
         ? end.toUtc()
         : DateTime.now().toUtc().add(const Duration(days: 30)),
     plan: owner['license_plan'] as String? ?? 'premium',
-    deviceLimit: (owner['license_device_limit'] as num?)?.toInt() ?? 5,
+    storeLimit: (owner['license_store_limit'] as num?)?.toInt() ?? 1,
   );
 }
 

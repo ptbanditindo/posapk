@@ -6,6 +6,7 @@ import 'package:cryptography/cryptography.dart';
 
 import 'app_database.dart';
 import 'login_guard.dart';
+import 'session_service.dart';
 
 const int ownerPinMinLength = 6;
 const int pinIterations = 600000;
@@ -24,12 +25,36 @@ class PinService {
         result == PinVerification.weakLegacyPin;
   }
 
+  Future<bool> isConfigured() async {
+    final session = await SessionService.instance.readPin();
+    if (session != null) return true;
+    final hash = await AppDatabase.instance.getSetting('auth.pin_hash');
+    return hash != null && hash.isNotEmpty;
+  }
+
   Future<PinVerification> verifyDetailed(String pin) async {
     if (pin.trim().isEmpty) return PinVerification.wrong;
     try {
       await LoginGuard.check(ownerGuardScope);
     } on LoginLockedException {
       return PinVerification.locked;
+    }
+    final session = await SessionService.instance.readPin();
+    if (session != null) {
+      final valid = await _derive(
+            pin,
+            session.salt,
+            session.iterations <= 0 ? pinIterations : session.iterations,
+          ) ==
+          session.hash;
+      if (!valid) {
+        await LoginGuard.fail(ownerGuardScope);
+        return PinVerification.wrong;
+      }
+      await LoginGuard.clear(ownerGuardScope);
+      return pin.trim().length < ownerPinMinLength
+          ? PinVerification.weakLegacyPin
+          : PinVerification.ok;
     }
     final db = AppDatabase.instance;
     final salt = await db.getSetting('auth.pin_salt');
@@ -75,9 +100,18 @@ class PinService {
     return true;
   }
 
+  Future<void> clear() async {
+    await SessionService.instance.clearPin();
+    final db = AppDatabase.instance;
+    await db.deleteSetting('auth.pin_salt');
+    await db.deleteSetting('auth.pin_hash');
+    await db.deleteSetting('auth.pin_iterations');
+  }
+
   Future<void> _store(String pin) async {
     final salt = _newSalt();
     final hash = await _derive(pin, salt, pinIterations);
+    await SessionService.instance.savePin(hash, salt, pinIterations);
     final db = AppDatabase.instance;
     await db.setSetting('auth.pin_salt', salt);
     await db.setSetting('auth.pin_hash', hash);

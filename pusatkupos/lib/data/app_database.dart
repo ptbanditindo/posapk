@@ -20,11 +20,14 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 8;
+  static const int schemaVersion = 9;
 
   Database? _db;
   String? _path;
   String? _activeStoreId;
+  String? _mainPath;
+  String? _mainStoreId;
+  bool _viewerMode = false;
 
   Database get db {
     final value = _db;
@@ -45,6 +48,9 @@ class AppDatabase {
   bool get isOpen => _db != null;
 
   String? get activeStoreId => _activeStoreId;
+
+  /// True bila database yang terbuka adalah salinan milik mode ringkasan.
+  bool get isViewerDatabase => _viewerMode;
 
   Future<void> init() async {
     if (_db != null) return;
@@ -67,6 +73,8 @@ class AppDatabase {
       _activeStoreId = store.storeId;
       _path = store.databasePath;
     }
+    _mainPath = _path;
+    _mainStoreId = _activeStoreId;
     await _open();
     await _syncRegistryLabel();
   }
@@ -78,6 +86,39 @@ class AppDatabase {
     databaseFactory = databaseFactoryFfi;
     _path = path;
     _activeStoreId = 'utama';
+    _mainPath = path;
+    _mainStoreId = 'utama';
+    _viewerMode = false;
+    await _open();
+  }
+
+  /// Membuka database terpisah untuk ringkasan laporan milik [ownerId].
+  /// Salinan ini tidak bercampur dengan pembukuan lokal perangkat.
+  Future<void> openViewerDatabase(String ownerId) async {
+    final safe = ownerId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    if (safe.isEmpty) throw ArgumentError('ID owner tidak valid.');
+    if (_db == null) await init();
+    final path = kIsWeb
+        ? 'pusatkupos_viewer_$safe.db'
+        : p.join(p.dirname(databasePath), 'viewer_$safe.db');
+    if (_viewerMode && _path == path) return;
+    _mainPath ??= _path;
+    _mainStoreId ??= _activeStoreId;
+    await close();
+    _path = path;
+    _activeStoreId = 'utama';
+    _viewerMode = true;
+    await _open();
+  }
+
+  /// Kembali ke database pembukuan utama setelah sesi ringkasan berakhir.
+  Future<void> useMainDatabase() async {
+    if (!_viewerMode) return;
+    await close();
+    _viewerMode = false;
+    _path = _mainPath;
+    _activeStoreId = _mainStoreId;
+    if (_path == null) return;
     await _open();
   }
 
@@ -99,6 +140,9 @@ class AppDatabase {
   }
 
   Future<void> switchStore(StoreRecord store) async {
+    if (_viewerMode) {
+      throw StateError('Mode ringkasan hanya membaca satu salinan toko.');
+    }
     if (_activeStoreId == store.storeId && _db != null) return;
     await close();
     _path = store.databasePath;
@@ -359,6 +403,7 @@ class AppDatabase {
     await _upgradeV7(db);
     await _createSyncSchema(db);
     await _upgradeV8(db);
+    await _upgradeV9(db);
     await _addSyncIds(db);
   }
 
@@ -401,6 +446,13 @@ class AppDatabase {
     if (oldVersion < 8) {
       await _upgradeV8(db);
     }
+    if (oldVersion < 9) {
+      await _upgradeV9(db);
+    }
+  }
+
+  Future<void> _upgradeV9(Database db) async {
+    await _addColumn(db, 'license', 'store_limit', 'INTEGER NOT NULL DEFAULT 1');
   }
 
   Future<void> _addColumn(
@@ -770,6 +822,7 @@ WHERE $column IS NOT NULL
         plan TEXT NOT NULL DEFAULT 'free',
         period_end TEXT,
         device_limit INTEGER NOT NULL DEFAULT 1,
+        store_limit INTEGER NOT NULL DEFAULT 1,
         provider TEXT NOT NULL DEFAULT 'manual',
         token TEXT,
         activated_at TEXT

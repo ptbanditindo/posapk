@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/app_database.dart';
@@ -5,6 +6,7 @@ import '../../data/backup_service.dart';
 import '../../data/owner_summary_service.dart';
 import '../../data/pin_service.dart';
 import '../../state/app_state.dart';
+import '../entry_gate.dart';
 import '../pin_gate.dart';
 import '../widgets.dart';
 import 'followup_settings_screen.dart';
@@ -24,9 +26,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _alamat;
   final _garansiBulan = TextEditingController(text: '1');
   final _garansiSyarat = TextEditingController();
+  final _backupChat = TextEditingController();
+  final _backupToken = TextEditingController();
   bool _fiturKaryawan = true;
   bool _fiturSupplier = true;
   bool _busy = false;
+  bool _backupAuto = true;
+  String _backupJam = '02:00';
+  bool _backupTelegram = false;
+  bool _backupTokenConfigured = false;
+  bool _backupBusy = false;
+  int _autoLockMinutes = 5;
+  Map<String, String?> _backupStatus = const {};
 
   @override
   void initState() {
@@ -34,6 +45,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nama = TextEditingController(text: AppState.instance.storeName);
     _alamat = TextEditingController(text: AppState.instance.storeAddress);
     _loadGaransi();
+    _loadBackup();
+    _loadSecurity();
+  }
+
+  Future<void> _loadBackup() async {
+    final settings = await BackupService.instance.loadSettings();
+    final status = await BackupService.instance.status();
+    if (!mounted) return;
+    setState(() {
+      _backupAuto = settings.autoEnabled;
+      _backupJam = settings.jam;
+      _backupTelegram = settings.telegramEnabled;
+      _backupChat.text = settings.telegramChatId;
+      _backupTokenConfigured = settings.telegramTokenConfigured;
+      _backupStatus = status;
+    });
+  }
+
+  Future<void> _loadSecurity() async {
+    final raw =
+        await AppDatabase.instance.getSetting('security.auto_lock_minutes');
+    final minutes = int.tryParse(raw ?? '') ?? 5;
+    if (!mounted) return;
+    setState(() => _autoLockMinutes = minutes);
+  }
+
+  Future<void> _pickBackupTime() async {
+    final parts = _backupJam.split(':');
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: int.tryParse(parts.first) ?? 2,
+        minute: parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
+      ),
+      helpText: 'Jam backup otomatis',
+    );
+    if (picked == null) return;
+    setState(() {
+      _backupJam = '${picked.hour.toString().padLeft(2, '0')}:'
+          '${picked.minute.toString().padLeft(2, '0')}';
+    });
+  }
+
+  Future<void> _saveBackup() async {
+    setState(() => _backupBusy = true);
+    try {
+      await BackupService.instance.saveSettings(
+        autoEnabled: _backupAuto,
+        jam: _backupJam,
+        telegramEnabled: _backupTelegram,
+        telegramChatId: _backupChat.text,
+        telegramToken: _backupToken.text,
+      );
+      _backupToken.clear();
+      await _loadBackup();
+      if (!mounted) return;
+      showSnack(context, 'Pengaturan backup disimpan.');
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(context, 'Gagal menyimpan backup: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _backupNow() async {
+    setState(() => _backupBusy = true);
+    final result = await BackupService.instance.createAutomaticBackup();
+    await _loadBackup();
+    if (!mounted) return;
+    setState(() => _backupBusy = false);
+    showSnack(context, result.message, error: !result.ok);
+  }
+
+  String _friendlyTime(String? iso) {
+    final parsed = DateTime.tryParse(iso ?? '');
+    if (parsed == null) return '-';
+    final local = parsed.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${two(local.day)}/${two(local.month)}/${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
   }
 
   Future<void> _loadGaransi() async {
@@ -71,6 +163,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _alamat.dispose();
     _garansiBulan.dispose();
     _garansiSyarat.dispose();
+    _backupChat.dispose();
+    _backupToken.dispose();
     super.dispose();
   }
 
@@ -191,6 +285,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final appState = AppState.instance;
+    final lastBackup =
+        DateTime.tryParse(_backupStatus['last_local_at'] ?? '');
+    final backupStale = _backupAuto &&
+        (lastBackup == null ||
+            DateTime.now().difference(lastBackup) > const Duration(days: 2));
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -232,8 +331,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SectionCard(
           title: 'Toko',
           subtitle:
-              'Setiap toko memakai database terpisah. Tambah toko khusus '
-              'Premium.',
+              'Setiap toko memakai database terpisah. Akun gratis memakai 1 '
+              'toko; toko tambahan memerlukan Premium dan login Google.',
           child: ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.storefront_outlined),
@@ -395,14 +494,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(height: 12),
         SectionCard(
           title: 'Keamanan',
-          subtitle: 'PIN pemilik melindungi pembukaan aplikasi.',
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: _changePin,
-              icon: const Icon(Icons.password_outlined),
-              label: const Text('Ganti PIN'),
-            ),
+          subtitle:
+              'PIN pemilik melindungi pembukaan aplikasi dan kunci otomatis.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DropdownButtonFormField<int>(
+                initialValue: _autoLockMinutes,
+                decoration: const InputDecoration(
+                  labelText: 'Kunci otomatis',
+                  helperText: 'Aplikasi terkunci setelah tidak dipakai.',
+                ),
+                items: const [
+                  DropdownMenuItem(value: 0, child: Text('Nonaktif')),
+                  DropdownMenuItem(value: 1, child: Text('1 menit')),
+                  DropdownMenuItem(value: 2, child: Text('2 menit')),
+                  DropdownMenuItem(value: 5, child: Text('5 menit')),
+                  DropdownMenuItem(value: 10, child: Text('10 menit')),
+                  DropdownMenuItem(value: 30, child: Text('30 menit')),
+                ],
+                onChanged: (value) async {
+                  if (value == null) return;
+                  setState(() => _autoLockMinutes = value);
+                  await AppState.instance.setAutoLockMinutes(value);
+                },
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _changePin,
+                      icon: const Icon(Icons.password_outlined),
+                      label: const Text('Ganti PIN'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => lockNow(context),
+                      icon: const Icon(Icons.lock_outline),
+                      label: const Text('Kunci sekarang'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
@@ -467,16 +604,185 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
+          title: 'Backup otomatis',
+          subtitle:
+              'Menyimpan backup harian ke folder aplikasi. Unggah Telegram '
+              'opsional.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (kIsWeb)
+                const Text(
+                  'Backup otomatis tersedia di Android/desktop. Di versi web '
+                  'gunakan tombol Buat backup manual.',
+                )
+              else ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Aktifkan backup harian'),
+                  subtitle: const Text(
+                    'Backup disusulkan saat aplikasi dibuka bila jadwal '
+                    'terlewat.',
+                  ),
+                  value: _backupAuto,
+                  onChanged: _backupBusy
+                      ? null
+                      : (value) => setState(() => _backupAuto = value),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.schedule_outlined),
+                  title: const Text('Jam backup'),
+                  trailing: Text(_backupJam),
+                  onTap: _backupBusy ? null : _pickBackupTime,
+                ),
+                if ((_backupStatus['folder'] ?? '').isNotEmpty)
+                  SelectableText(
+                    'Folder: ${_backupStatus['folder']}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                const Divider(height: 24),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Unggah ke Telegram'),
+                  subtitle: const Text(
+                    'Bot mengirim berkas ZIP backup ke chat pemilik.',
+                  ),
+                  value: _backupTelegram,
+                  onChanged: _backupBusy
+                      ? null
+                      : (value) => setState(() => _backupTelegram = value),
+                ),
+                if (_backupTelegram) ...[
+                  TextField(
+                    controller: _backupChat,
+                    decoration: const InputDecoration(
+                      labelText: 'Chat ID Telegram',
+                      helperText: 'ID chat atau grup penerima backup.',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _backupToken,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: 'Bot token',
+                      helperText: _backupTokenConfigured
+                          ? 'Token tersimpan. Kosongkan untuk mempertahankan.'
+                          : 'Belum ada token tersimpan.',
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Token disimpan di penyimpanan aman perangkat.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _backupBusy ? null : _saveBackup,
+                        icon: const Icon(Icons.save_outlined),
+                        label: const Text('Simpan'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _backupBusy ? null : _backupNow,
+                        icon: const Icon(Icons.backup_outlined),
+                        label: const Text('Backup sekarang'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_backupBusy) ...[
+                  const SizedBox(height: 14),
+                  const LinearProgressIndicator(),
+                ],
+                const Divider(height: 24),
+                Text(
+                  'Status backup',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Lokal terakhir: '
+                  '${_friendlyTime(_backupStatus['last_local_at'])}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Text(
+                  'Telegram terakhir: '
+                  '${_friendlyTime(_backupStatus['last_telegram_at'])}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if ((_backupStatus['last_error'] ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Error terakhir: ${_backupStatus['last_error']}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                if ((_backupStatus['telegram_error'] ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Telegram: ${_backupStatus['telegram_error']}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                if (backupStale) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Belum ada backup dalam 2 hari terakhir. Periksa folder '
+                    'backup atau jalankan Backup sekarang.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
           title: 'Sesi',
           child: Align(
             alignment: Alignment.centerLeft,
             child: OutlinedButton.icon(
-              onPressed: () {
-                AppState.instance.setOperator(null);
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const PinGate()),
-                  (_) => false,
+              onPressed: () async {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Keluar akun?'),
+                    content: const Text(
+                      'Data toko tetap tersimpan di perangkat ini. '
+                      'Untuk masuk kembali Anda perlu akun dan PIN.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Batal'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Keluar'),
+                      ),
+                    ],
+                  ),
                 );
+                if (confirmed == true && context.mounted) {
+                  await signOutToOnboarding(context);
+                }
               },
               icon: const Icon(Icons.logout),
               label: const Text('Keluar'),

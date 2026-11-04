@@ -77,7 +77,25 @@ class StoreService {
     await _ensureRegistry();
     if (!await LicenseService.instance.isPremium()) {
       throw StateError(
-        'Menambah toko hanya untuk pelanggan Premium.',
+        'Akun gratis hanya memakai 1 toko. Menambah toko memerlukan '
+        'Premium dan login Google pemilik.',
+      );
+    }
+    final provider =
+        await AppDatabase.instance.getSetting('license.provider') ?? '';
+    if (provider != 'google') {
+      throw StateError(
+        'Menambah toko memerlukan akun Google pemilik. Buka menu Premium '
+        'lalu masuk dengan Google.',
+      );
+    }
+    final claims = await LicenseService.instance.verifiedClaims();
+    final limit = claims?.storeLimit ?? 1;
+    final current = await StoreRegistry.instance.stores();
+    if (current.length >= limit) {
+      throw StateError(
+        'Paket Premium Anda mencakup $limit toko. Untuk menambah toko, '
+        'tingkatkan paket lisensi sesuai jumlah toko yang dipakai.',
       );
     }
     final cleaned = nama.trim();

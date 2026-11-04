@@ -9,12 +9,22 @@ const String serverLicensePublicKey = String.fromEnvironment(
   defaultValue: '',
 );
 
+/// Penandatangan izin boleh kunci owner yang dipin atau kunci lisensi server.
+/// Perangkat ringkasan memakai kunci server karena tidak memegang kunci privat
+/// owner.
+bool isTrustedPermissionSigner(String signer, String ownerPublicKey) {
+  if (signer.isEmpty) return false;
+  if (signer == ownerPublicKey) return true;
+  final server = serverLicensePublicKey.trim();
+  return server.isNotEmpty && signer == server;
+}
+
 class LicenseClaims {
   const LicenseClaims({
     required this.ownerId,
     required this.plan,
     required this.periodEnd,
-    required this.deviceLimit,
+    required this.storeLimit,
     required this.issuedAt,
     required this.raw,
   });
@@ -22,7 +32,7 @@ class LicenseClaims {
   final String ownerId;
   final String plan;
   final DateTime periodEnd;
-  final int deviceLimit;
+  final int storeLimit;
   final DateTime issuedAt;
   final Map<String, Object?> raw;
 
@@ -88,7 +98,7 @@ class ServerLicenseVerifier implements LicenseVerifier {
       ownerId: ownerId,
       plan: payload['plan'] as String? ?? 'premium',
       periodEnd: periodEnd,
-      deviceLimit: (payload['device_limit'] as num?)?.toInt() ?? 1,
+      storeLimit: (payload['store_limit'] as num?)?.toInt() ?? 1,
       issuedAt: DateTime.tryParse(
             payload['issued_at'] as String? ?? '',
           )?.toUtc() ??

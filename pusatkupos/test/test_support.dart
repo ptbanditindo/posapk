@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:pusatkupos/data/app_database.dart';
 import 'package:pusatkupos/data/license_service.dart';
 import 'package:pusatkupos/data/license_verifier.dart';
 import 'package:pusatkupos/sync/crypto.dart';
@@ -8,8 +9,9 @@ import 'package:pusatkupos/sync/crypto.dart';
 Future<LicenseClaims> installTestLicense({
   required String ownerId,
   int days = 30,
-  int deviceLimit = 10,
+  int storeLimit = 3,
   DateTime? periodEnd,
+  bool google = false,
 }) async {
   final keys = await generateSigningKey();
   LicenseService.verifier = ServerLicenseVerifier(publicKey: keys.publicKey);
@@ -20,11 +22,14 @@ Future<LicenseClaims> installTestLicense({
     'plan': 'premium',
     'period_end':
         (periodEnd ?? now.add(Duration(days: days))).toIso8601String(),
-    'device_limit': deviceLimit,
+    'store_limit': storeLimit,
     'issued_at': now.toIso8601String(),
   };
   final raw = canonicalJson(payload);
   final signature = await signPayload(keys.privateKey, utf8.encode(raw));
   final token = '${b64e(utf8.encode(raw))}.$signature';
+  if (google) {
+    await AppDatabase.instance.setSetting('license.provider', 'google');
+  }
   return LicenseService.instance.installToken(token, expectedOwnerId: ownerId);
 }

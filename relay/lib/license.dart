@@ -40,7 +40,7 @@ class LicenseService {
     required String ownerId,
     required DateTime periodEnd,
     String plan = 'premium',
-    int deviceLimit = 5,
+    int storeLimit = 1,
   }) async {
     final key = await ensureKey();
     final payload = {
@@ -48,7 +48,7 @@ class LicenseService {
       'owner_id': ownerId,
       'plan': plan,
       'period_end': periodEnd.toUtc().toIso8601String(),
-      'device_limit': deviceLimit,
+      'store_limit': storeLimit,
       'issued_at': DateTime.now().toUtc().toIso8601String(),
     };
     final raw = utf8.encode(canonicalJson(payload));
@@ -75,6 +75,18 @@ class LicenseService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Ringkasan bertanda tangan yang boleh dibaca aplikasi owner.
+  Future<Map<String, Object?>> signSummary(Map<String, Object?> payload) async {
+    final key = await ensureKey();
+    final raw = utf8.encode(canonicalJson(payload));
+    final signature = await _sign(key['private_key'] as String, raw);
+    return {
+      'payload': payload,
+      'signature': signature,
+      'public_key': key['public_key'],
+    };
   }
 
   Future<String> _sign(String privateSeed, List<int> payload) async {

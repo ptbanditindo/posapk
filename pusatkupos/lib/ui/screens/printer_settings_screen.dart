@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../printer/printer_adapter.dart';
 import '../../printer/printer_config.dart';
+import '../../printer/printer_device.dart';
+import '../../printer/printer_manager.dart';
 import '../../printer/printer_service.dart';
 import '../widgets.dart';
 
@@ -14,7 +17,7 @@ class PrinterSettingsScreen extends StatefulWidget {
 class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   List<PrinterConfig> _printers = const [];
   bool _loading = true;
-  bool _busy = false;
+  String? _busyId;
 
   @override
   void initState() {
@@ -68,12 +71,58 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     );
   }
 
+  Future<void> _connect(PrinterConfig printer) async {
+    setState(() => _busyId = printer.id);
+    try {
+      await PrinterManager.instance.connect(printer);
+      if (!mounted) return;
+      showSnack(context, '${printer.nama} terhubung.');
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(
+        context,
+        error is PrinterException ? error.message : 'Gagal menghubungkan: $error',
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _busyId = null);
+    }
+  }
+
+  Future<void> _disconnect(PrinterConfig printer) async {
+    setState(() => _busyId = printer.id);
+    try {
+      await PrinterManager.instance.disconnect(printer);
+      if (!mounted) return;
+      showSnack(context, '${printer.nama} diputus.');
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(context, 'Gagal memutus printer: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busyId = null);
+    }
+  }
+
   Future<void> _test(PrinterConfig printer) async {
-    setState(() => _busy = true);
-    final result = await PrinterService.instance.testPrint(printer);
-    if (!mounted) return;
-    setState(() => _busy = false);
-    showSnack(context, result.message, error: !result.ok);
+    setState(() => _busyId = printer.id);
+    try {
+      if (printer.connectionType == 'BLUETOOTH' ||
+          printer.connectionType == 'USB') {
+        await PrinterManager.instance.connect(printer);
+      }
+      final result = await PrinterService.instance.testPrint(printer);
+      if (!mounted) return;
+      showSnack(context, result.message, error: !result.ok);
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(
+        context,
+        error is PrinterException ? error.message : 'Gagal menguji printer: $error',
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _busyId = null);
+    }
   }
 
   Future<void> _delete(PrinterConfig printer) async {
@@ -84,6 +133,8 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       confirmLabel: 'Hapus',
     );
     if (!ok) return;
+    await PrinterManager.instance.disconnect(printer).catchError((_) {});
+    PrinterManager.instance.forget(printer.id);
     await _persist(
       _printers.where((item) => item.id != printer.id).toList(),
     );
@@ -92,9 +143,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Printer thermal')),
+      appBar: AppBar(title: const Text('Printer')),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _loading
+        onPressed: _loading || _printers.length >= maxPrinters
             ? null
             : () => _addOrEdit(PrinterConfig.draft()),
         icon: const Icon(Icons.add),
@@ -110,91 +161,141 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                     icon: Icons.print_outlined,
                     title: 'Belum ada printer',
                     subtitle:
-                        'Tambahkan printer thermal jaringan (ESC/POS) dengan '
-                        'alamat IP dan port, biasanya 9100.',
+                        'Tambahkan printer Bluetooth (SPP/BLE), Wi-Fi/LAN, '
+                        'USB OTG, atau cetak lewat layanan Android.',
                   )
                 else
-                  ..._printers.map(
-                    (printer) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: SectionCard(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        child: ListTile(
-                          leading: Icon(
-                            printer.utama
-                                ? Icons.print
-                                : Icons.print_outlined,
-                          ),
-                          title: Text(
-                            printer.nama,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          subtitle: Text(
-                            '${printer.host}:${printer.port} · '
-                            '${printer.paperMm} mm · '
-                            '${printerModes[printer.mode] ?? printer.mode}'
-                            '${printer.utama ? ' · utama' : ''}',
-                          ),
-                          trailing: PopupMenuButton<String>(
-                            enabled: !_busy,
-                            onSelected: (value) {
-                              switch (value) {
-                                case 'utama':
-                                  _makePrimary(printer);
-                                  break;
-                                case 'tes':
-                                  _test(printer);
-                                  break;
-                                case 'ubah':
-                                  _addOrEdit(printer);
-                                  break;
-                                case 'hapus':
-                                  _delete(printer);
-                                  break;
-                              }
-                            },
-                            itemBuilder: (context) => [
-                              if (!printer.utama)
-                                const PopupMenuItem(
-                                  value: 'utama',
-                                  child: Text('Jadikan utama'),
-                                ),
-                              const PopupMenuItem(
-                                value: 'tes',
-                                child: Text('Uji cetak'),
-                              ),
-                              const PopupMenuItem(
-                                value: 'ubah',
-                                child: Text('Ubah'),
-                              ),
-                              const PopupMenuItem(
-                                value: 'hapus',
-                                child: Text('Hapus'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (_busy) ...[
+                  ..._printers.map(_printerCard),
+                if (_printers.length >= maxPrinters) ...[
                   const SizedBox(height: 12),
-                  const LinearProgressIndicator(),
+                  Text(
+                    'Maksimal $maxPrinters printer. Hapus salah satu untuk '
+                    'menambah printer baru.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ],
                 const SizedBox(height: 12),
                 Text(
-                  'Printer thermal dihubungkan lewat jaringan lokal (port '
-                  'mentah 9100). Data struk tidak dikirim ke internet.',
+                  'Konfigurasi printer (MAC/IP) disimpan di berkas terpisah dan '
+                  'tidak ikut backup atau sinkronisasi. Struk tetap diproses '
+                  'lokal di perangkat.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
     );
+  }
+
+  Widget _printerCard(PrinterConfig printer) {
+    final runtime = PrinterManager.instance.statusOf(printer);
+    final busy = _busyId == printer.id;
+    final connected = runtime.status == 'CONNECTED';
+    final subtitle = [
+      '${printer.typeLabel} · ${printer.targetLabel}',
+      '${printer.paperMm} mm · ${printerModes[printer.mode] ?? printer.mode}',
+      if (printer.connectionType == 'BLUETOOTH')
+        bluetoothTransports[printer.transport] ?? printer.transport,
+      if (printer.utama) 'utama',
+      _statusLabel(runtime.status),
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: SectionCard(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: ListTile(
+          leading: Icon(
+            printer.utama ? Icons.print : Icons.print_outlined,
+            color: connected ? Theme.of(context).colorScheme.primary : null,
+          ),
+          title: Text(
+            printer.nama,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            runtime.message.isEmpty ? subtitle : '$subtitle\n${runtime.message}',
+          ),
+          isThreeLine: runtime.message.isNotEmpty,
+          trailing: busy
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : PopupMenuButton<String>(
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'hubungkan':
+                        _connect(printer);
+                        break;
+                      case 'putus':
+                        _disconnect(printer);
+                        break;
+                      case 'utama':
+                        _makePrimary(printer);
+                        break;
+                      case 'tes':
+                        _test(printer);
+                        break;
+                      case 'ubah':
+                        _addOrEdit(printer);
+                        break;
+                      case 'hapus':
+                        _delete(printer);
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    if (_canConnect(printer) && !connected)
+                      const PopupMenuItem(
+                        value: 'hubungkan',
+                        child: Text('Hubungkan'),
+                      ),
+                    if (connected)
+                      const PopupMenuItem(
+                        value: 'putus',
+                        child: Text('Putuskan'),
+                      ),
+                    if (!printer.utama)
+                      const PopupMenuItem(
+                        value: 'utama',
+                        child: Text('Jadikan utama'),
+                      ),
+                    const PopupMenuItem(
+                      value: 'tes',
+                      child: Text('Uji cetak'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'ubah',
+                      child: Text('Ubah'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'hapus',
+                      child: Text('Hapus'),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+
+  bool _canConnect(PrinterConfig printer) =>
+      printer.connectionType == 'BLUETOOTH' ||
+      printer.connectionType == 'USB';
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'CONNECTED':
+        return 'terhubung';
+      case 'CONNECTING':
+        return 'menghubungkan';
+      case 'ERROR':
+        return 'bermasalah';
+      case 'UNAVAILABLE':
+        return 'tidak tersedia';
+      default:
+        return 'tersimpan';
+    }
   }
 }
 
@@ -210,45 +311,152 @@ class _PrinterDialog extends StatefulWidget {
 
 class _PrinterDialogState extends State<_PrinterDialog> {
   late final TextEditingController _nama;
-  late final TextEditingController _host;
+  late final TextEditingController _address;
   late final TextEditingController _port;
+  late String _type;
+  late String _transport;
   late int _paper;
   late String _mode;
   late bool _utama;
   String? _error;
+  bool _scanning = false;
 
   @override
   void initState() {
     super.initState();
-    _nama = TextEditingController(text: widget.initial.nama);
-    _host = TextEditingController(text: widget.initial.host);
-    _port = TextEditingController(text: '${widget.initial.port}');
-    _paper = widget.initial.paperMm;
-    _mode = widget.initial.mode;
-    _utama = widget.initial.utama || widget.firstPrinter;
+    final initial = widget.initial;
+    _nama = TextEditingController(text: initial.nama);
+    _address = TextEditingController(text: _addressOf(initial));
+    _port = TextEditingController(text: '${initial.port ?? 9100}');
+    _type = initial.connectionType;
+    _transport = initial.transport.isEmpty ? 'SPP' : initial.transport;
+    _paper = initial.paperMm;
+    _mode = initial.mode;
+    _utama = initial.utama || widget.firstPrinter;
+  }
+
+  String _addressOf(PrinterConfig printer) {
+    switch (printer.connectionType) {
+      case 'NETWORK':
+        return printer.ip;
+      case 'BLUETOOTH':
+      case 'USB':
+        return printer.address;
+      default:
+        return '';
+    }
   }
 
   @override
   void dispose() {
     _nama.dispose();
-    _host.dispose();
+    _address.dispose();
     _port.dispose();
     super.dispose();
   }
 
+  List<String> get _allowedModes =>
+      (printerAllowedModes[_type] ?? const {'ESCPOS'}).toList();
+
+  bool get _needsAddress => _type == 'BLUETOOTH' || _type == 'USB';
+  bool get _isNetwork => _type == 'NETWORK';
+
+  void _changeType(String type) {
+    setState(() {
+      _type = type;
+      _address.clear();
+      _error = null;
+      _transport = type == 'BLUETOOTH' ? 'SPP' : '';
+      _mode = printerDefaultModes[type] ?? 'ESCPOS';
+      if (type == 'NETWORK') _port.text = '9100';
+    });
+  }
+
+  Future<void> _discover() async {
+    setState(() {
+      _scanning = true;
+      _error = null;
+    });
+    try {
+      final devices = await PrinterManager.instance.discover(
+        _type,
+        transport: _type == 'BLUETOOTH' ? _transport : '',
+      );
+      if (!mounted) return;
+      setState(() => _scanning = false);
+      if (devices.isEmpty) {
+        setState(() {
+          _error = 'Tidak ada printer ditemukan. Pastikan printer menyala dan '
+              'berada dalam jangkauan.';
+        });
+        return;
+      }
+      final picked = await showDialog<PrinterDevice>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Pilih printer'),
+          content: SizedBox(
+            width: 340,
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: devices.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final device = devices[index];
+                return ListTile(
+                  enabled: device.supported,
+                  title: Text(device.name),
+                  subtitle: Text(device.label),
+                  onTap: () => Navigator.pop(context, device),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+          ],
+        ),
+      );
+      if (picked == null || !mounted) return;
+      setState(() {
+        _address.text = picked.address;
+        if (_isNetwork) {
+          final port = RegExp(r'Port (\d+)').firstMatch(picked.detail)?.group(1);
+          if (port != null) _port.text = port;
+        }
+        if (picked.transport.isNotEmpty) _transport = picked.transport;
+        if (_nama.text.trim().isEmpty) _nama.text = picked.name;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _scanning = false;
+        _error = error is PrinterException
+            ? error.message
+            : 'Pencarian printer gagal: $error';
+      });
+    }
+  }
+
   void _submit() {
-    final port = int.tryParse(_port.text.trim());
-    if (port == null) {
+    final int? port = _isNetwork ? int.tryParse(_port.text.trim()) : null;
+    if (_isNetwork && port == null) {
       setState(() => _error = 'Port harus berupa angka.');
       return;
     }
     final printer = PrinterConfig(
       id: widget.initial.id,
       nama: _nama.text.trim(),
-      host: _host.text.trim(),
+      connectionType: _type,
+      address: _needsAddress ? _address.text.trim() : '',
+      ip: _isNetwork ? _address.text.trim() : '',
       port: port,
       paperMm: _paper,
       mode: _mode,
+      transport: _transport,
       utama: _utama,
     );
     try {
@@ -262,8 +470,9 @@ class _PrinterDialogState extends State<_PrinterDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final title = widget.initial.nama.isEmpty ? 'Tambah printer' : 'Ubah printer';
     return AlertDialog(
-      title: Text(widget.initial.nama.isEmpty ? 'Tambah printer' : 'Ubah printer'),
+      title: Text(title),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -273,20 +482,86 @@ class _PrinterDialogState extends State<_PrinterDialog> {
               decoration: const InputDecoration(labelText: 'Nama printer'),
             ),
             const SizedBox(height: 10),
-            TextField(
-              controller: _host,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: 'Alamat IP / host',
-                hintText: '192.168.1.50',
+            DropdownButtonFormField<String>(
+              initialValue: _type,
+              decoration: const InputDecoration(labelText: 'Jenis koneksi'),
+              items: printerTypes.entries
+                  .map(
+                    (entry) => DropdownMenuItem(
+                      value: entry.key,
+                      child: Text(entry.value),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value != null) _changeType(value);
+              },
+            ),
+            if (_type == 'BLUETOOTH') ...[
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                key: ValueKey('transport-$_transport'),
+                initialValue: _transport,
+                decoration: const InputDecoration(labelText: 'Jenis Bluetooth'),
+                items: bluetoothTransports.entries
+                    .map(
+                      (entry) => DropdownMenuItem(
+                        value: entry.key,
+                        child: Text(entry.value),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) =>
+                    setState(() => _transport = value ?? 'SPP'),
               ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _port,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Port'),
-            ),
+            ],
+            if (_needsAddress || _isNetwork) ...[
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _address,
+                      decoration: InputDecoration(
+                        labelText: _isNetwork
+                            ? 'Alamat IP'
+                            : _type == 'USB'
+                                ? 'Identitas USB'
+                                : 'Alamat Bluetooth',
+                        hintText: _isNetwork
+                            ? '192.168.1.50'
+                            : _type == 'USB'
+                                ? 'usb:0416:5011'
+                                : 'AA:BB:CC:DD:EE:FF',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: OutlinedButton(
+                      onPressed: _scanning ? null : _discover,
+                      child: _scanning
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Cari'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (_isNetwork) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: _port,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Port'),
+              ),
+            ],
             const SizedBox(height: 10),
             DropdownButtonFormField<int>(
               initialValue: _paper,
@@ -303,17 +578,21 @@ class _PrinterDialogState extends State<_PrinterDialog> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
-              initialValue: _mode,
+              key: ValueKey('mode-$_type'),
+              initialValue: _allowedModes.contains(_mode)
+                  ? _mode
+                  : _allowedModes.first,
               decoration: const InputDecoration(labelText: 'Mode cetak'),
-              items: printerModes.entries
+              items: _allowedModes
                   .map(
-                    (entry) => DropdownMenuItem(
-                      value: entry.key,
-                      child: Text(entry.value),
+                    (value) => DropdownMenuItem(
+                      value: value,
+                      child: Text(printerModes[value] ?? value),
                     ),
                   )
                   .toList(),
-              onChanged: (value) => setState(() => _mode = value ?? 'ESCPOS'),
+              onChanged: (value) =>
+                  setState(() => _mode = value ?? _allowedModes.first),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

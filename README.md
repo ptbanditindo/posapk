@@ -1,73 +1,73 @@
-# PusatkuPOS APK
+# PusatkuPOS
 
-Repository ini berisi **dua aplikasi Flutter** PusatkuPOS. Kode web/Python lama
-sengaja tidak disertakan agar aplikasi APK dapat dirawat terpisah.
+Repository ini berisi **satu aplikasi Flutter** PusatkuPOS dan server relay
+pendukung. Aplikasi bersifat **offline-first**: seluruh transaksi disimpan di
+SQLite lokal; internet hanya dipakai untuk sinkronisasi akun premium.
 
-## Aplikasi
+## Empat cara masuk
 
-| Folder | Aplikasi | Dipakai oleh | Bisa transaksi? |
+| Pilihan | Untuk siapa | Bisa transaksi? | Catatan |
 |---|---|---|---|
-| `pusatkupos/` | PusatkuPOS | Owner tanpa karyawan + karyawan | Ya |
-| `pusatkupos_owner/` | PusatkuPOS Owner | Owner yang punya karyawan | Tidak (read-only + backup + kelola akses) |
+| **Tanpa akun** | Pemilik toko tanpa akun | Ya | Gratis, 1 toko, kuota follow-up 20 |
+| **Login Google** | Pemilik berlangganan premium | Ya | Lisensi per toko, sinkronisasi aktif |
+| **Login karyawan** | Kasir / mekanik | Sesuai izin | Akun dibuat pemilik lewat mode ringkasan |
+| **Ringkasan laporan toko** | Pemilik yang sudah login Google | **Tidak** | Hanya membaca pembukuan dan mengelola akses |
 
-### PusatkuPOS
+Mode **ringkasan laporan toko** memakai salinan database terpisah dari
+pembukuan lokal perangkat. Mode ini tidak memiliki layar kasir, stok masuk,
+atau pengeditan nota; yang bisa dilakukan hanya melihat ringkasan, riwayat,
+laporan, memuat/mengunggah cadangan, serta mengelola akun dan perangkat
+karyawan.
 
-- Aplikasi penuh: kasir, riwayat, pelanggan, stok, jasa, laporan, pengaturan.
-- Owner tanpa karyawan memakai seluruh fitur.
-- Karyawan dipasangkan lewat kode undangan dari aplikasi Owner, lalu login
-  dengan username/password/PIN.
-- Karyawan hanya melihat menu sesuai peran dan izinnya.
+## Rencana distribusi (Play Store shell)
 
-### PusatkuPOS Owner
+Rencana rilis: APK di Play Store hanya berupa **cangkang**. Setelah pengguna
+memilih cara masuk, aplikasi memuat hanya resource yang dibutuhkan:
 
-- Replika **read-only** seluruh data toko: ringkasan, riwayat, laporan, stok,
-  pelanggan.
-- Menyimpan salinan lengkap dan dapat mengunggah snapshot backup ke relay.
-- Memulihkan data ke perangkat toko lewat relay.
-- **Kelola akses**: membuat akun karyawan, mengatur izin/toko, membuat kode
-  undangan, melihat dan mencabut perangkat.
-- Tidak memiliki layar transaksi.
+- **Tanpa akun / Login Google** — mengunduh seluruh fitur kasir dan pembukuan.
+- **Karyawan** — hanya fitur sesuai peran.
+- **Ringkasan laporan toko** — hanya modul laporan read-only dan kelola akses.
+
+Biaya unduhan data ditanggung pengguna karena aplikasi bekerja offline. Sync
+data hanya aktif untuk akun premium.
+
+Catatan teknis: Flutter membungkus kode Dart ke dalam satu `libapp.so`, sehingga
+pemisahan resource per jalur login di Android memerlukan **Play Feature
+Delivery / dynamic feature module** (atau artifact terpisah per varian). Pada
+tahap ini aplikasi sudah membangun layar secara malas (hanya layar yang dibuka
+yang diinisialisasi), tetapi pemisahan paket unduhan penuh masih menjadi
+pekerjaan rilis terpisah.
 
 ## Struktur
 
 ```
-pusatkupos/          aplikasi utama (owner + karyawan)
-pusatkupos_owner/    aplikasi Owner (read-only + backup + kelola akses)
+pusatkupos/   aplikasi Flutter (4 jalur login, offline-first)
+relay/        server sinkronisasi + lisensi (deployment internal)
 ```
 
-`pusatkupos_owner` memakai core data/sync dari `pusatkupos` melalui path
-dependency. Karena itu kedua folder harus tetap bersebelahan.
+Relay adalah layanan internal. Alamatnya ditanam saat build
+(`PUSATKU_SERVICE_URL`) dan **tidak pernah** diminta atau diatur pengguna.
 
 ## Kebutuhan build
 
 - Flutter 3.47.9 (Dart 3.13.7)
 - JDK 17
 - Android SDK 36 + build-tools 36
-
-Python, PostgreSQL, dan relay **tidak** ada di repository ini. Relay adalah
-deployment terpisah; aplikasi menghubunginya lewat alamat relay dan token
-pendaftaran yang diisi di layar Pengaturan.
+- Untuk relay: Dart dari Flutter + PostgreSQL
 
 ## Build APK
 
 ```bash
 cd pusatkupos
-flutter pub get
-flutter build apk --debug
-
-cd ../pusatkupos_owner
+cp .env.example .env    # PowerShell: Copy-Item .env.example .env
 flutter pub get
 flutter build apk --debug
 ```
 
-Hasil:
+Hasil: `pusatkupos/build/app/outputs/flutter-apk/app-debug.apk`.
 
-```
-pusatkupos/build/app/outputs/flutter-apk/app-debug.apk
-pusatkupos_owner/build/app/outputs/flutter-apk/app-debug.apk
-```
-
-APK release memerlukan keystore/signing sendiri.
+APK release memerlukan keystore/signing sendiri; lihat
+[`pusatkupos/README.md`](pusatkupos/README.md).
 
 ## Tes
 
@@ -75,16 +75,17 @@ APK release memerlukan keystore/signing sendiri.
 cd pusatkupos
 flutter analyze
 flutter test
-
-cd ../pusatkupos_owner
-flutter analyze
 ```
 
-Tes multi-device membutuhkan relay yang berjalan dan file `.env` lokal; lihat
+Tes multi-device memerlukan relay yang berjalan dan file `.env` lokal; lihat
 `pusatkupos/tool/run_sync_peer_e2e.sh`. File `.env` tidak pernah di-commit.
 
 ## Keamanan
 
-- Jangan commit `.env`, token relay, private key, keystore, atau file APK.
+- Jangan commit `.env`, token, private key, keystore, atau file APK.
+- PIN owner disimpan dengan PBKDF2-HMAC-SHA256 600.000 iterasi.
+- Mode ringkasan memakai kunci dan database terpisah sehingga tidak dapat
+  membuat atau mengubah pembukuan.
+- Salinan dan sinkronisasi diverifikasi dengan kunci owner yang dipin.
 - Rahasia perangkat disimpan di secure storage; snapshot mengecualikan
   pengaturan `secure.*`.

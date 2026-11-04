@@ -10,8 +10,8 @@ import '../data/app_database.dart';
 /// Data uji hanya aktif bila dibangun dengan
 /// `--dart-define=PUSATKU_DUMMY_SEED=true`.
 const bool dummySeedEnabled = bool.fromEnvironment('PUSATKU_DUMMY_SEED');
+const String dummyRole = String.fromEnvironment('PUSATKU_DUMMY_ROLE');
 
-const dummyOwnerPin = '123456';
 const dummyKasir = (
   username: 'kasir',
   password: 'kasir123456',
@@ -31,22 +31,12 @@ Future<void> seedDummyDataIfEnabled() async {
   if (!dummySeedEnabled) return;
   if (await AppDatabase.instance.getSetting('dev.dummy_seed') == '1') return;
 
-  await _seedOwnerPin();
   await _seedAccounts();
   await _seedBusinessData();
+  if (dummyRole == 'owner' || dummyRole == 'employee') {
+    await AppDatabase.instance.setSetting('app.role', dummyRole);
+  }
   await AppDatabase.instance.setSetting('dev.dummy_seed', '1');
-}
-
-Future<void> _seedOwnerPin() async {
-  final existing = await AppDatabase.instance.getSetting('auth.pin_hash');
-  if (existing != null && existing.isNotEmpty) return;
-  final (hash, salt) = await _hash(dummyOwnerPin);
-  await AppDatabase.instance.setSetting('auth.pin_salt', salt);
-  await AppDatabase.instance.setSetting('auth.pin_hash', hash);
-  await AppDatabase.instance.setSetting(
-    'auth.pin_iterations',
-    '$_seedIterations',
-  );
 }
 
 Future<void> _seedAccounts() async {

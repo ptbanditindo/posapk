@@ -52,17 +52,6 @@ class DeviceService {
         'Lisensi server yang valid diperlukan untuk menambah perangkat.',
       );
     }
-    final limit = claims.deviceLimit;
-    final rows = await AppDatabase.instance.db.rawQuery(
-      'SELECT COUNT(*) AS total FROM devices WHERE revoked_at IS NULL',
-    );
-    final count = rows.first['total'] as int? ?? 0;
-    if (count >= limit) {
-      throw StateError(
-        'Batas $limit perangkat aktif (owner + karyawan) sudah terpakai. '
-        'Cabut perangkat lama.',
-      );
-    }
     final signing = await generateSigningKey();
     final encryption = await generateEncryptionKey();
     final token = newToken();
@@ -93,7 +82,6 @@ class DeviceService {
       'public_key': signing.publicKey,
       'encryption_key': encryption.publicKey,
       'token': makeCurrent ? null : token,
-      'limit': limit,
     };
   }
 

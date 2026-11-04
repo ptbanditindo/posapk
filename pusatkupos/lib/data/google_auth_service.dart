@@ -1,9 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
-import '../core/relay_url.dart';
+import '../core/app_config.dart';
 import '../sync/relay_client.dart';
-import '../sync/sync_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 
@@ -84,26 +83,32 @@ class GoogleAuthService {
     return token;
   }
 
-  Future<Map<String, Object?>> activate({String? relayUrl}) async {
-    final idToken = await _idToken();
-    final raw = (relayUrl ?? '').trim().isNotEmpty
-        ? relayUrl!.trim()
-        : ((await SyncService.instance.relayUrl()) ?? '').trim();
-    if (raw.isEmpty) {
+  /// Meminta lisensi dari layanan tanpa menulis apa pun ke database.
+  /// Dipakai mode ringkasan agar database tujuan bisa dipilih lebih dulu.
+  Future<Map<String, Object?>> signIn() async {
+    if (!serviceConfigured) {
       throw GoogleAuthException(
-        'Isi alamat relay terlebih dahulu.',
-        code: 'missing_relay_url',
+        'Layanan akun belum siap. Hubungi penjual.',
+        code: 'service_unavailable',
       );
     }
-    final url = normalizeRelayUrl(raw);
+    final idToken = await _idToken();
+    final url = normalizedServiceUrl;
     final result = await RelayClient(baseUrl: url).googleLogin(
       idToken: idToken,
     );
     final ownerId = '${result['owner_id'] ?? ''}';
     final licenseToken = '${result['license_token'] ?? ''}';
     if (ownerId.isEmpty || licenseToken.isEmpty) {
-      throw GoogleAuthException('Relay tidak mengembalikan lisensi.');
+      throw GoogleAuthException('Akun premium tidak mengembalikan lisensi.');
     }
+    return result;
+  }
+
+  /// Menyimpan hasil [signIn] ke database yang sedang terbuka.
+  Future<void> install(Map<String, Object?> result) async {
+    final ownerId = '${result['owner_id'] ?? ''}';
+    final licenseToken = '${result['license_token'] ?? ''}';
     await LicenseService.instance.installRemoteOwner(
       ownerId: ownerId,
       publicKey: '${result['owner_public_key'] ?? ''}',
@@ -112,12 +117,20 @@ class GoogleAuthService {
       licenseToken,
       expectedOwnerId: ownerId,
     );
-    await AppDatabase.instance.setSetting('sync.relay_url', url);
+    await AppDatabase.instance.setSetting(
+      'sync.relay_url',
+      normalizedServiceUrl,
+    );
     await AppDatabase.instance.setSetting(
       'license.email',
       '${result['email'] ?? ''}',
     );
     await AppDatabase.instance.setSetting('license.provider', 'google');
+  }
+
+  Future<Map<String, Object?>> activate() async {
+    final result = await signIn();
+    await install(result);
     return result;
   }
 }

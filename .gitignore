@@ -3,6 +3,7 @@
 .packages
 .pub/
 build/
+build_web/
 .flutter-plugins
 .flutter-plugins-dependencies
 *.iml

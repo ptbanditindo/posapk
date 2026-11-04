@@ -55,7 +55,7 @@ Future<void> _openAndSeed(Map<String, dynamic> config, String dbPath) async {
     await installTestLicense(
       ownerId: config['owner_id'] as String,
       days: 3650,
-      deviceLimit: 10,
+      storeLimit: 10,
     );
   }
   await SyncService.instance.configure(
@@ -511,7 +511,7 @@ void main() {
             'id': 1,
             'plan': 'premium',
             'period_end': '2027-11-03T00:00:00',
-            'device_limit': 2,
+            'store_limit': 2,
             'provider': 'summary',
             'token': null,
             'activated_at': nowIso(),

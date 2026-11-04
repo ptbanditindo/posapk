@@ -3,9 +3,11 @@
 Tanggal audit: 4 November 2026
 Acuan aturan bisnis: repo `ptbanditindo/aplikasiposbengkel` (commit `0bf2e1c`, clone lokal di
 `C:\Users\sukron\AppData\Local\Temp\aplikasiposbengkel-review`).
-Sasaran perubahan: `pusatkupos/` (aplikasi utama), `pusatkupos_owner/` (aplikasi owner),
-`relay/` (hanya untuk login Google dan dukungan multi-toko).
-Dokumen ini **hanya rencana**; belum ada kode yang diubah.
+Sasaran perubahan: `pusatkupos/` (aplikasi utama), `relay/` (untuk login Google dan
+dukungan multi-toko). Aplikasi terpisah `pusatkupos_owner/` sudah dihapus; fungsinya
+menjadi jalur login **Ringkasan laporan toko** (read-only) di aplikasi utama.
+Dokumen ini **rencana + status**; tahap 1–2, 4–8, dan printer 3B–3C sudah diimplementasikan
+di `pusatkupos/`. Uji perangkat printer fisik masih menjadi langkah terpisah.
 
 ## 1. Keputusan yang mengikat rencana ini
 
@@ -31,7 +33,7 @@ Dokumen ini **hanya rencana**; belum ada kode yang diubah.
 | Karyawan/komisi/gaji | Hanya akun login (`employee_accounts`) | `employees`, komisi, payroll, hutang | Sebagian |
 | Multi-toko | Satu database | Registry + file DB per toko | Belum ada |
 | Pengaturan struk | Tidak ada | 25 toggle `receipt.*` | Belum ada |
-| Printer thermal | Tidak ada (hanya dialog struk ringkas `pos_screen.dart:283-329`) | ESC/POS, BT/TCP/USB/system | Belum ada |
+| Printer thermal | Model + store + adapter SPP/BLE/TCP/USB/system/browser (`lib/printer/`) | ESC/POS, BT/TCP/USB/system | **Kode selesai; uji perangkat belum** |
 | Login owner tanpa akun | Sudah (PIN → `Operator.owner`, `pin_gate.dart:59-114`) | Sama | Pertahankan, rapikan |
 | Login Google | Tidak ada | Tidak ada (hanya rencana) | Baru, perlu relay |
 | Uji | 12 file tes Dart | 404 tes Python | Perlu tes paritas |
@@ -181,9 +183,8 @@ mengambil/memulihkan lisensi dan mengikat perangkat owner. **Bukan** pengganti P
 
 **Klien Flutter**
 
-- Tambah dependensi `google_sign_in` di `pusatkupos/pubspec.yaml` dan
-  `pusatkupos_owner/pubspec.yaml`; konfigurasi OAuth client ID per platform
-  (Android SHA-1, web, Windows lewat loopback flow).
+- Tambah dependensi `google_sign_in` di `pusatkupos/pubspec.yaml`; konfigurasi
+  OAuth client ID per platform (Android SHA-1, web, Windows lewat loopback flow).
 - Alur: Pengaturan/Premium → "Masuk dengan Google" → dapat `idToken` → kirim ke relay →
   bila premium, simpan hasil melalui `LicenseService.installToken` (mekanisme yang sudah
   ada, `license_service.dart:94-120`); bila belum premium, tampilkan status "belum ada
@@ -192,8 +193,8 @@ mengambil/memulihkan lisensi dan mengikat perangkat owner. **Bukan** pengganti P
   aplikasi tetap memakai PIN owner dan verifikasi lisensi offline
   (`license_verifier.dart`, `license_service.dart:122-168`).
 - Logout Google hanya menghapus kredensial Google, bukan lisensi/data lokal.
-- Aplikasi owner memakai alur yang sama untuk memulihkan akses ringkasan bila perangkat
-  owner diganti.
+- Jalur **Ringkasan laporan toko** memakai `signIn()` yang sama, lalu memasang lisensi
+  ke database viewer terpisah (`viewer_<owner_id>.db`) dan hanya membuka layar baca.
 
 **Keamanan & kepatuhan**
 
@@ -341,8 +342,8 @@ penambahan toko premium; karyawan hanya toko yang ditugaskan.
 - "Ganti toko" ditempatkan di **Menu (drawer) di atas Ringkasan**, hanya tampil bila
   ada >1 toko; karyawan hanya melihat toko yang ditugaskan.
 - `lib/data/store_service.dart` (baru), `lib/ui/widgets/store_switcher.dart` (baru).
-- `pusatkupos_owner`: ringkasan/laporan harus memuat daftar toko (saat ini
-  `owner_summary_service.dart:23-53` meng-hardcode satu toko `utama`).
+- Mode ringkasan memuat daftar toko dari ringkasan owner dan memakai salinan
+  database terpisah, bukan database pembukuan lokal.
 - Gating: tambah toko premium; lihat toko yang sudah ada tetap boleh.
 - Risiko: semua fitur baru harus sadar toko aktif; kuota follow-up, pengaturan struk,
   printer, dan nomor nota berada di DB toko masing-masing.
@@ -379,11 +380,16 @@ Android `ClassicSppTransport.kt`, `TcpNetworkTransport.kt`, `UsbPrinterDevice.kt
 - `lib/printer/escpos_builder.dart`: encoder ESC/POS murni Dart (init, align, bold,
   double-width, feed, cut), sanitasi ASCII, wrap 32/48 kolom.
 - Adapter:
-  - NETWORK: `Socket.connect` (Android/Windows/macOS) port 9100 default.
-  - BLUETOOTH: plugin `flutter_bluetooth_serial` (Android) dengan UUID SPP
-    `00001101-0000-1000-8000-00805F9B34FB`; Windows memakai printer sistem.
-  - USB: `usb_serial`/platform channel Android; Windows memakai driver sistem.
-  - SYSTEM/WEB: dialog cetak platform/browser.
+  - NETWORK: `Socket.connect` (Android/desktop) port 9100 default; pencarian via NSD
+    `_pdl-datastream._tcp` di bridge Android.
+  - BLUETOOTH: dua jalur — Classic SPP lewat MethodChannel native (UUID
+    `00001101-0000-1000-8000-00805F9B34FB`) dan BLE GATT lewat
+    `flutter_blue_plus` (layanan FFE0/FF00/FF10/FF20/18F0).
+  - USB: bridge native Android, hanya perangkat dengan endpoint BULK OUT,
+    identitas `usb:VID:PID`.
+  - SYSTEM: Android Print Framework lewat bridge native (PDF 58/80 mm).
+  - WEB: dialog cetak browser.
+  - Windows desktop: jaringan tetap jalan; Bluetooth/USB Android belum tersedia.
 - `lib/printer/printer_service.dart`: daftar printer, printer utama, tes cetak,
   connect-on-demand, status SAVED/CONNECTED/ERROR, tanpa status "terhubung" palsu.
 - UI: `SectionCard` "Printer" di `settings_screen.dart` (tambah/edit/hapus/tes/utama),
@@ -451,14 +457,16 @@ Aturan:
 | `pubspec.yaml` | `google_sign_in`, plugin printer (BT/USB), paket pendukung |
 | `test/*` | Tes baru + perbarui tes `INV-` dan bentrok nota |
 
-### 7.2 Aplikasi owner (`pusatkupos_owner/`)
+### 7.2 Mode ringkasan (di dalam `pusatkupos/`)
 
 | File | Perubahan |
 | --- | --- |
-| `lib/main.dart` | Login Google premium (opsional), status lisensi |
-| `lib/owner_api.dart` | Panggil `/relay/auth/google`; daftar toko |
-| `lib/summary_file_*.dart` | Ringkasan multi-toko |
-| `pubspec.yaml` | `google_sign_in` |
+| `lib/ui/owner_viewer.dart` | Enam tab read-only: ringkasan, riwayat, laporan, cadangan, akses, pengaturan |
+| `lib/data/owner_access_api.dart` | Kelola akun, undangan, perangkat lewat layanan pusat |
+| `lib/core/summary_file_*.dart` | Baca berkas ringkasan owner |
+| `lib/data/app_database.dart` | Database viewer terpisah dari pembukuan lokal |
+| `lib/data/google_auth_service.dart` | `signIn()`/`install()` agar tujuan database dapat dipilih |
+| `lib/ui/onboarding.dart` | Empat pilihan masuk, termasuk ringkasan laporan toko |
 
 ### 7.3 Relay (`relay/`)
 
@@ -548,8 +556,10 @@ Dibagi tiga sub-tahap agar bisa diuji bertahap:
 - Adapter NETWORK (`Socket` port 9100), validasi IP/port, status SAVED/CONNECTED/ERROR.
 - UI daftar printer + tes cetak.
 
-**3C — Bluetooth/USB/system + uji perangkat**
-- Adapter Bluetooth SPP, USB OTG, dan cetak sistem/browser.
+**3C — Bluetooth/USB/system + uji perangkat** *(kode selesai, uji fisik belum)*
+- Adapter Bluetooth SPP + BLE, USB OTG, dan cetak sistem/browser.
+- Bridge native: `android/app/src/main/kotlin/com/pusatkupos/pusatkupos/printer/`
+  (izin API 31+, SPP, USB BULK OUT, NSD, PDF Android Print).
 - Uji cetak di perangkat nyata; catat merek/printer yang terbukti.
 - Tes: encoder, validasi alamat, fallback error, layout 58/80.
 
@@ -607,7 +617,7 @@ Pekerjaan:
 - UI: Ganti toko di Menu **di atas Ringkasan**; hanya tampil bila >1 toko; blokir toko
   yang tidak ditugaskan untuk karyawan.
 - Tambah toko hanya premium; seed identitas + `database_id` per toko.
-- `pusatkupos_owner`: ringkasan/laporan memuat daftar toko (bukan hardcode `utama`).
+- Mode ringkasan memuat daftar toko dari ringkasan owner (bukan hardcode `utama`).
 - Tes: isolasi data antar toko, ganti toko berulang, backup/restore per toko, kios
   karyawan tidak bisa pindah toko.
 
@@ -698,8 +708,9 @@ penentu utama); dua pengembang dengan pembagian di 8.12: **±3–4 minggu**.
   dulu.
 - **Sumber langganan:** rencana ini mengasumsikan pembelian/aktivasi dilakukan di luar
   aplikasi (admin/relay). Play Billing tidak termasuk.
-- **Printer fisik:** merek/koneksi harus diuji di perangkat nyata; pilihan plugin
-  Bluetooth/USB menyesuaikan hasil uji.
+- **Printer fisik:** adapter SPP/BLE/USB/system sudah ada, tetapi merek/koneksi harus
+  diuji di perangkat Android nyata. BLE hanya untuk printer GATT yang menyediakan
+  karakteristik tulis; printer vendor dengan protokol khusus tetap di luar cakupan.
 - **Multi-toko:** mengubah siklus hidup `AppDatabase`; semua layar harus diuji ulang
   setelah ganti toko, termasuk backup, sync, dan lisensi.
 - **Migrasi data uji:** nota `DEMO-0001/0002` dan nota `INV-…` lama tetap ada; nomor

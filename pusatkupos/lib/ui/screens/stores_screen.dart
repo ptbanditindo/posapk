@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/app_database.dart';
+import '../../data/license_service.dart';
 import '../../data/store_registry.dart';
 import '../../data/store_service.dart';
 import '../../state/app_state.dart';
@@ -17,6 +18,9 @@ class _StoresScreenState extends State<StoresScreen> {
   List<StoreRecord> _stores = const [];
   bool _loading = true;
   bool _busy = false;
+  bool _premium = false;
+  bool _googleLinked = false;
+  int _storeLimit = 1;
 
   @override
   void initState() {
@@ -26,24 +30,43 @@ class _StoresScreenState extends State<StoresScreen> {
 
   bool get _isOwner => AppState.instance.operator?.isOwner ?? false;
 
+  Set<String> get _allowedStoreIds {
+    if (_isOwner) return <String>{};
+    return (AppState.instance.operator?.storeIds ?? const <String>[]).toSet();
+  }
+
+  List<StoreRecord> get _visibleStores {
+    if (_isOwner) return _stores;
+    final allowed = _allowedStoreIds;
+    return _stores.where((store) => allowed.contains(store.storeId)).toList();
+  }
+
   Future<void> _load() async {
     final stores = await StoreService.instance.listStores();
+    final status = _isOwner ? await LicenseService.instance.status() : null;
+    final provider = await AppDatabase.instance.getSetting('license.provider');
     if (!mounted) return;
     setState(() {
       _stores = stores;
+      _premium = status?['premium'] == true;
+      _googleLinked = (provider ?? '') == 'google';
+      _storeLimit = (status?['store_limit'] as num?)?.toInt() ?? 1;
       _loading = false;
     });
   }
 
   Future<void> _switch(StoreRecord store) async {
-    if (!_isOwner) {
-      showSnack(context, 'Hanya pemilik yang dapat pindah toko.', error: true);
+    if (!_isOwner && !_allowedStoreIds.contains(store.storeId)) {
+      showSnack(context, 'Toko ini tidak ditugaskan untuk akun Anda.', error: true);
       return;
     }
     if (store.storeId == AppDatabase.instance.activeStoreId) return;
     setState(() => _busy = true);
     try {
-      await StoreService.instance.switchStore(store.storeId);
+      await StoreService.instance.switchStore(
+        store.storeId,
+        allowedStoreIds: _isOwner ? null : _allowedStoreIds,
+      );
       await AppState.instance.reloadStore();
       if (!mounted) return;
       await _load();
@@ -58,6 +81,23 @@ class _StoresScreenState extends State<StoresScreen> {
   }
 
   Future<void> _addStore() async {
+    if (!_premium) {
+      showSnack(
+        context,
+        'Akun gratis hanya memakai 1 toko. Menambah toko memerlukan '
+        'Premium dan login Google pemilik.',
+        error: true,
+      );
+      return;
+    }
+    if (!_googleLinked) {
+      showSnack(
+        context,
+        'Masuk dengan Google di menu Premium untuk menambah toko.',
+        error: true,
+      );
+      return;
+    }
     final nama = TextEditingController();
     final alamat = TextEditingController();
     final result = await showDialog<bool>(
@@ -79,12 +119,15 @@ class _StoresScreenState extends State<StoresScreen> {
               decoration: const InputDecoration(labelText: 'Alamat'),
             ),
             const SizedBox(height: 10),
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Tambah toko hanya untuk pelanggan Premium. Berkas toko '
-                'baru dibuat terpisah.',
-                style: TextStyle(fontSize: 12),
+                _premium
+                    ? 'Premium dihitung per toko. Kuota Anda $_storeLimit '
+                        'toko dan saat ini terpakai ${_stores.length}.'
+                    : 'Akun gratis hanya memakai 1 toko. Toko tambahan '
+                        'memerlukan Premium dan login Google pemilik.',
+                style: const TextStyle(fontSize: 12),
               ),
             ),
           ],
@@ -130,13 +173,21 @@ class _StoresScreenState extends State<StoresScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 SectionCard(
-                  title: '${_stores.length} toko',
-                  subtitle:
-                      'Setiap toko memakai berkas database terpisah. Data '
-                      'pelanggan, nota, stok, dan kuota tidak bercampur.',
+                  title: '${_visibleStores.length} toko',
+                  subtitle: _isOwner
+                      ? 'Setiap toko memakai berkas database terpisah. Data '
+                          'pelanggan, nota, stok, dan kuota tidak bercampur.'
+                          '${_premium ? ' Kuota $_storeLimit toko.' : ' Akun gratis: 1 toko.'}'
+                          '${_premium && !_googleLinked ? ' Login Google diperlukan untuk menambah toko.' : ''}'
+                      : 'Hanya toko yang ditugaskan untuk akun Anda.',
                   child: Column(
                     children: [
-                      for (final store in _stores)
+                      if (_visibleStores.isEmpty)
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text('Belum ada toko yang ditugaskan.'),
+                        ),
+                      for (final store in _visibleStores)
                         ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: Icon(

@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/relay_url.dart';
@@ -10,6 +11,7 @@ import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/device_service.dart';
 import '../data/license_service.dart';
+import '../data/license_verifier.dart';
 import '../data/models.dart';
 import '../data/note_sync.dart';
 import '../data/secure_store.dart';
@@ -29,7 +31,7 @@ class SyncService {
     if (!await LicenseService.instance.isPremium()) {
       throw StateError(
         'Lisensi server yang valid diperlukan untuk sinkronisasi dan '
-        'multi-perangkat. Kasir offline tetap dapat dipakai.',
+        'multi-toko. Kasir offline tetap dapat dipakai.',
       );
     }
   }
@@ -53,7 +55,10 @@ class SyncService {
     );
   }
 
-  Future<String?> relayUrl() => _setting('sync.relay_url');
+  Future<String?> relayUrl() async {
+    if (serviceConfigured) return normalizedServiceUrl;
+    return _setting('sync.relay_url');
+  }
 
   Future<String?> enrollToken() => _setting('sync.enroll_token');
 
@@ -704,14 +709,14 @@ class SyncService {
     final signer = permission['signer_public_key'] as String? ?? '';
     final signature = permission['signature'] as String? ?? '';
     final pinned = await pinnedOwnerPublicKey();
-    if (signer.isEmpty || signer != pinned) {
+    if (!isTrustedPermissionSigner(signer, pinned)) {
       throw StateError(
         'Penandatangan izin bukan kunci owner yang dipin. '
         'Izin karyawan ditolak.',
       );
     }
     final valid = await verifyPayload(
-      pinned,
+      signer,
       utf8.encode(canonicalJson(payload)),
       signature,
     );

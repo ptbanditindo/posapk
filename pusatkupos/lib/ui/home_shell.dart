@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../auth/operator.dart';
 import '../data/app_database.dart';
+import '../data/session_service.dart';
 import '../data/store_registry.dart';
 import '../data/store_service.dart';
 import '../state/app_state.dart';
@@ -28,15 +31,84 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends State<HomeShell>
+    with WidgetsBindingObserver {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final Set<int> _built = {};
   int _position = 0;
   List<StoreRecord> _stores = const [];
+  Timer? _idleTimer;
+  DateTime? _pausedAt;
+  int _autoLockMinutes = 0;
+  bool _locking = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _autoLockMinutes = AppState.instance.autoLockMinutes;
+    AppState.instance.addListener(_syncAutoLock);
+    _resetIdleTimer();
     _loadStores();
+  }
+
+  @override
+  void dispose() {
+    _idleTimer?.cancel();
+    AppState.instance.removeListener(_syncAutoLock);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _pausedAt ??= DateTime.now();
+      _idleTimer?.cancel();
+      return;
+    }
+    if (state != AppLifecycleState.resumed) return;
+    final pausedAt = _pausedAt;
+    _pausedAt = null;
+    if (pausedAt != null &&
+        _autoLockMinutes > 0 &&
+        DateTime.now().difference(pausedAt) >=
+            Duration(minutes: _autoLockMinutes)) {
+      _lock();
+    } else {
+      _resetIdleTimer();
+    }
+  }
+
+  void _syncAutoLock() {
+    if (_autoLockMinutes == AppState.instance.autoLockMinutes) return;
+    _autoLockMinutes = AppState.instance.autoLockMinutes;
+    _resetIdleTimer();
+  }
+
+  void _resetIdleTimer() {
+    _idleTimer?.cancel();
+    if (_autoLockMinutes <= 0 || !AppState.instance.pinConfigured) return;
+    _idleTimer = Timer(Duration(minutes: _autoLockMinutes), _lock);
+  }
+
+  Future<void> _lock() async {
+    if (_locking || !mounted) return;
+    _idleTimer?.cancel();
+    final profile = await SessionService.instance.load();
+    if (profile == null || !mounted) return;
+    _locking = true;
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PinGate(profile: profile, unlockOnly: true),
+        ),
+      );
+    } finally {
+      _locking = false;
+      if (mounted) _resetIdleTimer();
+    }
   }
 
   Future<void> _loadStores() async {
@@ -84,16 +156,6 @@ class _HomeShellState extends State<HomeShell> {
         selected.storeId,
         allowedStoreIds: allowed,
       );
-      if (!operator.isOwner) {
-        AppState.instance.setOperator(null);
-        await AppState.instance.reloadStore();
-        if (!mounted) return;
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const PinGate()),
-          (_) => false,
-        );
-        return;
-      }
       await AppState.instance.reloadStore();
       await _loadStores();
       if (!mounted) return;
@@ -149,20 +211,33 @@ class _HomeShellState extends State<HomeShell> {
     return screens;
   }
 
-  List<Widget> _screens() => [
-        DashboardScreen(onNavigate: _goScreen),
-        const PosScreen(),
-        const HistoryScreen(),
-        const CustomersScreen(),
-        const StockScreen(),
-        const JasaScreen(),
-        const ReportsScreen(),
-        const SupplierScreen(),
-        FollowupScreen(onOpenPremium: () => _goScreen(11)),
-        const EmployeesScreen(),
-        const SettingsScreen(),
-        const PremiumScreen(),
-      ];
+  Widget _screen(int index) => switch (index) {
+        0 => DashboardScreen(onNavigate: _goScreen),
+        1 => const PosScreen(),
+        2 => const HistoryScreen(),
+        3 => const CustomersScreen(),
+        4 => const StockScreen(),
+        5 => const JasaScreen(),
+        6 => const ReportsScreen(),
+        7 => const SupplierScreen(),
+        8 => FollowupScreen(onOpenPremium: () => _goScreen(11)),
+        9 => const EmployeesScreen(),
+        10 => const SettingsScreen(),
+        11 => const PremiumScreen(),
+        _ => const SizedBox.shrink(),
+      };
+
+  /// Layar dibangun saat pertama dibuka agar mode ringkasan/karyawan tidak
+  /// memuat seluruh layar kasir.
+  List<Widget> _screens(int active) {
+    _built.add(active);
+    return List.generate(
+      _allLabels.length,
+      (index) => _built.contains(index)
+          ? _screen(index)
+          : const SizedBox.shrink(),
+    );
+  }
 
   void _goScreen(int screenIndex) {
     final position = _visible.indexOf(screenIndex);
@@ -182,10 +257,13 @@ class _HomeShellState extends State<HomeShell> {
         final body = IndexedStack(
           key: ValueKey(appState.storeRevision),
           index: screenIndex,
-          children: _screens(),
+          children: _screens(screenIndex),
         );
-        return Scaffold(
-          key: _scaffoldKey,
+        return Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) => _resetIdleTimer(),
+          child: Scaffold(
+            key: _scaffoldKey,
           drawer: _buildDrawer(context, visible),
           appBar: AppBar(
             title: Column(
@@ -281,6 +359,7 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ],
                 ),
+          ),
         );
       },
     );

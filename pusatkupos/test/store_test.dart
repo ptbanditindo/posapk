@@ -47,7 +47,7 @@ void main() {
     await openPrimary('utama');
     await db.setSetting('bengkel.nama', 'Toko Satu');
     final ownerId = await LicenseService.instance.ensureOwner();
-    await installTestLicense(ownerId: ownerId);
+    await installTestLicense(ownerId: ownerId, google: true);
     expect(await LicenseService.instance.isPremium(), isTrue);
 
     await db.saveStockItem(
@@ -114,7 +114,7 @@ void main() {
   test('ganti toko berulang mempertahankan data toko', () async {
     await openPrimary('repeat');
     final ownerId = await LicenseService.instance.ensureOwner();
-    await installTestLicense(ownerId: ownerId);
+    await installTestLicense(ownerId: ownerId, google: true);
     final second = await StoreService.instance.createStore(nama: 'Toko Ulang');
 
     await StoreService.instance.switchStore(second.storeId);
@@ -132,7 +132,7 @@ void main() {
   test('karyawan tidak bisa pindah ke toko yang tidak ditugaskan', () async {
     await openPrimary('guard');
     final ownerId = await LicenseService.instance.ensureOwner();
-    await installTestLicense(ownerId: ownerId);
+    await installTestLicense(ownerId: ownerId, google: true);
     final second = await StoreService.instance.createStore(nama: 'Toko Lain');
 
     await expectLater(

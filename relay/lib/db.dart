@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS owners (
   owner_public_key TEXT NOT NULL DEFAULT '',
   license_plan TEXT NOT NULL DEFAULT 'premium',
   license_period_end TIMESTAMPTZ,
-  license_device_limit INTEGER NOT NULL DEFAULT 5,
+  license_store_limit INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 ''',
@@ -211,7 +211,17 @@ CREATE TABLE IF NOT EXISTS owner_identities (
   last_login_at TIMESTAMPTZ
 )
 ''',
+      '''
+CREATE TABLE IF NOT EXISTS followup_quota (
+  user_code TEXT PRIMARY KEY,
+  used INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+''',
       'ALTER TABLE owner_identities ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ',
+      'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false',
+      'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_updated_at TIMESTAMPTZ',
+      'ALTER TABLE owners ADD COLUMN IF NOT EXISTS license_store_limit INTEGER NOT NULL DEFAULT 1',
     ];
     for (final statement in statements) {
       await _conn.execute(statement);

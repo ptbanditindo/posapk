@@ -75,7 +75,7 @@ netsh advfirewall firewall add rule name="PusatkuPOS Relay 8787" dir=in action=a
 `dart_define_from_file`. Salin nilai kuncinya ke `.env` aplikasi:
 
 ```powershell
-# pusatkupos/.env dan pusatkupos_owner/.env
+# pusatkupos/.env
 PUSATKU_LICENSE_PUBLIC_KEY=<license_public_key>
 ```
 
@@ -93,11 +93,10 @@ diekspor aplikasi utama (payload `owner_id` dan `public_key` di file JSON):
 dart run bin/relay.dart owner --owner-id <OWNER_ID> --public-key <OWNER_PUBLIC_KEY> --days 30 --devices 5
 ```
 
-Perintah ini mencetak `enroll_token` dan `license_token`.
-
-- Tempel `license_token` di layar Premium aplikasi utama.
-- Ekspor ringkasan owner dari aplikasi utama, lalu impor di aplikasi Owner.
-- Isi alamat relay dan `enroll_token` di pengaturan relay.
+Perintah ini mencetak `enroll_token` dan `license_token` untuk pengujian
+internal. Alur aplikasi: kaitkan email pembeli ke owner (bagian Login Google),
+lalu pilih **Login Google** di aplikasi. Aplikasi tidak pernah meminta alamat
+relay atau token kepada pengguna.
 
 Jalankan server:
 
@@ -116,7 +115,8 @@ dikirim. Gunakan port-forward USB sehingga relay terlihat sebagai localhost:
 adb reverse tcp:8787 tcp:8787
 ```
 
-Lalu isi relay URL `http://127.0.0.1:8787` pada build **debug**.
+Lalu bangun aplikasi **debug** dengan
+`--dart-define=PUSATKU_SERVICE_URL=http://127.0.0.1:8787` di `.env`.
 
 Untuk akses Wi-Fi tanpa kabel, relay harus berada di belakang TLS (reverse
 proxy dengan sertifikat yang dipercaya perangkat). Relay uji ini sengaja tidak
@@ -146,10 +146,14 @@ aplikasi tetap memakai PIN owner.
      -d "{\"email\":\"pembeli@example.com\",\"owner_id\":\"<OWNER_ID>\"}"
    ```
 
-3. Aplikasi: Premium → **Masuk dengan Google**. Relay memverifikasi ID token
-   terhadap JWKS Google (`iss`, `aud`, `exp`, `sub`, `email_verified`), lalu
-   menerbitkan `license_token`. Endpoint dibatasi 20 percobaan per 5 menit per
-   alamat IP.
+3. Aplikasi: pilih **Login Google** (fitur penuh) atau **Ringkasan laporan
+   toko** (read-only). Relay memverifikasi ID token terhadap JWKS Google
+   (`iss`, `aud`, `exp`, `sub`, `email_verified`), lalu menerbitkan
+   `license_token`. Endpoint dibatasi 20 percobaan per 5 menit per alamat IP.
+4. Mode ringkasan mengelola akun karyawan lewat token owner. Relay
+   menandatangani izin akun dengan kunci lisensi server karena perangkat
+   ringkasan tidak memegang kunci privat owner; perangkat karyawan menerima
+   salah satu dari dua penandatangan tepercaya (owner atau server).
 
 `GET /relay/admin/identities?owner_id=<OWNER_ID>` menampilkan pengaitan yang
 ada. Jika email belum terhubung, login ditolak dengan kode
@@ -185,8 +189,10 @@ kunci identitas owner (`409 owner_signer_required`).
 
 ## Batasan yang masih tersisa
 
-Aplikasi Owner saat ini menandatangani izin karyawan dengan kunci
-`owner.access.*`, bukan kunci identitas owner yang di-pin. Relay menolak
-akun seperti itu. Agar pairing karyawan bisa diuji, aplikasi Owner harus
-memperoleh kunci identitas owner (impor sekali dari aplikasi utama) atau
-pengelolaan akun dipindahkan ke aplikasi utama. Ini keputusan desain terpisah.
+- Perangkat ringkasan tidak memegang kunci privat owner. Izin akun yang dibuat
+  dari mode ini ditandatangani ulang oleh kunci lisensi server setelah token
+  owner diverifikasi. Perangkat yang dibangun tanpa
+  `PUSATKU_LICENSE_PUBLIC_KEY` tidak dapat memverifikasi izin tersebut.
+- `enroll_token` berlaku 30 hari. Setelah kedaluwarsa, pengguna harus memilih
+  Login Google lagi; data lokal tidak hilang.
+- Relay uji ini belum menangani TLS, rate limit menyeluruh, atau rotasi kunci.

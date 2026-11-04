@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import '../data/receipt_service.dart';
 import 'escpos_builder.dart';
+import 'printer_adapter.dart';
 import 'printer_config.dart';
-import 'printer_transport_stub.dart'
-    if (dart.library.io) 'printer_transport_io.dart';
+import 'printer_manager.dart';
 
 class PrintResult {
   const PrintResult({required this.ok, required this.message});
@@ -14,51 +14,34 @@ class PrintResult {
 }
 
 class PrinterService {
-  PrinterService._();
+  PrinterService({PrinterManager? manager, PrinterStore? store})
+      : _manager = manager ?? PrinterManager.instance,
+        _store = store ?? PrinterStore.instance;
 
-  static final PrinterService instance = PrinterService._();
+  static final PrinterService instance = PrinterService();
+
+  final PrinterManager _manager;
+  final PrinterStore _store;
 
   Future<PrintResult> printReceipt(
     ReceiptDocument document, {
     PrinterConfig? printer,
   }) async {
-    final target = printer ?? await PrinterStore.instance.primary();
+    final target = printer ?? await _store.primary();
     if (target == null) {
       return const PrintResult(
         ok: false,
         message: 'Belum ada printer. Tambahkan printer di Pengaturan.',
       );
     }
-    return printText(document.text, printer: target);
+    return _print(target, document.text, document.width);
   }
 
   Future<PrintResult> printText(
     String text, {
     required PrinterConfig printer,
-  }) async {
-    try {
-      printer.validate();
-      final bytes = printer.mode == 'TEXT'
-          ? _plainBytes(text)
-          : _escposBytes(text, printer.width);
-      await sendNetwork(printer.host, printer.port, bytes);
-      return PrintResult(ok: true, message: 'Struk dikirim ke ${printer.nama}.');
-    } on UnsupportedError catch (error) {
-      return PrintResult(ok: false, message: '$error');
-    } on FormatException {
-      return const PrintResult(
-        ok: false,
-        message: 'Alamat printer tidak valid.',
-      );
-    } catch (error) {
-      return PrintResult(
-        ok: false,
-        message: 'Gagal mencetak ke ${printer.nama} '
-            '(${printer.host}:${printer.port}). Periksa jaringan printer. '
-            'Detail: $error',
-      );
-    }
-  }
+  }) =>
+      _print(printer, text, printer.width);
 
   Future<PrintResult> testPrint(PrinterConfig printer) {
     final text = [
@@ -66,29 +49,109 @@ class PrinterService {
       'Tes printer',
       List.filled(printer.width, '-').join(),
       'Printer: ${printer.nama}',
-      'Alamat: ${printer.host}:${printer.port}',
+      'Jenis: ${printer.typeLabel}',
+      'Tujuan: ${printer.targetLabel}',
       'Kertas: ${printer.paperMm} mm',
       '',
     ].join('\n');
-    return printText(text, printer: printer);
+    return _print(printer, text, printer.width);
   }
 
-  List<int> _escposBytes(String text, int width) {
-    final builder = EscPosBuilder(width: width)
-      ..init()
-      ..text(text)
-      ..feed(3)
-      ..cut();
-    return builder.bytes;
-  }
-
-  List<int> _plainBytes(String text) {
-    final buffer = StringBuffer();
-    for (final rune in text.runes) {
-      buffer.writeCharCode(
-        rune == 0x0a || (rune >= 0x20 && rune <= 0x7e) ? rune : 0x3f,
+  Future<PrintResult> _print(
+    PrinterConfig printer,
+    String text,
+    int width,
+  ) async {
+    try {
+      final payload = _payload(printer, text, width);
+      if ((printer.connectionType == 'BLUETOOTH' ||
+              printer.connectionType == 'USB') &&
+          _manager.statusOf(printer).status != 'CONNECTED') {
+        await _manager.connect(printer);
+      }
+      await _manager.send(printer, payload);
+      return PrintResult(
+        ok: true,
+        message: _successMessage(printer),
+      );
+    } on PrinterException catch (error) {
+      return PrintResult(ok: false, message: error.message);
+    } on UnsupportedError catch (error) {
+      return PrintResult(ok: false, message: '$error');
+    } catch (error) {
+      return PrintResult(
+        ok: false,
+        message: 'Gagal mencetak ke ${printer.nama}. '
+            'Periksa koneksi printer. Detail: $error',
       );
     }
-    return latin1.encode('$buffer\n\n\n');
+  }
+
+  PrintPayload _payload(PrinterConfig printer, String text, int width) {
+    switch (printer.mode) {
+      case 'ESCPOS':
+        final builder = EscPosBuilder(
+          width: width,
+          encoding: printer.encoding,
+        )
+          ..init()
+          ..text(text)
+          ..feed(3)
+          ..cut();
+        return PrintPayload(
+          text: text,
+          bytes: builder.bytes,
+          width: width,
+          encoding: printer.encoding,
+        );
+      case 'TEXT':
+        return PrintPayload(
+          text: text,
+          bytes: _plainBytes(text, printer.encoding),
+          width: width,
+          encoding: printer.encoding,
+        );
+      case 'SYSTEM':
+      case 'BROWSER':
+        return PrintPayload(
+          text: text,
+          bytes: const [],
+          width: width,
+          encoding: printer.encoding,
+        );
+      default:
+        throw PrinterException(
+          'Mode cetak ${printer.mode} tidak dikenal.',
+          code: 'INVALID_MODE',
+        );
+    }
+  }
+
+  String _successMessage(PrinterConfig printer) {
+    switch (printer.mode) {
+      case 'SYSTEM':
+        return 'Dialog cetak Android dibuka untuk ${printer.nama}.';
+      case 'BROWSER':
+        return 'Dialog cetak browser dibuka.';
+      default:
+        return 'Struk dikirim ke ${printer.nama}.';
+    }
+  }
+
+  List<int> _plainBytes(String text, String encoding) {
+    final asciiOnly = encoding.toUpperCase() == 'ASCII';
+    final buffer = StringBuffer();
+    for (final rune in '$text\n\n\n'.runes) {
+      if (rune == 0x0a) {
+        buffer.writeCharCode(rune);
+      } else if (rune >= 0x20 && rune <= 0x7e) {
+        buffer.writeCharCode(rune);
+      } else if (!asciiOnly && rune >= 0xa0 && rune <= 0xff) {
+        buffer.writeCharCode(rune);
+      } else {
+        buffer.write('?');
+      }
+    }
+    return latin1.encode('$buffer');
   }
 }

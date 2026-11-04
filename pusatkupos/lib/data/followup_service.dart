@@ -1,11 +1,15 @@
+import 'dart:convert';
+
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/money.dart';
 import '../core/phone.dart';
 import '../core/wa_link.dart';
+import '../sync/relay_client.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 
@@ -68,6 +72,9 @@ const autoArchiveReason = 'Sumber pengingat sudah tidak aktif.';
 
 const _freeQuotaLimit = 20;
 const _quotaKey = 'followup.wa_used';
+// Penanda lokal disamarkan agar tidak terlihat sebagai kode kuota.
+const _quotaCodeKey = 'ops.arsip_sesi';
+const _quotaSyncTimeout = Duration(seconds: 4);
 
 class FollowupSettings {
   const FollowupSettings({
@@ -602,14 +609,73 @@ class FollowupService {
     }).toList();
   }
 
-  Future<FollowupQuota> quotaStatus() async {
+  Future<FollowupQuota> _localQuota() async {
     final premium = await LicenseService.instance.isPremium();
     final raw = await AppDatabase.instance.getSetting(_quotaKey) ?? '0';
-    final used = int.tryParse(raw) ?? 0;
+    final parsed = int.tryParse(raw) ?? 0;
     return FollowupQuota(
       premium: premium,
-      used: used < 0 ? 0 : used,
+      used: parsed < 0 ? 0 : parsed,
       limit: premium ? null : _freeQuotaLimit,
+    );
+  }
+
+  Future<String> _quotaCode() async {
+    final stored = await AppDatabase.instance.getSetting(_quotaCodeKey) ?? '';
+    final decoded = _decodeCode(stored);
+    if (decoded.isNotEmpty) return decoded;
+    final code = 'S${newSyncId()}';
+    await AppDatabase.instance.setSetting(_quotaCodeKey, _encodeCode(code));
+    return code;
+  }
+
+  String _encodeCode(String value) =>
+      base64Url.encode(utf8.encode(value)).replaceAll('=', '');
+
+  String _decodeCode(String value) {
+    try {
+      return utf8.decode(base64Url.decode(base64Url.normalize(value)));
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<({int used, bool allowed})?> _syncQuota({
+    required int localUsed,
+    bool consume = false,
+  }) async {
+    if (!serviceConfigured) return null;
+    try {
+      final body = await RelayClient(baseUrl: normalizedServiceUrl)
+          .followupQuota(
+            code: await _quotaCode(),
+            used: localUsed,
+            consume: consume,
+          )
+          .timeout(_quotaSyncTimeout);
+      final used = (body['used'] as num?)?.toInt();
+      if (used == null) return null;
+      return (
+        used: used.clamp(0, _freeQuotaLimit).toInt(),
+        allowed: consume
+            ? body['consumed'] == true
+            : used < _freeQuotaLimit,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<FollowupQuota> quotaStatus() async {
+    final quota = await _localQuota();
+    if (quota.premium) return quota;
+    final remote = await _syncQuota(localUsed: quota.used);
+    if (remote == null) return quota;
+    await AppDatabase.instance.setSetting(_quotaKey, '${remote.used}');
+    return FollowupQuota(
+      premium: false,
+      used: remote.used,
+      limit: _freeQuotaLimit,
     );
   }
 
@@ -623,7 +689,7 @@ class FollowupService {
     if (!settings.aktif) {
       throw StateError('Fitur follow up sedang dimatikan.');
     }
-    final quota = await quotaStatus();
+    final quota = await _localQuota();
     if (quota.locked) {
       throw StateError(
         'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis. '
@@ -659,30 +725,50 @@ class FollowupService {
     final link = waMeLink(phone, message);
     final ids = group.map((row) => row['id'] as int).toList();
     var used = quota.used;
+    final remote = quota.premium
+        ? null
+        : await _syncQuota(localUsed: quota.used, consume: true);
+    if (remote != null) {
+      if (!remote.allowed) {
+        throw StateError(
+          'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis. '
+          'Data lama tetap dapat dibaca dan diekspor.',
+        );
+      }
+      used = remote.used;
+    }
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       if (!quota.premium) {
-        final currentRows = await txn.query(
-          'app_settings',
-          columns: ['value'],
-          where: 'key = ?',
-          whereArgs: [_quotaKey],
-          limit: 1,
-        );
-        final current = currentRows.isEmpty
-            ? 0
-            : int.tryParse(currentRows.first['value'] as String? ?? '') ?? 0;
-        if (current >= _freeQuotaLimit) {
-          throw StateError(
-            'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis.',
+        if (remote != null) {
+          await txn.insert(
+            'app_settings',
+            {'key': _quotaKey, 'value': '$used'},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        } else {
+          final currentRows = await txn.query(
+            'app_settings',
+            columns: ['value'],
+            where: 'key = ?',
+            whereArgs: [_quotaKey],
+            limit: 1,
+          );
+          final current = currentRows.isEmpty
+              ? 0
+              : int.tryParse(currentRows.first['value'] as String? ?? '') ?? 0;
+          if (current >= _freeQuotaLimit) {
+            throw StateError(
+              'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis.',
+            );
+          }
+          used = current + 1;
+          await txn.insert(
+            'app_settings',
+            {'key': _quotaKey, 'value': '$used'},
+            conflictAlgorithm: ConflictAlgorithm.replace,
           );
         }
-        used = current + 1;
-        await txn.insert(
-          'app_settings',
-          {'key': _quotaKey, 'value': '$used'},
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
       }
       for (final row in group) {
         final currentStatus = row['status'] as String? ?? 'BARU';

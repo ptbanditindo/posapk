@@ -47,7 +47,7 @@ class OwnerSummaryService {
       'owner_id': ownerId,
       'plan': status['plan'],
       'period_end': status['period_end'],
-      'device_limit': status['device_limit'],
+      'store_limit': status['store_limit'],
       'license_token': status['token'],
       'stores': stores,
       'devices': devices
@@ -79,7 +79,7 @@ class OwnerSummaryService {
         .substring(0, 19);
     final uri = await FilePicker.saveFile(
       dialogTitle: 'Simpan ringkasan owner',
-      fileName: 'pusatkupos_owner_$stamp.json',
+      fileName: 'pusatkupos_ringkasan_$stamp.json',
       bytes: utf8.encode(summary),
       mimeType: 'application/json',
     );

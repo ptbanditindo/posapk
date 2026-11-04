@@ -2,7 +2,20 @@
 
 Aplikasi POS bengkel radiator/servis mobil yang **offline-first**. Semua data
 transaksi disimpan di SQLite lokal; internet hanya dipakai untuk sinkronisasi
-terenkripsi ke relay.
+terenkripsi ke layanan pusat.
+
+## Empat cara masuk
+
+1. **Tanpa akun** — pemilik lokal, seluruh fitur kasir, gratis.
+2. **Login Google** — pemilik premium, seluruh fitur kasir + sinkronisasi.
+3. **Login karyawan** — kasir/mekanik sesuai izin dan toko yang ditugaskan.
+4. **Ringkasan laporan toko** — pemilik yang sudah login Google, **hanya baca**
+   pembukuan dan mengelola akun/perangkat karyawan.
+
+Mode ringkasan memakai file database terpisah (`viewer_<owner_id>.db`) dan
+tidak memasang layar kasir, stok masuk, atau pengeditan nota. Salinan toko
+dimuat dari cadangan perangkat utama; unggah cadangan dan kelola akses tetap
+tersedia.
 
 ## Fitur
 
@@ -20,6 +33,10 @@ terenkripsi ke relay.
   Mekanik tidak dapat void, mengubah stok, harga jasa, atau diskon.
 - Audit: setiap diskon, void, dan perubahan izin dicatat.
 - Backup/restore database dengan validasi + ganti atomik.
+- Printer: Bluetooth Classic (SPP), Bluetooth LE (GATT), Wi-Fi/LAN (port 9100
+  + pencarian NSD), USB OTG (BULK OUT), cetak Android, dan dialog browser.
+  Konfigurasi (MAC/IP) disimpan di `printer_config.json` terpisah agar tidak
+  ikut backup/sinkronisasi; maksimal 8 printer dengan satu printer utama.
 
 ## Keamanan
 
@@ -36,17 +53,27 @@ terenkripsi ke relay.
 - Lisensi **hanya** diterbitkan server dan diverifikasi dengan kunci publik
   server yang ditanam saat build. Salin `.env.example` menjadi `.env` lalu isi
   `PUSATKU_LICENSE_PUBLIC_KEY`; jangan menaruh kunci di kode atau perintah.
-  Kasir offline tetap gratis; sinkronisasi dan multi-perangkat memerlukan
-  lisensi valid dan tidak terkunci saat kedaluwarsa (hanya sync yang mati).
-- Login Google premium opsional: isi `PUSATKU_GOOGLE_CLIENT_ID` (OAuth client
-  tipe **Web application**) dengan nilai yang sama seperti
-  `RELAY_GOOGLE_CLIENT_ID` di relay. Tombol **Masuk dengan Google** ada di
-  layar Premium dan hanya memulihkan lisensi; sesi aplikasi tetap memakai PIN.
-  Untuk Android, daftarkan SHA-1 keystore aplikasi di Google Cloud Console.
+  Kasir offline tetap gratis; sinkronisasi dan multi-toko memerlukan
+  lisensi valid (kuota toko mengikuti `store_limit` pada token) dan tidak
+  terkunci saat kedaluwarsa (hanya sync yang mati). Tidak ada batas jumlah
+  perangkat; harga premium dihitung per toko.
+- Login Google opsional: isi `PUSATKU_GOOGLE_CLIENT_ID` (OAuth client tipe
+  **Web application**) dengan nilai yang sama seperti `RELAY_GOOGLE_CLIENT_ID`
+  di layanan pusat. Ada dua jalur: **Login Google** untuk pemilik premium
+  (fitur penuh) dan **Ringkasan laporan toko** (read-only). Sesi aplikasi tetap
+  memakai PIN. Untuk Android, daftarkan SHA-1 keystore di Google Cloud Console.
+- Alamat layanan dan token pendaftaran ditanam saat build; pengguna tidak
+  pernah melihat atau mengisi alamat relay. Relay adalah detail internal
+  layanan premium.
 
 ## Build
 
 Prasyarat: Flutter 3.47.9 (Dart 3.13.7), JDK 17, Android SDK.
+
+Android meminta izin Bluetooth saat mencari/menghubungkan printer (API 31+:
+`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`) dan izin USB saat pertama memakai printer
+OTG. Izin fitur `bluetooth` dan `usb.host` ditandai tidak wajib sehingga
+aplikasi tetap bisa dipasang di perangkat tanpa Bluetooth/USB OTG.
 
 ```bash
 # Sekali saja: salin contoh konfigurasi build.
@@ -77,18 +104,25 @@ relay localhost.
 
 ## Sinkronisasi
 
-1. Isi alamat relay HTTPS + token pendaftaran di Premium/Pengaturan.
-2. Perangkat owner mendaftar ke relay dan membagikan kunci toko (key-wrap
-   bertanda tangan).
-3. Perangkat lain menerima key-wrap dan memverifikasi tanda tangan kunci
+Sinkronisasi hanya aktif untuk akun premium. Alamat layanan sudah tertanam di
+build; langkah berikut berjalan otomatis setelah Login Google.
+
+1. Perangkat owner mendaftar dan membagikan kunci toko (key-wrap bertanda
+   tangan).
+2. Perangkat lain menerima key-wrap dan memverifikasi tanda tangan kunci
    owner yang dipin.
-4. Delta dikirim terenkripsi; penerapan delta + `applied_deltas` dalam satu
+3. Delta dikirim terenkripsi; penerapan delta + `applied_deltas` dalam satu
    transaksi. Amplop rusak dicatat di `sync_conflicts` dan tidak menghentikan
    sinkronisasi. Pengirim tak dikenal menghentikan kursor sebelum amplop itu.
-5. Snapshot/backup memakai `device.nota_prefix` baru setelah restore; seq
+4. Snapshot/backup memakai `device.nota_prefix` baru setelah restore; seq
    outbox dilanjutkan dari batas tersimpan.
+5. Mode ringkasan mendaftar sebagai perangkat `viewer`, memuat salinan toko,
+   dan tidak mengirim transaksi.
 
-### Kewajiban relay (tidak ada di repo ini)
+### Kontrak layanan pusat (`relay/`)
+
+Kode relay ada di folder `relay/` dan hanya untuk maintainer. Aplikasi
+mengharapkan layanan:
 
 - Mengirim `owner_public_key` pada respons claim undangan.
 - Menandatangani izin karyawan dengan kunci owner (signer harus sama dengan
@@ -96,3 +130,16 @@ relay localhost.
 - Mengembalikan `wrapped_key_signature` pada bootstrap.
 - Menerbitkan `license_token` (Ed25519 kunci server) pada claim/pairing.
 - Menyimpan/meneruskan snapshot dan delta tanpa menerapkan data bisnis.
+- Menjaga kuota follow-up gratis berdasarkan kode arsip database.
+
+## Rencana Play Store shell
+
+APK Play Store direncanakan sebagai cangkang yang mengunduh modul sesuai jalur
+login: penuh untuk tanpa akun/Login Google, terbatas per peran untuk karyawan,
+dan hanya modul laporan read-only untuk ringkasan. Pengguna menanggung biaya
+data karena aplikasi offline; sync hanya untuk premium.
+
+Saat ini layar sudah dibangun malas (hanya layar yang dibuka yang
+diinisialisasi), tetapi pemisahan paket unduhan memerlukan Play Feature
+Delivery/dynamic feature module atau artifact terpisah. Itu pekerjaan rilis
+lanjutan, bukan perilaku yang sudah aktif.

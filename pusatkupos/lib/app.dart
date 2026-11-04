@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'state/app_state.dart';
-import 'ui/pin_gate.dart';
+import 'ui/entry_gate.dart';
 import 'ui/theme.dart';
 
 class PusatkuApp extends StatelessWidget {
@@ -18,7 +18,7 @@ class PusatkuApp extends StatelessWidget {
           theme: buildAppTheme(Brightness.light),
           darkTheme: buildAppTheme(Brightness.dark),
           themeMode: AppState.instance.themeMode,
-          home: const PinGate(),
+          home: const EntryGate(),
         );
       },
     );

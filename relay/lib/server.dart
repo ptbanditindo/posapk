@@ -3,6 +3,7 @@ import 'dart:io' show HttpConnectionInfo;
 import 'dart:math';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:cryptography/cryptography.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
@@ -11,6 +12,8 @@ import 'config.dart';
 import 'db.dart';
 import 'google.dart';
 import 'license.dart';
+
+const _followupQuotaLimit = 20;
 
 class RelayServer {
   RelayServer(this.db, this.config, {GoogleTokenVerifier? google})
@@ -28,6 +31,14 @@ class RelayServer {
   final RateLimiter _googleRateLimit = RateLimiter(
     max: 20,
     window: const Duration(minutes: 5),
+  );
+  final RateLimiter _employeeRateLimit = RateLimiter(
+    max: 15,
+    window: const Duration(minutes: 5),
+  );
+  final RateLimiter _passwordRateLimit = RateLimiter(
+    max: 10,
+    window: const Duration(minutes: 10),
   );
   final Router _router;
 
@@ -54,11 +65,32 @@ class RelayServer {
     _router.get('/relay/admin/identities', _adminIdentities);
     _router.post('/relay/admin/identities', _adminBindIdentity);
     _router.post('/relay/auth/google', _googleLogin);
+    _router.post('/relay/auth/employee', _employeeLogin);
+    _router.post('/relay/auth/employee/password', _employeeChangePassword);
+    _router.post('/relay/followup/quota', _followupQuota);
     return const Pipeline()
         .addMiddleware(logRequests())
+        .addMiddleware(_cors)
         .addMiddleware(_errors)
         .addHandler(_router.call);
   }
+
+  Middleware get _cors => (inner) {
+        const headers = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers':
+              'content-type, x-device-token, x-relay-enroll-token, authorization',
+          'Access-Control-Max-Age': '600',
+        };
+        return (request) async {
+          if (request.method == 'OPTIONS') {
+            return Response.ok('', headers: headers);
+          }
+          final response = await inner(request);
+          return response.change(headers: headers);
+        };
+      };
 
   Middleware get _errors => (inner) {
         return (request) async {
@@ -110,7 +142,7 @@ class RelayServer {
     final row = await db.one(
       '''
 SELECT d.*, o.owner_public_key AS owner_public_key_registered,
-       o.license_plan, o.license_period_end, o.license_device_limit
+       o.license_plan, o.license_period_end, o.license_store_limit
 FROM devices d JOIN owners o ON o.owner_id = d.owner_id
 WHERE d.token_hash = @hash AND d.revoked_at IS NULL
 ''',
@@ -133,7 +165,7 @@ WHERE d.token_hash = @hash AND d.revoked_at IS NULL
     return db.one(
       '''
 SELECT t.*, o.owner_public_key, o.license_plan, o.license_period_end,
-       o.license_device_limit
+       o.license_store_limit
 FROM enroll_tokens t JOIN owners o ON o.owner_id = t.owner_id
 WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   AND t.expires_at > now()
@@ -145,14 +177,6 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   bool _admin(Request request) {
     final header = request.headers['authorization'] ?? '';
     return header == 'Bearer ${config.adminToken}';
-  }
-
-  Future<int> _activeDevices(String ownerId) async {
-    final row = await db.one(
-      'SELECT COUNT(*) AS total FROM devices WHERE owner_id = @owner AND revoked_at IS NULL',
-      {'owner': ownerId},
-    );
-    return (row?['total'] as num?)?.toInt() ?? 0;
   }
 
   Future<Map<String, Object?>?> _owner(String ownerId) =>
@@ -167,7 +191,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
       ownerId: owner['owner_id'] as String,
       periodEnd: periodEnd,
       plan: owner['license_plan'] as String? ?? 'premium',
-      deviceLimit: (owner['license_device_limit'] as num?)?.toInt() ?? 5,
+      storeLimit: (owner['license_store_limit'] as num?)?.toInt() ?? 1,
     );
   }
 
@@ -177,6 +201,52 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
       'license_public_key': await license.publicKey(),
       'google_login': google != null,
       'server_time': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  Future<Response> _followupQuota(Request request) async {
+    final body = await _body(request);
+    final code = '${body['code'] ?? ''}'.trim();
+    if (code.length < 8 || code.length > 96) {
+      return _error(400, 'Kode tidak valid.', code: 'invalid_code');
+    }
+    final reported =
+        ((body['used'] as num?)?.toInt() ?? 0).clamp(0, _followupQuotaLimit);
+    final consume = body['consume'] == true;
+    final result = await db.tx((tx) async {
+      await tx.execute(
+        '''
+INSERT INTO followup_quota (user_code, used, updated_at)
+VALUES (@code, @used, now())
+ON CONFLICT (user_code) DO UPDATE
+SET used = GREATEST(followup_quota.used, EXCLUDED.used), updated_at = now()
+''',
+        {'code': code, 'used': reported},
+      );
+      var consumed = false;
+      if (consume) {
+        final rows = await tx.query(
+          '''
+UPDATE followup_quota SET used = used + 1, updated_at = now()
+WHERE user_code = @code AND used < @limit
+RETURNING used
+''',
+          {'code': code, 'limit': _followupQuotaLimit},
+        );
+        consumed = rows.isNotEmpty;
+      }
+      final row = await tx.one(
+        'SELECT used FROM followup_quota WHERE user_code = @code',
+        {'code': code},
+      );
+      final used = (row?['used'] as num?)?.toInt() ?? reported;
+      return (used: used, consumed: consumed);
+    });
+    return _json(200, {
+      'used': result.used,
+      'limit': _followupQuotaLimit,
+      'allowed': consume ? result.consumed : result.used < _followupQuotaLimit,
+      'consumed': result.consumed,
     });
   }
 
@@ -199,10 +269,6 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     } else if (registered.isNotEmpty && ownerPublic.isNotEmpty &&
         registered != ownerPublic) {
       return _error(409, 'Kunci owner tidak cocok dengan yang terdaftar.');
-    }
-    final limit = (owner['license_device_limit'] as num?)?.toInt() ?? 5;
-    if (await _activeDevices(ownerId) >= limit) {
-      return _error(409, 'Batas $limit perangkat aktif sudah terpakai.');
     }
     final deviceId = _id('dev');
     final token = _token();
@@ -645,10 +711,6 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
       {'owner': ownerId, 'sync': invite['account_sync_id']},
     );
     if (account == null) return _error(404, 'Akun undangan tidak ditemukan.');
-    final limit = (owner['license_device_limit'] as num?)?.toInt() ?? 5;
-    if (await _activeDevices(ownerId) >= limit) {
-      return _error(409, 'Batas $limit perangkat aktif sudah terpakai.');
-    }
     final deviceId = _id('dev');
     final token = _token();
     final storeId = invite['store_id'] as String;
@@ -705,7 +767,7 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
         'password_hash': row['password_hash'],
         'password_salt': row['password_salt'],
         'password_iterations': (row['password_iterations'] as num?)?.toInt() ?? 600000,
-        'must_change_password': 1,
+        'must_change_password': row['must_change_password'] == true ? 1 : 0,
         'aktif': row['aktif'] == true ? 1 : 0,
         'permission_version': (row['permission_version'] as num?)?.toInt() ?? 1,
       };
@@ -715,6 +777,232 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
         'signature': row['permission_signature'] ?? '',
         'signer_public_key': row['permission_signer_public_key'] ?? '',
       };
+
+  String _pad64(String value) =>
+      value + '=' * ((4 - value.length % 4) % 4);
+
+  Future<String> _derivePassword(
+    String password,
+    String salt,
+    int iterations,
+  ) async {
+    final key = await Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: iterations <= 0 ? 600000 : iterations,
+      bits: 256,
+    ).deriveKey(
+      secretKey: SecretKey(utf8.encode(password)),
+      nonce: base64Url.decode(_pad64(salt)),
+    );
+    return base64Url.encode(await key.extractBytes());
+  }
+
+  Future<bool> _verifyPassword(
+    String password,
+    Map<String, Object?> account,
+  ) async {
+    final hash = account['password_hash'] as String? ?? '';
+    final salt = account['password_salt'] as String? ?? '';
+    if (hash.isEmpty || salt.isEmpty || password.isEmpty) return false;
+    try {
+      final derived = await _derivePassword(
+        password,
+        salt,
+        (account['password_iterations'] as num?)?.toInt() ?? 600000,
+      );
+      return derived.replaceAll('=', '') == hash.replaceAll('=', '');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Map<String, Object?> _publicAccountJson(Map<String, Object?> row) => {
+        'owner_id': row['owner_id'],
+        'sync_id': row['sync_id'],
+        'username': row['username'],
+        'nama': row['nama'],
+        'role_base': row['role_base'],
+        'extra_permissions': stringList(row['extra_permissions']),
+        'store_ids': stringList(row['store_ids']),
+        'aktif': row['aktif'] == true,
+        'must_change_password': row['must_change_password'] == true,
+        'permission_version':
+            (row['permission_version'] as num?)?.toInt() ?? 1,
+      };
+
+  Future<List<Map<String, Object?>>> _ownerStores(String ownerId) async {
+    final rows = await db.query(
+      'SELECT DISTINCT store_id FROM store_keys WHERE owner_id = @owner ORDER BY store_id',
+      {'owner': ownerId},
+    );
+    final ids = rows
+        .map((row) => '${row['store_id'] ?? ''}')
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) ids.add('utama');
+    return ids
+        .map(
+          (id) => {
+            'store_id': id,
+            'nama': id == 'utama' ? 'Toko Utama' : id,
+          },
+        )
+        .toList();
+  }
+
+  Future<Response> _employeeLogin(Request request) async {
+    if (!_employeeRateLimit.allow(_clientIp(request))) {
+      return _error(
+        429,
+        'Terlalu banyak percobaan masuk. Coba lagi beberapa menit lagi.',
+        code: 'rate_limited',
+      );
+    }
+    final body = await _body(request);
+    final ownerId = '${body['owner_id'] ?? ''}'.trim();
+    final username = '${body['username'] ?? ''}'.trim().toLowerCase();
+    final password = '${body['password'] ?? ''}';
+    final device = jsonMap(body['device']);
+    if (ownerId.isEmpty || username.isEmpty || password.isEmpty) {
+      return _error(
+        400,
+        'ID owner, nama pengguna, dan password wajib diisi.',
+        code: 'missing_fields',
+      );
+    }
+    final owner = await _owner(ownerId);
+    final account = owner == null
+        ? null
+        : await db.one(
+            'SELECT * FROM accounts WHERE owner_id = @owner AND username = @username',
+            {'owner': ownerId, 'username': username},
+          );
+    if (owner == null ||
+        account == null ||
+        account['aktif'] != true ||
+        !await _verifyPassword(password, account)) {
+      return _error(
+        401,
+        'ID owner, nama pengguna, atau password salah.',
+        code: 'invalid_credentials',
+      );
+    }
+
+    final accountSyncId = '${account['sync_id']}';
+    var storeIds = stringList(account['store_ids']);
+    if (storeIds.isEmpty) storeIds = const ['utama'];
+    final requestedStore = '${body['store_id'] ?? ''}'.trim();
+    if (requestedStore.isNotEmpty && storeIds.contains(requestedStore)) {
+      storeIds = [requestedStore];
+    }
+
+    String? token;
+    String? deviceId;
+    if (device != null && '${device['public_key'] ?? ''}'.isNotEmpty) {
+      deviceId = _id('dev');
+      token = _token();
+      await db.execute(
+        '''
+INSERT INTO devices (id, owner_id, nama, kind, employee_account_id, public_key,
+  encryption_key, owner_public_key, store_ids, token_hash)
+VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
+  @ownerPublic, CAST(@stores AS jsonb), @hash)
+''',
+        {
+          'id': deviceId,
+          'owner': ownerId,
+          'nama': '${device['nama'] ?? 'Perangkat karyawan'}',
+          'account': accountSyncId,
+          'public': '${device['public_key']}',
+          'encrypt': '${device['encryption_key'] ?? ''}',
+          'ownerPublic': owner['owner_public_key'] ?? '',
+          'stores': jsonEncode(storeIds),
+          'hash': _hash(token),
+        },
+      );
+    } else {
+      final existing = await db.one(
+        '''
+SELECT * FROM devices
+WHERE owner_id = @owner AND employee_account_id = @account
+  AND revoked_at IS NULL
+ORDER BY created_at DESC LIMIT 1
+''',
+        {'owner': ownerId, 'account': accountSyncId},
+      );
+      deviceId = existing?['id'] as String?;
+      final existingStores = stringList(existing?['store_ids']);
+      if (existingStores.isNotEmpty) storeIds = existingStores;
+    }
+
+    return _json(200, {
+      'owner_id': ownerId,
+      'owner_public_key': owner['owner_public_key'] ?? '',
+      'plan': owner['license_plan'] ?? 'free',
+      'period_end': _iso(owner['license_period_end']),
+      'store_limit': (owner['license_store_limit'] as num?)?.toInt() ?? 1,
+      'license_token': await _licenseFor(owner),
+      'server_time': DateTime.now().toUtc().toIso8601String(),
+      'account': _publicAccountJson(account),
+      'permission': _permissionJson(account),
+      'stores': await _ownerStores(ownerId),
+      'device': {'id': deviceId, 'store_ids': storeIds},
+      'token': token,
+    });
+  }
+
+  Future<Response> _employeeChangePassword(Request request) async {
+    if (!_passwordRateLimit.allow(_clientIp(request))) {
+      return _error(
+        429,
+        'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.',
+        code: 'rate_limited',
+      );
+    }
+    final body = await _body(request);
+    final ownerId = '${body['owner_id'] ?? ''}'.trim();
+    final username = '${body['username'] ?? ''}'.trim().toLowerCase();
+    final oldPassword = '${body['old_password'] ?? ''}';
+    final newPassword = '${body['new_password'] ?? ''}';
+    if (ownerId.isEmpty || username.isEmpty || oldPassword.isEmpty) {
+      return _error(400, 'Data akun tidak lengkap.', code: 'missing_fields');
+    }
+    if (newPassword.length < 8) {
+      return _error(
+        400,
+        'Password baru minimal 8 karakter.',
+        code: 'weak_password',
+      );
+    }
+    final account = await db.one(
+      'SELECT * FROM accounts WHERE owner_id = @owner AND username = @username',
+      {'owner': ownerId, 'username': username},
+    );
+    if (account == null ||
+        account['aktif'] != true ||
+        !await _verifyPassword(oldPassword, account)) {
+      return _error(401, 'Password lama salah.', code: 'invalid_credentials');
+    }
+    final saltBytes =
+        List<int>.generate(16, (_) => Random.secure().nextInt(256));
+    final salt = base64Url.encode(saltBytes);
+    final hash = await _derivePassword(newPassword, salt, 600000);
+    await db.execute(
+      '''
+UPDATE accounts SET password_hash = @hash, password_salt = @salt,
+  password_iterations = 600000, must_change_password = false,
+  password_updated_at = now(), updated_at = now()
+WHERE owner_id = @owner AND sync_id = @sync
+''',
+      {
+        'hash': hash,
+        'salt': salt,
+        'owner': ownerId,
+        'sync': '${account['sync_id']}',
+      },
+    );
+    return _json(200, {'ok': true});
+  }
 
   Future<Response> _permissionsMe(Request request) async {
     final device = await _deviceAuth(request);
@@ -758,28 +1046,32 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
       return _error(400, 'sync_id dan username wajib.');
     }
     final payload = jsonMap(body['permission_payload']);
-    final signature = '${body['permission_signature'] ?? ''}';
-    final signer = '${body['permission_signer_public_key'] ?? ''}';
+    var signature = '${body['permission_signature'] ?? ''}';
+    var signer = '${body['permission_signer_public_key'] ?? ''}';
     final ownerPublic = owner['owner_public_key'] as String? ?? '';
-    if (payload == null || signature.isEmpty) {
-      return _error(400, 'Izin akun harus membawa payload dan tanda tangan.');
+    if (payload == null) {
+      return _error(400, 'Izin akun harus membawa payload.');
     }
-    if (signer.isEmpty || signer != ownerPublic) {
-      return _error(
-        409,
-        'Penandatangan izin bukan kunci owner yang terdaftar. '
-        'Owner app harus menandatangani dengan kunci identitas owner.',
-        code: 'owner_signer_required',
+    if (signer.isNotEmpty && signer == ownerPublic) {
+      if (signature.isEmpty) {
+        return _error(400, 'Tanda tangan izin owner tidak ada.');
+      }
+      final valid = await license.verifyPayload(
+        publicKey: ownerPublic,
+        payload: canonicalJson(payload),
+        signature: signature,
       );
+      if (!valid) return _error(400, 'Tanda tangan izin tidak valid.');
+    } else {
+      // Perangkat ringkasan tidak memegang kunci privat owner. Permintaan
+      // sudah lolos token owner, jadi layanan menandatangani izin dengan
+      // kunci lisensi yang juga dipercaya perangkat.
+      final signed = await license.signSummary(payload);
+      signer = '${signed['public_key']}';
+      signature = '${signed['signature']}';
     }
-    final valid = await license.verifyPayload(
-      publicKey: ownerPublic,
-      payload: canonicalJson(payload),
-      signature: signature,
-    );
-    if (!valid) return _error(400, 'Tanda tangan izin tidak valid.');
     final existing = await db.one(
-      'SELECT password_hash, password_salt, password_iterations FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+      'SELECT password_hash, password_salt, password_iterations, must_change_password FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': syncId},
     );
     final hash = '${body['password_hash'] ?? ''}';
@@ -799,6 +1091,9 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
           (existing?['password_iterations'] as num?)?.toInt() ??
           600000,
       'aktif': body['aktif'] != false,
+      'must_change': hash.isEmpty
+          ? (existing?['must_change_password'] == true)
+          : true,
       'version': (body['permission_version'] as num?)?.toInt() ?? 1,
       'payload': jsonEncode(payload),
       'signature': signature,
@@ -808,11 +1103,11 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
       '''
 INSERT INTO accounts (owner_id, sync_id, username, nama, role_base,
   extra_permissions, store_ids, password_hash, password_salt,
-  password_iterations, aktif, permission_version, permission_payload,
-  permission_signature, permission_signer_public_key)
+  password_iterations, aktif, must_change_password, permission_version,
+  permission_payload, permission_signature, permission_signer_public_key)
 VALUES (@owner, @sync, @username, @nama, @role, CAST(@permissions AS jsonb),
-  CAST(@stores AS jsonb), @hash, @salt, @iterations, @aktif, @version,
-  CAST(@payload AS jsonb), @signature, @signer)
+  CAST(@stores AS jsonb), @hash, @salt, @iterations, @aktif, @must_change,
+  @version, CAST(@payload AS jsonb), @signature, @signer)
 ON CONFLICT (owner_id, sync_id) DO UPDATE SET
   username = EXCLUDED.username, nama = EXCLUDED.nama,
   role_base = EXCLUDED.role_base,
@@ -821,7 +1116,9 @@ ON CONFLICT (owner_id, sync_id) DO UPDATE SET
   password_hash = EXCLUDED.password_hash,
   password_salt = EXCLUDED.password_salt,
   password_iterations = EXCLUDED.password_iterations,
-  aktif = EXCLUDED.aktif, permission_version = EXCLUDED.permission_version,
+  aktif = EXCLUDED.aktif,
+  must_change_password = EXCLUDED.must_change_password,
+  permission_version = EXCLUDED.permission_version,
   permission_payload = EXCLUDED.permission_payload,
   permission_signature = EXCLUDED.permission_signature,
   permission_signer_public_key = EXCLUDED.permission_signer_public_key,
@@ -947,20 +1244,20 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     final ownerId = '${body['owner_id'] ?? ''}';
     if (ownerId.isEmpty) return _error(400, 'owner_id wajib.');
     final days = (body['days'] as num?)?.toInt() ?? 30;
-    final devices = (body['device_limit'] as num?)?.toInt() ?? 5;
+    final stores = (body['store_limit'] as num?)?.toInt() ?? 1;
     final publicKey = '${body['owner_public_key'] ?? ''}';
     final end = DateTime.now().toUtc().add(Duration(days: days));
     await db.execute(
       '''
 INSERT INTO owners (owner_id, owner_public_key, license_plan, license_period_end,
-  license_device_limit)
-VALUES (@id, @public, 'premium', @end, @devices)
+  license_store_limit)
+VALUES (@id, @public, 'premium', @end, @stores)
 ON CONFLICT (owner_id) DO UPDATE SET
   owner_public_key = CASE WHEN EXCLUDED.owner_public_key = '' THEN owners.owner_public_key ELSE EXCLUDED.owner_public_key END,
   license_plan = 'premium', license_period_end = EXCLUDED.license_period_end,
-  license_device_limit = EXCLUDED.license_device_limit
+  license_store_limit = EXCLUDED.license_store_limit
 ''',
-      {'id': ownerId, 'public': publicKey, 'end': end, 'devices': devices},
+      {'id': ownerId, 'public': publicKey, 'end': end, 'stores': stores},
     );
     final owner = (await _owner(ownerId))!;
     final enroll = _token();
@@ -1083,15 +1380,44 @@ ON CONFLICT (owner_id) DO UPDATE SET
         'period_end': _iso(end),
       });
     }
+    await db.execute(
+      'UPDATE owner_identities SET last_login_at = now() WHERE email = @email',
+      {'email': identity.email},
+    );
+    final licenseToken = await _licenseFor(owner);
+    final stores = await _ownerStores(owner['owner_id'] as String);
+    final summary = await license.signSummary({
+      'v': 1,
+      'owner_id': owner['owner_id'],
+      'plan': plan,
+      'period_end': _iso(end),
+      'store_limit': (owner['license_store_limit'] as num?)?.toInt() ?? 1,
+      'license_token': licenseToken,
+      'owner_public_key': owner['owner_public_key'] ?? '',
+      'stores': stores,
+      'generated_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    final enroll = _token();
+    await db.execute(
+      'INSERT INTO enroll_tokens (token, owner_id, expires_at) VALUES (@token, @owner, @expires)',
+      {
+        'token': enroll,
+        'owner': owner['owner_id'],
+        'expires': DateTime.now().toUtc().add(const Duration(days: 30)),
+      },
+    );
     return _json(200, {
       'owner_id': owner['owner_id'],
       'email': identity.email,
+      'enroll_token': enroll,
       'plan': plan,
       'period_end': _iso(end),
-      'device_limit': (owner['license_device_limit'] as num?)?.toInt() ?? 5,
-      'license_token': await _licenseFor(owner),
+      'store_limit': (owner['license_store_limit'] as num?)?.toInt() ?? 1,
+      'license_token': licenseToken,
       'license_public_key': await license.publicKey(),
       'owner_public_key': owner['owner_public_key'] ?? '',
+      'stores': stores,
+      'summary': summary,
     });
   }
 

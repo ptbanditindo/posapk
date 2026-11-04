@@ -25,10 +25,6 @@ class _PremiumScreenState extends State<PremiumScreen> {
   Map<String, Object?>? _syncStatus;
   bool _busy = false;
 
-  final _relayUrl = TextEditingController();
-  final _enrollToken = TextEditingController();
-  final _storeId = TextEditingController(text: 'utama');
-
   @override
   void initState() {
     super.initState();
@@ -39,9 +35,6 @@ class _PremiumScreenState extends State<PremiumScreen> {
   @override
   void dispose() {
     AppState.instance.removeListener(_load);
-    _relayUrl.dispose();
-    _enrollToken.dispose();
-    _storeId.dispose();
     super.dispose();
   }
 
@@ -51,9 +44,6 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final accounts = await AccountService.instance.listAccounts();
     final devices = await DeviceService.instance.listDevices();
     final sync = await SyncService.instance.status();
-    final url = await SyncService.instance.relayUrl();
-    final enroll = await SyncService.instance.enrollToken();
-    final store = await SyncService.instance.storeId();
     final email = await AppDatabase.instance.getSetting('license.email');
     if (!mounted) return;
     setState(() {
@@ -63,9 +53,6 @@ class _PremiumScreenState extends State<PremiumScreen> {
       _accounts = accounts;
       _devices = devices;
       _syncStatus = sync;
-      _relayUrl.text = url ?? '';
-      _enrollToken.text = enroll ?? '';
-      _storeId.text = store;
     });
   }
 
@@ -138,9 +125,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
   Future<void> _googleLogin() async {
     setState(() => _busy = true);
     try {
-      final result = await GoogleAuthService.instance.activate(
-        relayUrl: _relayUrl.text,
-      );
+      final result = await GoogleAuthService.instance.activate();
       await _load();
       if (!mounted) return;
       showSnack(
@@ -284,17 +269,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
     }
   }
 
-  Future<void> _saveSyncConfig() async {
-    await SyncService.instance.configure(
-      relayUrl: _relayUrl.text,
-      enrollToken: _enrollToken.text,
-      storeId: _storeId.text,
-    );
-    await _load();
-    if (mounted) showSnack(context, 'Konfigurasi relay disimpan.');
-  }
-
-  Future<void> _registerRelayDevice() async {
+  Future<void> _connectDevice() async {
     setState(() => _busy = true);
     try {
       final result = await SyncService.instance.registerRelayDevice(
@@ -305,13 +280,15 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (result['key_pending'] == true) {
         showSnack(
           context,
-          'Relay terdaftar. Minta owner membagikan kunci toko.',
+          'Perangkat tersambung. Tunggu pemilik membagikan akses toko.',
         );
       } else {
-        showSnack(context, 'Relay: ${result['relay_device_id']}');
+        showSnack(context, 'Perangkat tersambung.');
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal daftar relay: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Gagal menyambungkan perangkat: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -506,10 +483,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 child: Text(
                   expired
                       ? 'Lisensi kedaluwarsa. Data dan kasir offline tetap '
-                          'bisa dipakai; sinkronisasi dan multi-perangkat '
+                          'bisa dipakai; sinkronisasi dan multi-toko '
                           'dinonaktifkan sampai lisensi diperbarui.'
                       : 'Belum ada lisensi server yang valid. Kasir offline '
-                          'tetap gratis; sinkronisasi, multi-perangkat, dan '
+                          'tetap gratis; sinkronisasi, multi-toko, dan '
                           'akun karyawan memerlukan lisensi.',
                 ),
               ),
@@ -529,7 +506,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
               _line('ID owner', '${_status?['owner_id'] ?? '-'}'),
               _line('Paket', '${_status?['plan'] ?? 'free'}'),
               _line('Berlaku sampai', '${_status?['period_end'] ?? '-'}'),
-              _line('Batas perangkat', '${_status?['device_limit'] ?? 1}'),
+              _line('Jumlah toko', '${_status?['store_limit'] ?? 1} toko'),
               if ((_licenseEmail ?? '').isNotEmpty)
                 _line('Akun Google', _licenseEmail!),
               if (!premium) ...[
@@ -582,7 +559,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   padding: EdgeInsets.only(top: 8),
                   child: Text(
                     'Lisensi hanya diterbitkan server. Token berisi owner, '
-                    'masa berlaku, dan batas perangkat.',
+                    'masa berlaku, dan jumlah toko.',
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
@@ -684,42 +661,18 @@ class _PremiumScreenState extends State<PremiumScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Sinkronisasi relay',
+          title: 'Sinkronisasi',
           subtitle:
-              'Perangkat mengirim delta terenkripsi. Server tidak menerapkan data bisnis.',
+              'Data toko dikirim terenkripsi antar perangkat milik akun Anda.',
           child: Column(
             children: [
-              TextField(
-                controller: _relayUrl,
-                decoration: const InputDecoration(
-                  labelText: 'Alamat relay',
-                  hintText: 'https://relay.contoh.com',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _enrollToken,
-                obscureText: true,
-                decoration:
-                    const InputDecoration(labelText: 'Token pendaftaran relay'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _storeId,
-                decoration: const InputDecoration(labelText: 'ID toko relay'),
-              ),
-              const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  OutlinedButton(
-                    onPressed: _saveSyncConfig,
-                    child: const Text('Simpan konfigurasi'),
-                  ),
                   FilledButton.tonal(
-                    onPressed: premium ? _registerRelayDevice : null,
-                    child: const Text('Daftarkan ke relay'),
+                    onPressed: premium ? _connectDevice : null,
+                    child: const Text('Sambungkan perangkat ini'),
                   ),
                   FilledButton(
                     onPressed: premium ? _syncNow : null,
@@ -727,7 +680,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   ),
                   OutlinedButton(
                     onPressed: premium ? _shareStoreKey : null,
-                    child: const Text('Bagikan kunci'),
+                    child: const Text('Bagikan akses toko'),
                   ),
                   OutlinedButton(
                     onPressed: premium ? _uploadSnapshot : null,
@@ -740,11 +693,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 ],
               ),
               const SizedBox(height: 10),
-              _line('Antrean pending', '${_syncStatus?['pending'] ?? 0}'),
-              _line('Kursor', '${_syncStatus?['cursor'] ?? 0}'),
+              _line('Menunggu dikirim', '${_syncStatus?['pending'] ?? 0}'),
               _line(
-                'Perangkat relay',
-                '${_syncStatus?['relay_device_id'] ?? '-'}',
+                'Terakhir diterima',
+                '${_syncStatus?['cursor'] ?? 0}',
               ),
             ],
           ),

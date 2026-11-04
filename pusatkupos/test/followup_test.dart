@@ -428,6 +428,27 @@ void main() {
     expect(await service.listItems(now: now), isEmpty);
   });
 
+  test('sisa kuota ikut saat database lama dipulihkan', () async {
+    await addNote(
+      day: now.subtract(const Duration(days: 20)),
+      bayar: 50000,
+    );
+    await service.syncItems(now: now);
+    final item = (await service.listItems(now: now)).single;
+    await service.followUp(item.id, now: now);
+    expect((await service.quotaStatus()).used, 1);
+
+    final copyPath = p.join(dir.path, 'restored.db');
+    await db.close();
+    await File(dbPath).copy(copyPath);
+    await db.initForTest(copyPath);
+    final quota = await service.quotaStatus();
+    expect(quota.used, 1);
+    expect(quota.remaining, 19);
+
+    await db.initForTest(dbPath);
+  });
+
   test('filter hari ini dan terlambat memakai tanggal jatuh tempo', () async {
     await addNote(day: now.subtract(const Duration(days: 40)));
     await service.syncItems(now: now);

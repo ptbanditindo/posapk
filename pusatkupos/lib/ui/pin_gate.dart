@@ -2,17 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../auth/operator.dart';
-import '../data/account_service.dart';
-import '../data/app_database.dart';
-import '../data/pairing_service.dart';
 import '../data/pin_service.dart';
-import '../data/secure_store.dart';
+import '../data/session_service.dart';
 import '../state/app_state.dart';
-import '../sync/sync_service.dart';
+import 'entry_gate.dart';
 import 'home_shell.dart';
+import 'owner_viewer.dart';
 
 class PinGate extends StatefulWidget {
-  const PinGate({super.key});
+  const PinGate({
+    super.key,
+    required this.profile,
+    this.unlockOnly = false,
+  });
+
+  final SessionProfile profile;
+
+  /// Bila true, PIN hanya membuka kunci layar dan kembali ke halaman semula.
+  final bool unlockOnly;
 
   @override
   State<PinGate> createState() => _PinGateState();
@@ -20,55 +27,33 @@ class PinGate extends StatefulWidget {
 
 class _PinGateState extends State<PinGate> {
   final _pin = TextEditingController();
-  final _confirm = TextEditingController();
-  final _username = TextEditingController();
-  final _password = TextEditingController();
-  final _employeePin = TextEditingController();
   String? _error;
   bool _busy = false;
-  bool _employeeMode = false;
-  String? _deviceRole;
 
-  bool get _setup => !AppState.instance.pinConfigured;
-  bool get _employeeDevice => _deviceRole == 'employee';
+  bool get _isEmployee => !widget.profile.isOwner;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadRole();
-  }
-
-  Future<void> _loadRole() async {
-    final role = await AppDatabase.instance.getSetting('app.role');
-    if (!mounted) return;
-    setState(() {
-      _deviceRole = role;
-      if (role == 'employee') _employeeMode = true;
-    });
+  String get _roleLabel {
+    if (widget.profile.isViewer) return 'Ringkasan laporan toko';
+    if (widget.profile.isOwner) {
+      return widget.profile.mode == 'premium' ? 'Pemilik premium' : 'Pemilik';
+    }
+    return switch (widget.profile.role) {
+      'KASIR' => 'Kasir',
+      'MEKANIK' => 'Mekanik',
+      'KEDUANYA' => 'Kasir & mekanik',
+      _ => 'Karyawan',
+    };
   }
 
   @override
   void dispose() {
     _pin.dispose();
-    _confirm.dispose();
-    _username.dispose();
-    _password.dispose();
-    _employeePin.dispose();
     super.dispose();
   }
 
-  Future<void> _ownerSubmit() async {
+  Future<void> _submit() async {
     final pin = _pin.text.trim();
-    if (_setup) {
-      if (!RegExp(r'^\d{6,}$').hasMatch(pin)) {
-        setState(() => _error = 'PIN baru minimal 6 angka.');
-        return;
-      }
-      if (pin != _confirm.text.trim()) {
-        setState(() => _error = 'PIN yang diulang tidak sama.');
-        return;
-      }
-    } else if (pin.isEmpty) {
+    if (pin.isEmpty) {
       setState(() => _error = 'Masukkan PIN.');
       return;
     }
@@ -77,37 +62,51 @@ class _PinGateState extends State<PinGate> {
       _error = null;
     });
     try {
-      var weakPin = false;
-      if (_setup) {
-        await PinService.instance.setup(pin);
-        await AppState.instance.refreshPinState();
-      } else {
-        final result = await PinService.instance.verifyDetailed(pin);
-        if (result == PinVerification.locked) {
-          setState(() => _error = 'Terlalu banyak percobaan. Coba lagi nanti.');
-          return;
-        }
-        if (result == PinVerification.wrong) {
-          setState(() => _error = 'PIN salah.');
-          return;
-        }
-        weakPin = result == PinVerification.weakLegacyPin;
+      final result = await PinService.instance.verifyDetailed(pin);
+      if (result == PinVerification.locked) {
+        setState(() => _error = 'Terlalu banyak percobaan. Coba lagi nanti.');
+        return;
       }
-      await AppDatabase.instance.setSetting('app.role', 'owner');
-      AppState.instance.setOperator(Operator.owner);
+      if (result == PinVerification.wrong) {
+        setState(() => _error = 'PIN salah.');
+        return;
+      }
+      final profile = widget.profile;
+      AppState.instance.setOperator(
+        Operator(
+          kind: profile.isOwner ? 'owner' : 'employee',
+          role: profile.isOwner ? 'owner' : profile.role,
+          label: profile.nama,
+          employeeSyncId: profile.employeeSyncId,
+          username: profile.username,
+          permissions: profile.permissions.toSet(),
+          storeIds: profile.storeIds,
+          mustChangePassword: profile.mustChangePassword,
+        ),
+      );
+      await AppState.instance.load();
       if (!mounted) return;
-      if (weakPin) {
+      if (result == PinVerification.weakLegacyPin) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'PIN Anda masih 4 digit. Segera ganti ke minimal 6 digit di Pengaturan.',
+              'PIN Anda masih 4 digit. Segera ganti ke minimal 6 digit di '
+              'Pengaturan.',
             ),
           ),
         );
       }
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeShell()),
-      );
+      if (widget.unlockOnly) {
+        Navigator.of(context).pop();
+      } else {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => profile.isViewer
+                ? const OwnerViewerShell()
+                : const HomeShell(),
+          ),
+        );
+      }
     } catch (error) {
       setState(() => _error = 'Gagal membuka aplikasi: $error');
     } finally {
@@ -115,107 +114,14 @@ class _PinGateState extends State<PinGate> {
     }
   }
 
-  Future<({String ownerId, String token})?> _pairedDevice() async {
-    final rows = await AppDatabase.instance.db.query(
-      'owner_identity',
-      columns: ['owner_id'],
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    final ownerId = rows.first['owner_id'] as String? ?? '';
-    final token =
-        await SecureStore.instance.read('device.current_token') ?? '';
-    if (ownerId.isEmpty || token.isEmpty) return null;
-    return (ownerId: ownerId, token: token);
-  }
-
-  Future<void> _employeeSubmit() async {
-    final username = _username.text.trim();
-    final password = _password.text;
-    final pin = _employeePin.text.trim();
-    final paired = _employeeDevice ? await _pairedDevice() : null;
-    if (username.isEmpty ||
-        password.isEmpty ||
-        (paired == null && pin.length != 6)) {
-      setState(
-        () => _error = paired == null
-            ? 'Isi username, password, dan PIN 6 angka.'
-            : 'Isi username dan password.',
-      );
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final operator = paired == null
-          ? await AccountService.instance.loginHub(
-              username: username,
-              password: password,
-              pin: pin,
-            )
-          : await AccountService.instance.loginDevice(
-              ownerId: paired.ownerId,
-              username: username,
-              password: password,
-              token: paired.token,
-            );
-      if (operator == null) {
-        setState(() => _error = 'Username, password, atau PIN salah.');
-        return;
-      }
-      if (operator.mustChangePassword) {
-        final changed = await _forcePasswordChange(operator);
-        if (!changed) {
-          setState(() => _error = 'Password awal harus diganti.');
-          return;
-        }
-      }
-      AppState.instance.setOperator(operator);
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeShell()),
-      );
-    } catch (error) {
-      setState(() => _error = '$error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<bool> _forcePasswordChange(Operator operator) async {
-    final oldPassword = TextEditingController(text: _password.text);
-    final newPassword = TextEditingController();
-    final confirm = TextEditingController();
-    final result = await showDialog<bool>(
+  Future<void> _switchAccount() async {
+    final confirmed = await showDialog<bool>(
       context: context,
-      barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('Ganti password awal'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: oldPassword,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Password lama'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: newPassword,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Password baru (minimal 8)',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: confirm,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Ulangi password'),
-            ),
-          ],
+        title: const Text('Keluar dari akun ini?'),
+        content: const Text(
+          'PIN dan sesi di perangkat ini akan dihapus. '
+          'Data transaksi tetap tersimpan.',
         ),
         actions: [
           TextButton(
@@ -223,168 +129,21 @@ class _PinGateState extends State<PinGate> {
             child: const Text('Batal'),
           ),
           FilledButton(
-            onPressed: () async {
-              final next = newPassword.text;
-              if (next.length < 8 || next != confirm.text) return;
-              try {
-                await AccountService.instance.changePassword(
-                  operator.employeeId!,
-                  oldPassword: oldPassword.text,
-                  newPassword: next,
-                );
-                if (context.mounted) Navigator.pop(context, true);
-              } catch (error) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('$error')),
-                  );
-                }
-              }
-            },
-            child: const Text('Simpan'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Keluar'),
           ),
         ],
       ),
     );
-    oldPassword.dispose();
-    newPassword.dispose();
-    confirm.dispose();
-    return result ?? false;
-  }
-
-  Future<void> _openPairing() async {
-    final savedUrl = await SyncService.instance.relayUrl();
-    if (!mounted) return;
-    final relay = TextEditingController(text: savedUrl ?? '');
-    final code = TextEditingController();
-    final name = TextEditingController(text: 'HP Karyawan');
-    final result = await showDialog<Map<String, Object?>>(
-      context: context,
-      builder: (context) {
-        var saving = false;
-        String? error;
-        return StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('Hubungkan perangkat karyawan'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: relay,
-                    decoration: const InputDecoration(
-                      labelText: 'Alamat relay',
-                      hintText: 'https://relay.contoh.com',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: code,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(
-                      labelText: 'Kode undangan',
-                      hintText: 'Dari aplikasi Owner',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: name,
-                    decoration: const InputDecoration(
-                      labelText: 'Nama perangkat',
-                    ),
-                  ),
-                  if (error != null) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  Text(
-                    'Perangkat ini akan menjadi perangkat karyawan. '
-                    'Minta password awal kepada owner.',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: saving ? null : () => Navigator.pop(context),
-                child: const Text('Batal'),
-              ),
-              FilledButton(
-                onPressed: saving
-                    ? null
-                    : () async {
-                        setDialogState(() {
-                          saving = true;
-                          error = null;
-                        });
-                        try {
-                          final paired = await PairingService.instance.claim(
-                            relayUrl: relay.text,
-                            code: code.text,
-                            deviceName: name.text,
-                          );
-                          if (context.mounted) Navigator.pop(context, paired);
-                        } catch (failure) {
-                          setDialogState(() {
-                            saving = false;
-                            error = '$failure';
-                          });
-                        }
-                      },
-                child: saving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Hubungkan'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-    relay.dispose();
-    code.dispose();
-    name.dispose();
-    if (result == null || !mounted) return;
-    setState(() {
-      _deviceRole = 'employee';
-      _employeeMode = true;
-      _error = null;
-    });
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Perangkat terhubung'),
-        content: Text(
-          'Akun: ${result['username']}\n'
-          'Toko: ${result['store_id']}\n\n'
-          'Masuk dengan password awal dari owner, lalu ganti password. '
-          'Minta perangkat toko mengirim kunci agar sinkronisasi berjalan.',
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Mengerti'),
-          ),
-        ],
-      ),
-    );
+    if (confirmed != true || !mounted) return;
+    await signOutToOnboarding(context);
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final showEmployee = _employeeDevice || (!_setup && _employeeMode);
-    return Scaffold(
+    final profile = widget.profile;
+    final scaffold = Scaffold(
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -417,7 +176,11 @@ class _PinGateState extends State<PinGate> {
                           borderRadius: BorderRadius.circular(18),
                         ),
                         child: Icon(
-                          Icons.storefront_outlined,
+                          widget.profile.isViewer
+                              ? Icons.insights_outlined
+                              : _isEmployee
+                                  ? Icons.badge_outlined
+                                  : Icons.storefront_outlined,
                           color: scheme.onPrimary,
                           size: 30,
                         ),
@@ -430,19 +193,35 @@ class _PinGateState extends State<PinGate> {
                             .headlineSmall
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 4),
                       Text(
-                        _employeeDevice
-                            ? 'Masuk dengan akun karyawan.'
-                            : _setup
-                                ? 'Buat PIN pemilik atau hubungkan perangkat karyawan.'
-                                : showEmployee
-                                    ? 'Masuk dengan akun karyawan.'
-                                    : 'Masukkan PIN pemilik untuk melanjutkan.',
-                        style: Theme.of(context).textTheme.bodyMedium,
+                        profile.nama.isEmpty ? _roleLabel : profile.nama,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      Text(
+                        _isEmployee
+                            ? '$_roleLabel · ${profile.storeIds.length} toko'
+                            : _roleLabel,
+                        style: Theme.of(context).textTheme.bodySmall,
                       ),
                       const SizedBox(height: 20),
-                      if (showEmployee) ..._employeeFields() else ..._ownerFields(),
+                      TextField(
+                        controller: _pin,
+                        autofocus: true,
+                        obscureText: true,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        maxLength: 12,
+                        decoration: const InputDecoration(
+                          labelText: 'PIN',
+                          counterText: '',
+                          prefixIcon: Icon(Icons.lock_outline),
+                        ),
+                        onSubmitted: (_) => _submit(),
+                      ),
                       if (_error != null) ...[
                         const SizedBox(height: 12),
                         Text(
@@ -452,11 +231,7 @@ class _PinGateState extends State<PinGate> {
                       ],
                       const SizedBox(height: 18),
                       FilledButton.icon(
-                        onPressed: _busy
-                            ? null
-                            : showEmployee
-                                ? _employeeSubmit
-                                : _ownerSubmit,
+                        onPressed: _busy ? null : _submit,
                         icon: _busy
                             ? const SizedBox(
                                 width: 18,
@@ -464,39 +239,14 @@ class _PinGateState extends State<PinGate> {
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Icon(Icons.arrow_forward),
-                        label: Text(
-                          showEmployee
-                              ? 'Masuk karyawan'
-                              : _setup
-                                  ? 'Simpan PIN'
-                                  : 'Buka aplikasi',
-                        ),
+                        label: const Text('Buka aplikasi'),
                       ),
-                      if (!_setup && !_employeeDevice) ...[
-                        const SizedBox(height: 8),
-                        TextButton(
-                          onPressed: _busy
-                              ? null
-                              : () => setState(() {
-                                    _employeeMode = !_employeeMode;
-                                    _error = null;
-                                  }),
-                          child: Text(
-                            showEmployee
-                                ? 'Kembali ke pemilik'
-                                : 'Masuk sebagai karyawan',
-                          ),
-                        ),
-                      ],
-                      if (_setup && !_employeeDevice) ...[
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: _busy ? null : _openPairing,
-                          icon: const Icon(Icons.link_outlined),
-                          label: const Text('Hubungkan perangkat karyawan'),
-                        ),
-                      ],
                       const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: _busy ? null : _switchAccount,
+                        child: const Text('Bukan akun ini?'),
+                      ),
+                      const SizedBox(height: 4),
                       Text(
                         'Data tersimpan lokal di perangkat ini.',
                         textAlign: TextAlign.center,
@@ -511,78 +261,17 @@ class _PinGateState extends State<PinGate> {
         ),
       ),
     );
+    if (!widget.unlockOnly) return scaffold;
+    return PopScope(canPop: false, child: scaffold);
   }
+}
 
-  List<Widget> _ownerFields() {
-    return [
-      TextField(
-        controller: _pin,
-        obscureText: true,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        maxLength: 12,
-        autofocus: true,
-        decoration: const InputDecoration(
-          labelText: 'PIN',
-          counterText: '',
-          prefixIcon: Icon(Icons.lock_outline),
-        ),
-        onSubmitted: (_) => _ownerSubmit(),
-      ),
-      if (_setup) ...[
-        const SizedBox(height: 12),
-        TextField(
-          controller: _confirm,
-          obscureText: true,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          maxLength: 12,
-          decoration: const InputDecoration(
-            labelText: 'Ulangi PIN',
-            counterText: '',
-            prefixIcon: Icon(Icons.lock_reset_outlined),
-          ),
-          onSubmitted: (_) => _ownerSubmit(),
-        ),
-      ],
-    ];
-  }
-
-  List<Widget> _employeeFields() {
-    return [
-      TextField(
-        controller: _username,
-        autofocus: true,
-        decoration: const InputDecoration(
-          labelText: 'Nama pengguna',
-          prefixIcon: Icon(Icons.person_outline),
-        ),
-      ),
-      const SizedBox(height: 12),
-      TextField(
-        controller: _password,
-        obscureText: true,
-        decoration: const InputDecoration(
-          labelText: 'Password',
-          prefixIcon: Icon(Icons.password_outlined),
-        ),
-      ),
-      const SizedBox(height: 12),
-      if (!_employeeDevice) ...[
-        TextField(
-          controller: _employeePin,
-          obscureText: true,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          maxLength: 6,
-          decoration: const InputDecoration(
-            labelText: 'PIN 6 angka',
-            counterText: '',
-            prefixIcon: Icon(Icons.pin_outlined),
-          ),
-          onSubmitted: (_) => _employeeSubmit(),
-        ),
-      ],
-    ];
-  }
+Future<void> lockNow(BuildContext context) async {
+  final profile = await SessionService.instance.load();
+  if (profile == null || !context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => PinGate(profile: profile, unlockOnly: true),
+    ),
+  );
 }

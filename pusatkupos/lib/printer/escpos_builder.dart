@@ -3,9 +3,10 @@ import 'dart:convert';
 /// Penyusun perintah ESC/POS. Teks dikirim sebagai Latin-1 sehingga
 /// karakter di luar jangkauan printer diganti agar tidak memotong struk.
 class EscPosBuilder {
-  EscPosBuilder({this.width = 32});
+  EscPosBuilder({this.width = 32, this.encoding = 'LATIN1'});
 
   final int width;
+  final String encoding;
   final List<int> _bytes = <int>[];
 
   static const _esc = 0x1b;
@@ -48,11 +49,12 @@ class EscPosBuilder {
   void cut() => _bytes.addAll([_gs, 0x56, 0x42, 0x00]);
 
   List<int> _encode(String value) {
+    final asciiOnly = encoding.toUpperCase() == 'ASCII';
     final buffer = StringBuffer();
     for (final rune in value.runes) {
       if (rune == 0x09 || (rune >= 0x20 && rune <= 0x7e)) {
         buffer.writeCharCode(rune);
-      } else if (rune >= 0xa0 && rune <= 0xff) {
+      } else if (!asciiOnly && rune >= 0xa0 && rune <= 0xff) {
         buffer.writeCharCode(rune);
       } else {
         buffer.write('?');
