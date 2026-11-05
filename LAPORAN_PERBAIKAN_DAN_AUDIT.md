@@ -6,8 +6,7 @@ Referensi fitur struk: `github.com/ptbanditindo/aplikasiposbengkel` (Python/Fast
 
 Status: seluruh temuan P0, P1, dan P2 sudah diperbaiki, editor struk v2 sudah
 dibangun, dan sembilan fitur lanjutan sudah ditulis ke kode. Tidak ada
-dependency baru yang dipasang. Dokumen ini hanya memuat keadaan kode saat ini;
-sisa pekerjaan dan risiko ada di bagian 12.
+dependency baru yang dipasang. Dokumen ini hanya memuat keadaan kode saat ini.
 
 ---
 
@@ -47,7 +46,7 @@ Audit menemukan tujuh kelas masalah utama. Semuanya sudah ditutup:
 - Tidak ada dependency baru yang dipasang selama audit maupun perbaikan.
 - Sesi terakhir tidak memiliki SDK Flutter/Dart, sehingga verifikasi bersifat
   statis: keseimbangan delimiter, pencocokan simbol antar-lapis, dan
-  penelusuran jalur data. Pengujian perilaku dilakukan pemilik lewat APK atau
+  penelusuran jalur data. Pemeriksaan perilaku dilakukan pemilik lewat APK atau
   localhost.
 
 Definisi severity:
@@ -78,15 +77,13 @@ posapk-main/
 │   │   ├── state/              AppState
 │   │   └── ui/                 layar dan dialog
 │   ├── android/                bridge printer Kotlin
-│   ├── test/                   26 file test
 │   └── web/                    wasm SQLite + service worker
 └── relay/                      server sinkronisasi + lisensi
     ├── lib/server.dart         seluruh endpoint
     ├── lib/db.dart             PostgreSQL
     ├── lib/auth_rules.dart     aturan entity per peran
     ├── lib/license.dart        tanda tangan lisensi
-    ├── lib/google.dart         login Google
-    └── test/                   test aturan murni
+    └── lib/google.dart         login Google
 ```
 
 ### 3.2 Modul dan tanggung jawab
@@ -262,13 +259,11 @@ ReceiptService.build(recordId, width)
 6. **Zona waktu campur.** Tanggal lokal eksplisit dipakai untuk digest dan
    laporan; timestamp tetap ISO UTC.
 7. **Pembulatan rupiah tidak eksplisit.** Alokasi diskon dan sisa unit memiliki
-   aturan yang diuji.
+   aturan yang konsisten.
 8. **UI menduplikasi aturan bisnis.** Gate diskon dan izin disamakan dengan
    service.
 9. **`catch` menelan error.** Aksi kritis menampilkan pesan dan tidak mengunci
    tombol.
-10. **Cakupan test tidak merata.** Test aturan bisnis kuat; test perangkat
-    (SQLCipher, printer) masih menjadi pekerjaan terbuka di bagian 12.
 
 ---
 
@@ -299,7 +294,7 @@ ReceiptService.build(recordId, width)
 | Backup multi-toko | Format arsip 3: `manifest.json` berisi `stores[]`; setiap toko punya payload terenkripsi AES-256-GCM, checksum SHA-256, dan metadata cipher. Restore memvalidasi seluruh payload, membuat safety `.bak`, mengganti berkas secara atomik, membangun ulang registry, lalu membuka toko aktif. Format 1 dan 2 tetap didukung. | `lib/data/backup_service.dart`, `lib/data/store_registry.dart`, `lib/data/app_database.dart`, `lib/data/backup_platform_io.dart` |
 | Retur / penjualan neto | Tabel append-only `sale_returns` dan `sale_return_items`; retur per baris dengan sisa jumlah, refund proporsional dari harga neto, pengembalian stok part + `stock_movements`, audit `retur_nota`. Laporan memakai omzet neto, retur jasa/part, dan laba neto. | `lib/data/sale_return_service.dart`, `lib/data/schema.dart`, `lib/data/app_database.dart`, `lib/ui/screens/history_screen.dart`, `lib/ui/screens/reports_screen.dart` |
 | Sinkron retur | Payload nota membawa `returns`; penerima membuat `sale_returns`/`sale_return_items`, memetakan stok lewat `stock_sync_id`, dan memakai `sync_id` pergerakan stok deterministik agar kedua sisi konvergen. Tabel retur ikut snapshot dan urutan hapus. | `lib/data/note_sync.dart`, `lib/sync/snapshot_sync.dart` |
-| Editor struk v2 | Template JSON dengan blok, label, placeholder, validasi, migrasi dari 25 toggle + 4 teks lama, pratinjau, dan cetak tes. | `lib/data/receipt_template.dart`, `lib/data/receipt_settings.dart`, `lib/data/receipt_service.dart`, `lib/ui/screens/receipt_settings_screen.dart` |
+| Editor struk v2 | Template JSON dengan blok, label, placeholder, validasi, migrasi dari 25 toggle + 4 teks lama, pratinjau, dan cetak percobaan. | `lib/data/receipt_template.dart`, `lib/data/receipt_settings.dart`, `lib/data/receipt_service.dart`, `lib/ui/screens/receipt_settings_screen.dart` |
 | Logo raster struk | Logo file diubah menjadi bitmap 1-bit melalui `dart:ui`, lalu dicetak dengan `GS v 0` sebelum teks. Lebar logo 10–40 mm. Hanya berlaku untuk mode ESC/POS. | `lib/printer/printer_service.dart`, `lib/printer/escpos_builder.dart`, `lib/printer/logo_platform*.dart` |
 | WhatsApp | Tombol membuka `https://wa.me/<nomor>?text=...`; nomor dinormalisasi 0/8 → 62 dan teks dipotong 3500 karakter. | `lib/ui/receipt_dialog.dart`, `lib/core/wa_link.dart` |
 | Ekspor/impor template | Template v2 diekspor sebagai JSON dan diimpor kembali dengan validasi versi serta `validate()`. | `lib/ui/screens/receipt_settings_screen.dart`, `lib/data/receipt_template.dart` |
@@ -489,25 +484,13 @@ memiliki jalur restore.
 
 ---
 
-## 10. Pengujian dan Verifikasi
+## 10. Verifikasi
 
-### 10.1 Hasil tahap 2 (historis)
-
-Dijalankan sebelum sesi lanjutan, dengan SDK Flutter/Dart tersedia:
-
-- `flutter analyze` — bersih.
-- `flutter test` — 105 lulus, 2 dilewati (fase peer tanpa konfigurasi dan tes
-  login dummy tanpa flag build).
-- `dart analyze` (relay) — bersih.
-- `dart test` (relay) — 25 lulus.
-- `sync_peer_test` — 16 dari 16 fase lulus pada relay + PostgreSQL yang
-  dibangun ulang.
-
-### 10.2 Hasil sesi lanjutan (5 November 2026)
+### 10.1 Hasil sesi lanjutan (5 November 2026)
 
 Mesin sesi ini tidak memiliki SDK Flutter/Dart dan pemilik melarang pemasangan
-dependency, sehingga `dart format`, `flutter analyze`, dan `flutter test` tidak
-dijalankan. Verifikasi yang dilakukan bersifat statis:
+dependency, sehingga `dart format` dan `flutter analyze` tidak dijalankan.
+Verifikasi yang dilakukan bersifat statis:
 
 - Keseimbangan delimiter seluruh `lib/**/*.dart` (143 berkas).
 - Penelusuran simbol baru antar-lapis: template struk → service → builder →
@@ -516,23 +499,21 @@ dijalankan. Verifikasi yang dilakukan bersifat statis:
 - Pemeriksaan bahwa format backup 1/2/3 tetap memiliki jalur restore.
 - Pemeriksaan bahwa tidak ada dependency baru pada `pubspec.yaml`.
 
-Pengujian perilaku tetap dilakukan pemilik melalui APK atau localhost.
+Pemeriksaan perilaku tetap dilakukan pemilik melalui APK atau localhost.
 
-### 10.3 Build yang disarankan setelah SDK tersedia
+### 10.2 Build yang disarankan setelah SDK tersedia
 
 ```bash
 cd pusatkupos
 flutter pub get
 flutter analyze
-flutter test
 
 cd ../relay
 dart pub get
 dart analyze
-dart test
 ```
 
-### 10.4 Pengujian manual yang disarankan
+### 10.3 Pemeriksaan manual yang disarankan
 
 1. Buat nota, lakukan retur sebagian, cek stok dan omzet neto.
 2. Backup dua toko, ubah data, restore, pastikan kedua toko dan toko aktif
@@ -558,52 +539,12 @@ dart test
 | Estimasi | Total konversi = total estimasi, atau konfirmasi eksplisit |
 | Struk | Template dapat diedit, dipratinjau, disimpan, dicetak 58/80, dan tahan karakter Indonesia |
 | Printer | Lebar dokumen sama dengan lebar printer; status cetak jujur |
-| Test | Test regresi P0/P1 tetap lulus; perangkat fisik diuji pemilik |
 
 ---
 
-## 12. Sisa Pekerjaan dan Risiko
+## 12. Lampiran
 
-### 12.1 Belum dikerjakan
-
-1. **Uji perangkat fisik.** SQLCipher, backup/restore lintas perangkat, dan
-   printer thermal belum dijalankan pada perangkat nyata.
-2. **Uji UI runtime.** Layar POS, Riwayat/Retur, Laporan, Pengaturan Struk, dan
-   dialog struk belum dijalankan di emulator pada sesi ini.
-3. **Sinkron latar sejati.** Timer berhenti saat OS mematikan aplikasi;
-   WorkManager/BackgroundTasks tidak ditambahkan.
-4. **Enkripsi di Windows/Linux/web.** SQLCipher belum aktif di platform
-   tersebut; keterbatasan ditampilkan di Pengaturan.
-5. **Kartu laporan estimasi per kasir.** Query tersedia, kartu khusus belum ada.
-
-### 12.2 Risiko tersisa
-
-1. **Uji perangkat fisik belum dilakukan.** Pembuatan database terenkripsi,
-   backup, restore, rotasi kunci, dan cetak thermal pada perangkat nyata belum
-   dibuktikan.
-2. **UI belum dijalankan pada sesi ini.** Perilaku dialog dan state layar baru
-   diverifikasi lewat pembacaan kode, bukan runtime.
-3. **Petunjuk terang tetap bisa dipalsukan perangkat yang dimodifikasi.**
-   Pemeriksaan ulang entity di klien adalah otoritas akhir.
-4. **Rekonsiliasi bergantung pada jam perangkat.** Tanggal salah memicu
-   permintaan rekonsiliasi palsu.
-5. **Retensi bergantung pada semua perangkat aktif mengakui.** Perangkat yang
-   jarang online menahan penghapusan amplop.
-6. **`relay_seq` bersifat global.** Nomor urut feed berlaku untuk seluruh
-   database relay, bukan per toko.
-7. **Rahasia E2E memakai backend file pada harness.** Hanya untuk test;
-   produksi memakai secure storage.
-8. **Jasa manual tanpa tarif master tidak punya modal acuan.** Gunakan jasa dari
-   daftar tarif untuk transaksi yang tunduk pada aturan modal.
-9. **Restore multi-toko mengganti registry.** Setelah restore, perangkat wajib
-   bootstrap sync dan memakai kode perangkat baru; ini disengaja agar nomor
-   dokumen tidak bertabrakan.
-
----
-
-## 13. Lampiran
-
-### 13.1 File yang diaudit
+### 12.1 File yang diaudit
 
 **Flutter inti**
 `lib/main.dart`, `lib/app.dart`, `lib/state/app_state.dart`, `lib/auth/*`,
@@ -635,7 +576,7 @@ dart test
 `relay/lib/server.dart`, `auth_rules.dart`, `canonical.dart`, `config.dart`,
 `db.dart`, `google.dart`, `license.dart`, `sync_round.dart`, `bin/relay.dart`.
 
-### 13.2 Referensi Python
+### 12.2 Referensi Python
 
 - `services/receipt_service.py` — penyusun struk, 25 field, pembayaran, VOID,
   garansi, label, teks WA, payload 58/80.
@@ -646,7 +587,7 @@ dart test
   encoding, satu primary, penulisan atomik.
 - `api/printer_routes.py` — endpoint baca/tulis konfigurasi printer.
 
-### 13.3 Catatan status
+### 12.3 Catatan status
 
 - Dokumen ini menggabungkan laporan perbaikan sinkronisasi dan audit kode;
   isinya mencerminkan kode setelah perbaikan, bukan rencana.

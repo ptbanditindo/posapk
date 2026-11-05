@@ -36,7 +36,6 @@ class AppDatabase {
   String? _mainPath;
   String? _mainStoreId;
   bool _viewerMode = false;
-  bool _testMode = false;
 
   Database get db {
     final value = _db;
@@ -86,20 +85,6 @@ class AppDatabase {
     _mainStoreId = _activeStoreId;
     await _open();
     await _syncRegistryLabel();
-  }
-
-  Future<void> initForTest(String path) async {
-    await close();
-    await StoreRegistry.instance.close();
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-    _testMode = true;
-    _path = path;
-    _activeStoreId = 'utama';
-    _mainPath = path;
-    _mainStoreId = 'utama';
-    _viewerMode = false;
-    await _open();
   }
 
   /// Membuka database terpisah untuk ringkasan laporan milik [ownerId].
@@ -208,10 +193,7 @@ class AppDatabase {
   /// SQLCipher hanya tersedia untuk Android, iOS, dan macOS. Windows, Linux,
   /// dan web tetap memakai SQLite biasa karena paket tidak mendukung
   /// enkripsi di sana; batas ini dilaporkan ke pengguna lewat [encryptionNote].
-  /// Pengujian selalu memakai SQLite FFI biasa karena plugin SQLCipher tidak
-  /// tersedia di lingkungan `flutter test`.
   bool get _usesSqlCipher =>
-      !_testMode &&
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS ||

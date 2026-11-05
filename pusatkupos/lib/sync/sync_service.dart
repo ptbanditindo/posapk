@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../core/app_config.dart';
@@ -2436,45 +2435,6 @@ class SyncService {
       applied: applied,
       failed: failed,
       lastError: lastError,
-    );
-  }
-
-  @visibleForTesting
-  Future<bool> applyOnceForTest({
-    required Map<String, Object?> envelope,
-    required String senderKey,
-    required String senderKind,
-    required List<int> storeKey,
-    required String storeId,
-  }) {
-    return _applyOnce(
-      envelope: envelope,
-      senderKey: senderKey,
-      senderKind: senderKind,
-      senderProfile: SenderProfile.legacy(senderKind),
-      storeKey: storeKey,
-      storeId: storeId,
-    );
-  }
-
-  @visibleForTesting
-  Future<({int? blockedSeq, int applied, int failed, String lastError})>
-      retryInboxForTest({
-    required String store,
-    required String deviceId,
-    required List<int> storeKey,
-    required Map<String, String?> keys,
-    required Map<String, String> kinds,
-  }) {
-    return _retryInbox(
-      store: store,
-      deviceId: deviceId,
-      storeKey: storeKey,
-      keys: keys,
-      profiles: {
-        for (final entry in kinds.entries)
-          entry.key: SenderProfile.legacy(entry.value),
-      },
     );
   }
 

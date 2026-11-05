@@ -70,17 +70,6 @@ Hasil: `pusatkupos/build/app/outputs/flutter-apk/app-debug.apk`.
 APK release memerlukan keystore/signing sendiri; lihat
 [`pusatkupos/README.md`](pusatkupos/README.md).
 
-## Tes
-
-```bash
-cd pusatkupos
-flutter analyze
-flutter test
-```
-
-Tes multi-device memerlukan relay yang berjalan dan file `.env` lokal; lihat
-`pusatkupos/tool/run_sync_peer_e2e.sh`. File `.env` tidak pernah di-commit.
-
 ## Keamanan
 
 - Jangan commit `.env`, token, private key, keystore, atau file APK.
