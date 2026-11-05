@@ -434,7 +434,7 @@ class OrderService {
           'harga_modal': line.hargaModal,
           'diskon_alokasi': line.diskonAlokasi,
           'interval_servis_bulan': item.intervalBulan,
-          'subtotal': line.finalTotal,
+          'subtotal': line.subtotal - line.diskonAlokasi,
           'created_at': now,
           'updated_at': now,
         });
@@ -581,6 +581,7 @@ class OrderService {
       diskonCents: diskon,
       metodeBayar: metodeBayar,
       bayarCents: bayarCents,
+      requestId: 'estimasi:$estimateSyncId',
       actor: actor,
       ownerPin: ownerPin,
       approverSecret: approverSecret,
@@ -797,7 +798,7 @@ class OrderService {
         'work_orders',
         {
           'status': status,
-          'waktu_selesai': status == 'selesai' ? now : null,
+          if (status == 'selesai') 'waktu_selesai': now,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'updated_at': now,
@@ -974,9 +975,10 @@ class OrderService {
     DateTime? from,
     DateTime? to,
   }) async {
-    final start = (from ?? DateTime.now().subtract(const Duration(days: 30)))
-        .toIso8601String();
-    final end = (to ?? DateTime.now()).toIso8601String();
+    final start = isoStartOfDay(
+      from ?? DateTime.now().subtract(const Duration(days: 30)),
+    );
+    final end = isoEndOfDay(to ?? DateTime.now());
     final rows = await AppDatabase.instance.db.rawQuery(
       '''
       SELECT r.no_nota, r.estimate_sync_id, r.total_servis,

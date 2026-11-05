@@ -437,4 +437,21 @@ Setiap perbaikan sebaiknya disertai pengujian manual pada alur: pelanggan → un
 | P2-14 | Sudah diperbaiki | Qty part menerima desimal hingga 3 digit (mis. 0,5 L) di POS, revisi estimasi, retur, struk, detail nota, dan laporan. Kolom `jumlah_milli` ditambahkan ke `service_parts`, `sale_return_items`, dan `estimate_items` lewat skema v3 + backfill; sisa stok, pergerakan stok, komisi, dan sinkronisasi memakai milli. | `data/schema.dart`, `data/app_database.dart`, `data/models.dart`, `data/price_rules.dart`, `data/order_service.dart`, `data/sale_return_service.dart`, `data/note_sync.dart`, `data/receipt_service.dart`, `printer/receipt_builder.dart`, `ui/screens/pos_screen.dart`, `ui/screens/estimates_screen.dart`, `ui/screens/history_screen.dart` |
 | P3 | Sudah diperbaiki | Pembayaran sebagian diberi label `DP` dan pelunasan penuh `PELUNASAN`; izin retur dipisahkan dari `void` (peran kasir/keduanya mendapat `retur`). | `data/app_database.dart`, `data/account_service.dart`, `ui/screens/history_screen.dart` |
 
+### Kelompok 5 — kasus tepi transaksi, stok, dan estimasi (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| U-01 | Sudah diperbaiki | Void mengembalikan stok memakai `jumlah_milli`, bukan `jumlah` yang sudah dibulatkan ke bawah. Barang 1,5 L kembali 1,5 L dan `stock_movements` mencatat angka yang sama. | `pusatkupos/lib/data/app_database.dart` (`voidRecord`) |
+| U-02 | Sudah diperbaiki | Verifikasi PIN/persetujuan diskon dipindah ke luar `db.transaction`, sehingga penghitung gagal di `login_guards` tetap tersimpan saat PIN salah dan lockout benar-benar aktif. | `pusatkupos/lib/data/app_database.dart` (`createTransaction`) |
+| U-03 | Sudah diperbaiki | Stok divalidasi terhadap total qty per `stock_item_id`; keranjang POS menggabungkan baris barang yang sama. Dua baris @3 dengan stok 5 kini ditolak, bukan menghasilkan stok −1. | `data/app_database.dart`, `ui/screens/pos_screen.dart` |
+| U-04 | Sudah diperbaiki | Konversi estimasi memakai `requestId = estimasi:<sync_id>` (unik di database) dan update status hanya berlaku bila `status = 'aktif'` serta mengenai tepat satu baris. Klik ganda tidak lagi membuat dua nota. | `data/order_service.dart` (`convertEstimateToNote`), `data/app_database.dart` |
+| U-05 | Sudah diperbaiki | `varianceReport` memakai `isoStartOfDay`/`isoEndOfDay` seperti laporan lain, sehingga batas tanggal tidak bergeser 7 jam di WIB. | `data/order_service.dart` |
+| U-06 | Sudah diperbaiki | `waktu_selesai` hanya ditulis saat status menjadi `selesai`; transisi ke `diambil` tidak lagi mengosongkannya. | `data/order_service.dart` (`changeStatus`) |
+| U-07 | Sudah diperbaiki | Perhitungan ulang komisi tidak lagi melewati margin negatif, sehingga hasilnya sama dengan saat nota dibuat. `_splitShare` membagi sisa (termasuk total negatif) dengan jumlah yang tetap sama dengan total. | `data/app_database.dart` (`recalculateRecordCommissions`, `_splitShare`) |
+| U-08 | Sudah diperbaiki | Void membuka kembali estimasi asal (`aktif`, `converted_nota_sync_id = NULL`) dan melepas `work_orders.nota_sync_id`, lalu meng-enqueue keduanya. | `data/app_database.dart` (`voidRecord`), `ui/screens/history_screen.dart` |
+| U-09 | Sudah diperbaiki | Subtotal baris estimasi memakai `subtotal - diskon_alokasi` sehingga jumlah baris sama dengan total dokumen; pemilihan baris di bawah modal tidak lagi berpotensi melempar `StateError`. | `data/order_service.dart` (`createEstimate`), `data/price_rules.dart` |
+| U-10 | Sudah diperbaiki | Edit stok menerapkan selisih terhadap stok terkini (`stokAwalMilli`), bukan menimpa absolut, sehingga penjualan yang terjadi saat dialog terbuka tidak hilang. | `data/app_database.dart` (`saveStockItem`), `ui/screens/stock_screen.dart` |
+
+Catatan yang sengaja belum diubah (butuh keputusan pemilik): basis komisi tetap memakai jasa dan margin **sebelum** diskon; label cicilan tetap `DP` sampai cicilan terakhir; `parseQuantityToMilli("1.500")` pada satuan berdesimal dibaca 1,5 (semua pemanggil sudah menolak nol/negatif); lockout login masih berbasis jam perangkat.
+
 

@@ -82,6 +82,7 @@ class _StockScreenState extends State<StockScreen> {
         hargaJualCents: input.hargaJualCents,
         jumlah: input.jumlahMilli ~/ 1000,
         jumlahMilli: input.jumlahMilli,
+        stokAwalMilli: item?.jumlahMilli,
         stokMinimum: input.stokMinimum,
         satuan: input.satuan,
         desimal: input.desimal,

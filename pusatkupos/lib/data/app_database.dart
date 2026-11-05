@@ -797,6 +797,7 @@ class AppDatabase {
     required int jumlah,
     required int stokMinimum,
     int? jumlahMilli,
+    int? stokAwalMilli,
     String satuan = 'pcs',
     int desimal = 0,
     int intervalBulan = 0,
@@ -867,11 +868,22 @@ class AppDatabase {
         );
         if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
         final before = StockItem.fromRow(rows.first);
+        // Formulir membawa angka stok yang dilihat pengguna. Selisihnya
+        // diterapkan ke stok terkini agar penjualan yang masuk setelah
+        // formulir dibuka tidak ikut tertimpa.
+        final targetMilli = stokAwalMilli == null
+            ? milli
+            : before.jumlahMilli + (milli - stokAwalMilli);
+        if (targetMilli < 0) {
+          throw ArgumentError('Stok tidak boleh negatif.');
+        }
         final hlc = await nextSyncHlc(txn);
         await txn.update(
           'stock_items',
           {
             ...payload,
+            'jumlah': targetMilli ~/ 1000,
+            'jumlah_milli': targetMilli,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
             'updated_at': nowIso(),
@@ -879,7 +891,7 @@ class AppDatabase {
           where: 'id = ?',
           whereArgs: [id],
         );
-        final delta = milli - before.jumlahMilli;
+        final delta = targetMilli - before.jumlahMilli;
         int? movementId;
         if (delta != 0) {
           movementId = await txn.insert('stock_movements', {
@@ -1253,6 +1265,30 @@ class AppDatabase {
         throw ArgumentError('Harga jasa tidak boleh negatif.');
       }
     }
+    final isOwner = actor?.isOwner ?? true;
+    var approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
+    if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
+      final hasApprovalInput =
+          (ownerPin ?? '').trim().isNotEmpty ||
+          (approverSecret ?? '').trim().isNotEmpty;
+      if (!hasApprovalInput) {
+        throw StateError(
+          'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
+        );
+      }
+      // Verifikasi di luar transaksi: penghitung gagal login harus tetap
+      // tersimpan walau transaksi nota dibatalkan.
+      try {
+        final approval = await ApprovalService.instance.verify(
+          settings: settings,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+        );
+        approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
+      } on ApprovalException catch (failure) {
+        throw PriceRuleViolation('persetujuan_gagal', failure.message);
+      }
+    }
     return db.transaction((txn) async {
       if ((requestId ?? '').trim().isNotEmpty) {
         final existing = await txn.query(
@@ -1307,6 +1343,7 @@ class AppDatabase {
           ),
         );
       }
+      final requestedMilli = <int, int>{};
       for (final part in parts) {
         if (part.qtyMilli <= 0) {
           throw ArgumentError('Jumlah part harus lebih dari nol.');
@@ -1331,7 +1368,12 @@ class AppDatabase {
             'Muat ulang kasir lalu ulangi.',
           );
         }
-        if (stock.jumlahMilli < part.qtyMilli) {
+        // Baris yang sama bisa muncul lebih dari sekali; validasi memakai
+        // total per barang agar stok tidak menjadi negatif.
+        final totalRequested =
+            (requestedMilli[part.stockItemId] ?? 0) + part.qtyMilli;
+        requestedMilli[part.stockItemId] = totalRequested;
+        if (stock.jumlahMilli < totalRequested) {
           throw StateError(
             'Stok ${stock.nama} tidak cukup (tersisa ${stock.jumlahLabel}).',
           );
@@ -1352,8 +1394,6 @@ class AppDatabase {
           ),
         );
       }
-      final isOwner = actor?.isOwner ?? true;
-      String? approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
       final allocation = PriceRules.allocate(
         lines,
         diskonCents: diskonCents,
@@ -1361,27 +1401,6 @@ class AppDatabase {
         alasanDiskon: alasanDiskon,
         disetujuiOleh: approver,
       );
-      if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
-        final hasApprovalInput =
-            (ownerPin ?? '').trim().isNotEmpty ||
-            (approverSecret ?? '').trim().isNotEmpty;
-        if (!hasApprovalInput) {
-          throw StateError(
-            'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
-          );
-        }
-        try {
-          final approval = await ApprovalService.instance.verify(
-            settings: settings,
-            ownerPin: ownerPin,
-            approverSecret: approverSecret,
-            executor: txn,
-          );
-          approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
-        } on ApprovalException catch (failure) {
-          throw PriceRuleViolation('persetujuan_gagal', failure.message);
-        }
-      }
       for (var index = 0; index < jobs.length; index++) {
         final line = allocation.lines[index];
         jobs[index]
@@ -1699,7 +1718,7 @@ class AppDatabase {
       }
       if ((estimateSyncId ?? '').trim().isNotEmpty) {
         final estimateHlc = await nextSyncHlc(txn);
-        await txn.update(
+        final converted = await txn.update(
           'estimates',
           {
             'status': 'dikonversi',
@@ -1709,9 +1728,14 @@ class AppDatabase {
             'sync_hlc_counter': estimateHlc.counter,
             'updated_at': now,
           },
-          where: 'sync_id = ?',
+          where: "sync_id = ? AND status = 'aktif'",
           whereArgs: [estimateSyncId!.trim()],
         );
+        if (converted != 1) {
+          throw StateError(
+            'Estimasi sudah dikonversi atau tidak lagi aktif.',
+          );
+        }
         if (enqueueEstimate != null) {
           await enqueueEstimate(txn, estimateSyncId.trim());
         }
@@ -1789,7 +1813,11 @@ class AppDatabase {
 
   static int _splitShare(int total, int index, int count) {
     if (count <= 0) return 0;
-    return total ~/ count + (index < total % count ? 1 : 0);
+    final base = total ~/ count;
+    final remainder = total - base * count;
+    if (remainder == 0) return base;
+    final extra = index < remainder.abs() ? remainder.sign : 0;
+    return base + extra;
   }
 
   /// Menghitung ulang komisi nota dengan nilai neto setelah retur.
@@ -1863,7 +1891,7 @@ class AppDatabase {
       hasPart = true;
       final margin = ((row['harga_satuan'] as num?)?.toInt() ?? 0) -
           ((row['modal'] as num?)?.toInt() ?? 0);
-      if (margin <= 0) continue;
+      // Margin negatif tetap dihitung, sama seperti saat nota dibuat.
       netMargin += margin * sisaMilli ~/ 1000;
     }
     for (final commission in commissionRows) {
@@ -2520,6 +2548,8 @@ class AppDatabase {
     String reason, {
     Operator? actor,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
   }) async {
     final cleanReason = reason.trim();
     if (cleanReason.isEmpty) {
@@ -2556,7 +2586,9 @@ class AppDatabase {
       for (final part in parts) {
         final stockId = part['stock_item_id'] as int?;
         if (stockId == null) continue;
-        final qtyMilli = (part['jumlah'] as int) * 1000;
+        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        if (qtyMilli <= 0) continue;
         final stockRows = await txn.query(
           'stock_items',
           where: 'id = ?',
@@ -2577,7 +2609,7 @@ class AppDatabase {
           'stock_item_id': stockId,
           'nama_item': part['nama_part'],
           'jenis': 'MASUK',
-          'jumlah': part['jumlah'],
+          'jumlah': qtyMilli ~/ 1000,
           'jumlah_milli': qtyMilli,
           'alasan': 'Void nota ${rows.first['no_nota']}',
           'service_record_id': id,
@@ -2626,6 +2658,46 @@ class AppDatabase {
         where: 'id = ?',
         whereArgs: [id],
       );
+      final recordSyncId = rows.first['sync_id'] as String? ?? '';
+      final estimateSync =
+          (rows.first['estimate_sync_id'] as String?)?.trim() ?? '';
+      if (estimateSync.isNotEmpty) {
+        final hlc = await nextSyncHlc(txn);
+        final reopened = await txn.update(
+          'estimates',
+          {
+            'status': 'aktif',
+            'converted_nota_sync_id': null,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'updated_at': now,
+          },
+          where: 'sync_id = ? AND converted_nota_sync_id = ?',
+          whereArgs: [estimateSync, recordSyncId],
+        );
+        if (reopened > 0 && enqueueEstimate != null) {
+          await enqueueEstimate(txn, estimateSync);
+        }
+      }
+      final orderSync =
+          (rows.first['work_order_sync_id'] as String?)?.trim() ?? '';
+      if (orderSync.isNotEmpty) {
+        final hlc = await nextSyncHlc(txn);
+        final cleared = await txn.update(
+          'work_orders',
+          {
+            'nota_sync_id': null,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'updated_at': now,
+          },
+          where: 'sync_id = ? AND nota_sync_id = ?',
+          whereArgs: [orderSync, recordSyncId],
+        );
+        if (cleared > 0 && enqueueOrder != null) {
+          await enqueueOrder(txn, orderSync);
+        }
+      }
       await txn.insert('permission_audits', {
         'actor': actor?.label ?? 'Pemilik',
         'target_account_id': actor?.employeeId,

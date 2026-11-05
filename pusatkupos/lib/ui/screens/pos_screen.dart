@@ -301,7 +301,43 @@ class _PosScreenState extends State<PosScreen> {
       builder: (_) => _PartDialog(stock: _stock),
     );
     if (part == null) return;
-    setState(() => _parts.add(part));
+    final index = _parts.indexWhere(
+      (item) => item.stockItemId == part.stockItemId,
+    );
+    if (index < 0) {
+      setState(() => _parts.add(part));
+      return;
+    }
+    final existing = _parts[index];
+    final totalMilli = existing.qtyMilli + part.qtyMilli;
+    StockItem? stockItem;
+    for (final item in _stock) {
+      if (item.id == part.stockItemId) {
+        stockItem = item;
+        break;
+      }
+    }
+    if (stockItem != null && totalMilli > stockItem.jumlahMilli) {
+      showSnack(
+        context,
+        'Stok ${stockItem.nama} tidak cukup. Tersisa ${stockItem.jumlahLabel}.',
+        error: true,
+      );
+      return;
+    }
+    setState(() {
+      _parts[index] = PartDraft(
+        stockItemId: existing.stockItemId,
+        nama: existing.nama,
+        jumlah: totalMilli ~/ 1000,
+        qtyMilli: totalMilli,
+        hargaCents: existing.hargaCents,
+        modalCents: existing.modalCents,
+        intervalBulan: existing.intervalBulan,
+        syncId: existing.syncId,
+        hargaTerdaftarCents: existing.hargaTerdaftarCents,
+      );
+    });
   }
 
   Future<void> _save() async {

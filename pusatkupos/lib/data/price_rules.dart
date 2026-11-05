@@ -205,7 +205,9 @@ class PriceRules {
       }
     }
     if (belowMinimum && !allowBelowMinimum) {
-      final line = lines.firstWhere((item) => item.finalTotal < item.batasTotal);
+      final line = lines.firstWhere(
+        (item) => item.subtotal - item.diskonAlokasi < item.batasTotal,
+      );
       throw PriceRuleViolation(
         'di_bawah_batas_minimal',
         'Diskon membuat harga ${line.label} '
@@ -215,7 +217,7 @@ class PriceRules {
     }
     if (belowMinimum) {
       for (final line in lines) {
-        if (line.finalTotal < line.batasTotal) {
+        if (line.subtotal - line.diskonAlokasi < line.batasTotal) {
           line.disetujuiOleh = disetujuiOleh ?? 'Pemilik';
         }
       }

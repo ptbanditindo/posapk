@@ -755,7 +755,7 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 
 ## 8. Catatan teknis hasil pembacaan kode
 
-1. **Restock void memakai `jumlah`, bukan `jumlah_milli`.** Di `AppDatabase.voidRecord`, stok dikembalikan dengan `(part['jumlah'] as int) * 1000`. Untuk barang yang dijual dalam pecahan (mis. 1,5 liter), nilai milli asli hilang saat void. Ini satu-satunya tempat yang masih memakai pola lama; retur sudah memakai `jumlah_milli`.
+1. **Restock void dan validasi stok.** `AppDatabase.voidRecord` mengembalikan stok memakai `jumlah_milli` (fallback `jumlah × 1000`), dan `createTransaction` memvalidasi total qty per `stock_item_id` sehingga dua baris barang yang sama tidak dapat membuat stok negatif. Void juga membuka kembali estimasi (`status = aktif`, `converted_nota_sync_id = NULL`) dan melepas `work_orders.nota_sync_id` bila nota berasal dari keduanya.
 2. **`sqflite_sw.js` adalah artefak build**, bukan kode aplikasi; isinya minified dan hanya dipakai backend SQLite web.
 3. **Folder test sudah dihapus total** (25 file Flutter + 3 relay + 2 skrip uji) beserta hook test di `AppDatabase`, `SecureStore`, dan `SyncService`. `pubspec.lock` masih menyebut paket test sampai `pub get` berikutnya.
 4. **`summary_file_stub.dart` diimpor langsung oleh `owner_viewer`** ketika platform tidak mendukung file picker; di web/native implementasi yang dipakai ditentukan conditional import.
@@ -763,6 +763,8 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 6. **`start-relay.ps1` memuat path Dart hardcoded** (`C:\Users\sukron\flutter\bin\dart.bat`); di mesin lain perlu disesuaikan.
 7. **Mode viewer memakai database terpisah** `viewer_<owner_id>.db`; `openViewerDatabase` tidak menulis ke DB utama.
 8. **`app_settings` menyimpan penanda lokal** (mis. `sync.last_*`, `device.*`) yang dikecualikan saat snapshot/impor agar tidak menimpa identitas perangkat tujuan.
+9. **Persetujuan diskon diverifikasi sebelum `db.transaction`** di `createTransaction` (sama seperti `createEstimate`), supaya penghitung gagal PIN di `login_guards` tidak ikut ter-rollback saat PIN salah.
+10. **Konversi estimasi idempoten.** `convertEstimateToNote` mengirim `requestId = estimasi:<sync_id>` dan `createTransaction` hanya mengubah estimasi dengan syarat `status = 'aktif'`; klik ganda atau konversi ulang ditolak tanpa mengurangi stok dua kali.
 
 ---
 

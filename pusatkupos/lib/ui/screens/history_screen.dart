@@ -229,6 +229,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       recordId,
                       txn: txn,
                     ),
+                    enqueueEstimate: (txn, syncId) =>
+                        SyncService.instance.enqueueEstimate(
+                      syncId,
+                      txn: txn,
+                    ),
+                    enqueueOrder: (txn, syncId) =>
+                        SyncService.instance.enqueueWorkOrder(
+                      syncId,
+                      txn: txn,
+                    ),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
