@@ -89,11 +89,25 @@ class SyncConflictRules {
     'no_nota_bentrok',
   };
 
-  static const Set<String> priceEntities = {'harga_jasa', 'stock'};
+  static const Set<String> priceEntities = {'harga_jasa'};
   static const Set<String> ownerOnlyEntities = {
     'store_settings',
     'data_request',
   };
+
+  /// Konflik yang sudah final: perubahan tidak diterapkan, tetapi tidak
+  /// menghalangi kursor sinkronisasi. Pemilik tetap melihatnya di daftar
+  /// konflik.
+  static const Set<String> finalReasons = {
+    'peran_viewer_hanya_baca',
+    'hanya_owner',
+    'harga_dikunci_owner',
+    'hapus_order_hanya_owner',
+    'peran_tidak_berhak',
+  };
+
+  static bool isFinal(String reason) =>
+      finalReasons.contains(reason) || reason.startsWith('peran_tidak_berhak');
 
   static const Set<String> employeeEntities = {
     'nota',
@@ -135,6 +149,14 @@ class SyncConflictRules {
     if (!sender.isOwner) {
       if (!employeeEntities.contains(entity)) {
         return 'peran_tidak_berhak';
+      }
+      if (entity == 'nota') {
+        final required = action == 'void'
+            ? 'void'
+            : (action == 'warranty' || action == 'taken')
+                ? 'ubah_status'
+                : 'buat_nota';
+        if (!sender.can(required)) return 'peran_tidak_berhak_$required';
       }
       final required = employeeExtraPermission[entity];
       if (required != null && !sender.can(required)) {

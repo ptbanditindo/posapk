@@ -432,19 +432,20 @@ Aturan praktis:
 
 1. `HistoryScreen` → `AppDatabase.voidRecord`.
 2. Ditolak bila masih ada retur aktif.
-3. Stok part dikembalikan, `stock_movements` masuk dicatat.
-4. Pembayaran dikembalikan sebagai baris `REFUND` negatif (idempoten).
-5. Status nota → `VOID`, `voided_at`, audit, enqueue `note_void`.
-6. Catatan: restock memakai `part['jumlah'] * 1000` (lihat bagian 8).
+3. Stok part dikembalikan sebesar qty nota dikurangi qty yang sudah diretur; `stock_movements` masuk dicatat dengan kunci `void-<part_sync_id>`.
+4. Pembayaran dikembalikan sebagai baris `REFUND` negatif (idempoten per `request_id`).
+5. Status nota → `VOID`, `voided_at`, `sisa_bayar = 0`, audit, enqueue `note_void` dan amplop `note_payment` agar REFUND ikut ke perangkat lain.
+6. Perangkat penerima void hanya menyamakan status + stok (tidak membuat refund ganda); `sisa_bayar` juga dinolkan.
 
 ### 5.6 Koreksi nilai nota
 
 1. `HistoryScreen` → `NotaAdjustmentService.create`.
 2. Wajib aktor + alasan; non-owner butuh peran `koreksi`.
-3. Total saat ini = `total_servis + jumlah nilai_selisih` sebelumnya.
-4. `selisih = nilaiBaru - totalSaatIni`; baris baru ditambahkan, nota asli tidak diubah.
-5. Koreksi di bawah modal divalidasi `PriceRules.validateCorrection` dan approval.
-6. `recalculateRecordTotals`, audit, enqueue `nota_adjustment`.
+3. Total saat ini = `nilai_baru` koreksi terakhir menurut `(sync_hlc_wall, sync_hlc_counter, id)`, atau `total_servis` bila belum ada koreksi.
+4. `nilaiBaru` boleh dikirim langsung atau lewat `selisih`; target dihitung ulang di dalam transaksi, baris baru ditambahkan, nota asli tidak diubah.
+5. Koreksi di bawah modal divalidasi `PriceRules.validateCorrection`; PIN/approval diverifikasi **di luar** transaksi agar hitungan gagal terkunci tetap tersimpan.
+6. Modal part dihitung dari `COALESCE(jumlah_milli, jumlah * 1000)`; modal jasa tetap `jumlah` bulat.
+7. `recalculateRecordTotals`, audit, enqueue `nota_adjustment`.
 
 ### 5.7 Estimasi → nota → work order
 
@@ -459,7 +460,7 @@ Aturan praktis:
 ### 5.8 Stok dan opname
 
 1. `StockScreen` → `AppDatabase.saveStockItem` / `stockIn` / `stockOut` / `opname`.
-2. Kuantitas selalu milli; `jumlah` tetap diisi `milli ~/ 1000` untuk kompatibilitas.
+2. Kuantitas selalu milli; kolom lama `jumlah` diisi `wholeQuantity(milli)` yang membulatkan ke bawah untuk nilai negatif (bukan ke arah nol).
 3. Setiap perubahan menulis `stock_movements` (`MASUK`/`KELUAR`/`OPNAME`) dan menstempel HLC.
 4. Izin berbeda: `ubah_stok`, `stok_masuk`, `stok_keluar`, `opname`.
 5. Enqueue `stock`/`stock_movement` agar perangkat lain menerima saldo yang sama.
@@ -627,13 +628,14 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 
 **Void**
 - Ditolak bila ada retur aktif.
-- Stok dikembalikan, pembayaran di-refund, status `VOID`, audit, enqueue.
+- Stok dikembalikan hanya untuk qty yang belum diretur, pembayaran di-refund, status `VOID`, `sisa_bayar = 0`, audit, enqueue `void` + amplop pembayaran REFUND.
 - Nota VOID tidak bisa diretur/dikoreksi/diubah komisinya.
 
 **Koreksi**
-- Baris `nota_adjustments` baru; `selisih = nilaiBaru - totalSaatIni`.
-- Divalidasi terhadap modal baris asli; di bawah modal butuh approval.
-- Total dan komisi dihitung ulang; `applyRemote` idempoten dan melewati nota VOID.
+- Baris `nota_adjustments` baru; `nilai_baru` dan `selisih` disimpan sebagai riwayat.
+- Total efektif = `nilai_baru` terakhir menurut HLC, bukan penjumlahan `nilai_selisih` (menghindari hitung ganda koreksi bersamaan).
+- Divalidasi terhadap modal baris asli; di bawah modal butuh approval di luar transaksi.
+- Total, piutang, dan komisi dihitung ulang; `applyRemote` idempoten dan melewati nota VOID.
 
 ### 6.7 Estimasi dan work order
 
@@ -687,6 +689,7 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 - Backup format 3: satu ZIP berisi manifest + satu DB terenkripsi per toko; kunci payload per toko.
 - Restore atomik memakai `.bak`, menulis ulang registry, membuat kode perangkat baru, menaikkan `seq_floor`, dan mewajibkan bootstrap sync.
 - Backup otomatis: retensi 30 file, jadwal harian, opsi Telegram ≤50 MB.
+- Passphrase backup otomatis disimpan di SecureStore, minimal 8 karakter, dan dapat dilihat/disalin dari layar Pengaturan. Caption Telegram menandai arsip terkunci passphrase.
 
 ### 6.13 Lisensi, pairing, dan sesi
 
@@ -707,7 +710,11 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 - Konflik data: HLC lebih besar menang → counter lebih besar → lokal dipertahankan bila seri penuh (kecuali keduanya 0).
 - Ack hanya sampai amplop pertama yang gagal dikurangi satu; kursor tidak pernah melewati data yang belum diterapkan.
 - Retry maksimal 8 kali dengan backoff `2^retry` menit, dibatasi 240 menit.
-- Snapshot hanya boleh diunggah setelah outbox bersih, `latest_seq == cursor`, dan semua perangkat penulis ack pada sync round yang sama.
+- Snapshot hanya boleh diunggah setelah outbox bersih, `latest_seq == cursor`, dan semua perangkat penulis ack pada sync round yang sama. Konflik `review` dan konflik final tidak menghalangi cadangan.
+- Relay mengunci `(owner_id, store_id)` dengan advisory lock saat menerima amplop tunggal/batch sehingga urutan `relay_seq` sama dengan urutan commit; celah nomor akibat rollback tidak berbahaya karena feed memakai `> since`.
+- Izin perangkat karyawan: `stok` butuh `ubah_stok`, `nota` dipilah per aksi (`void`→`void`, `warranty`/`taken`→`ubah_status`, lainnya `buat_nota`). Harga stok tetap hanya owner; perubahan harga dari karyawan dicatat sebagai konflik final `harga_dikunci_owner` tanpa memblokir kursor.
+- Konflik final (`peran_tidak_berhak*`, `peran_viewer_hanya_baca`, `hanya_owner`, `harga_dikunci_owner`, `hapus_order_hanya_owner`) disimpan status `rejected` dan tidak diputar ulang; pemilik tetap melihatnya di daftar konflik.
+- Kuota follow-up `/relay/followup/quota` memerlukan token perangkat; instalasi tanpa pairing memakai kuota lokal.
 - Digest harian (`day_digests`) dibandingkan relay; ketidakcocokan memicu `reconciliation_requests` + `data_request`.
 - Amplop lama dipangkas setelah semua perangkat relevan maju; perangkat dicabut tidak menahan pemangkasan.
 
@@ -730,7 +737,7 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 |---|---|
 | Nilai baris | `subtotal = (harga * qtyMilli / 1000).round()` |
 | Diskon per baris | proporsional terhadap subtotal; total alokasi ≤ `subtotal - modal` untuk non-owner |
-| Sisa bayar | `sisa = total + Σkoreksi - Σretur - Σpembayaran`, minimum 0 |
+| Sisa bayar | `sisa = totalEfektif - Σretur - Σpembayaran`, minimum 0; `totalEfektif` = `nilai_baru` koreksi terakhir menurut HLC atau `total_servis` |
 | Laba kotor | `Σ(harga_final - modal)`, dinetokan dengan retur |
 | Laba kotor neto | `labaKotor - (returJual - returModal)` |
 | Omzet neto | `total - retur` |
@@ -755,16 +762,20 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 
 ## 8. Catatan teknis hasil pembacaan kode
 
-1. **Restock void dan validasi stok.** `AppDatabase.voidRecord` mengembalikan stok memakai `jumlah_milli` (fallback `jumlah × 1000`), dan `createTransaction` memvalidasi total qty per `stock_item_id` sehingga dua baris barang yang sama tidak dapat membuat stok negatif. Void juga membuka kembali estimasi (`status = aktif`, `converted_nota_sync_id = NULL`) dan melepas `work_orders.nota_sync_id` bila nota berasal dari keduanya.
-2. **`sqflite_sw.js` adalah artefak build**, bukan kode aplikasi; isinya minified dan hanya dipakai backend SQLite web.
-3. **Folder test sudah dihapus total** (25 file Flutter + 3 relay + 2 skrip uji) beserta hook test di `AppDatabase`, `SecureStore`, dan `SyncService`. `pubspec.lock` masih menyebut paket test sampai `pub get` berikutnya.
-4. **`summary_file_stub.dart` diimpor langsung oleh `owner_viewer`** ketika platform tidak mendukung file picker; di web/native implementasi yang dipakai ditentukan conditional import.
-5. **`analysis_options.yaml` mengecualikan folder platform** (`android/`, `web/`, `windows/`), sehingga lint Flutter tidak memeriksa kode native.
-6. **`start-relay.ps1` memuat path Dart hardcoded** (`C:\Users\sukron\flutter\bin\dart.bat`); di mesin lain perlu disesuaikan.
-7. **Mode viewer memakai database terpisah** `viewer_<owner_id>.db`; `openViewerDatabase` tidak menulis ke DB utama.
-8. **`app_settings` menyimpan penanda lokal** (mis. `sync.last_*`, `device.*`) yang dikecualikan saat snapshot/impor agar tidak menimpa identitas perangkat tujuan.
-9. **Persetujuan diskon diverifikasi sebelum `db.transaction`** di `createTransaction` (sama seperti `createEstimate`), supaya penghitung gagal PIN di `login_guards` tidak ikut ter-rollback saat PIN salah.
-10. **Konversi estimasi idempoten.** `convertEstimateToNote` mengirim `requestId = estimasi:<sync_id>` dan `createTransaction` hanya mengubah estimasi dengan syarat `status = 'aktif'`; klik ganda atau konversi ulang ditolak tanpa mengurangi stok dua kali.
+1. **Restock void dan validasi stok.** `AppDatabase.voidRecord` mengembalikan stok memakai `jumlah_milli` (fallback `jumlah × 1000`) dikurangi qty yang sudah diretur, dan `createTransaction` memvalidasi total qty per `stock_item_id` sehingga dua baris barang yang sama tidak dapat membuat stok negatif. Void juga membuka kembali estimasi (`status = aktif`, `converted_nota_sync_id = NULL`) dan melepas `work_orders.nota_sync_id` bila nota berasal dari keduanya, lalu meng-enqueue amplop `note_payment` untuk REFUND.
+2. **Total koreksi bersifat absolut.** `NotaAdjustmentService._currentTotal`, `AppDatabase.recalculateRecordTotals`, `reportSummary`, dan perhitungan refund retur memakai `nilai_baru` terakhir menurut HLC, bukan `SUM(nilai_selisih)`, agar dua koreksi bersamaan tidak terhitung ganda. Verifikasi approval berjalan di luar transaksi supaya hitungan PIN gagal tidak ikut rollback.
+3. **Pembulatan kolom `jumlah` lama.** `wholeQuantity(milli)` membulatkan ke bawah untuk nilai negatif dan dipakai di semua penulisan stok/retur/void, termasuk jalur sinkronisasi.
+4. **`sqflite_sw.js` adalah artefak build**, bukan kode aplikasi; isinya minified dan hanya dipakai backend SQLite web.
+5. **Folder test sudah dihapus total** (25 file Flutter + 3 relay + 2 skrip uji) beserta hook test di `AppDatabase`, `SecureStore`, dan `SyncService`. `pubspec.lock` masih menyebut paket test sampai `pub get` berikutnya.
+6. **`summary_file_stub.dart` diimpor langsung oleh `owner_viewer`** ketika platform tidak mendukung file picker; di web/native implementasi yang dipakai ditentukan conditional import.
+7. **`analysis_options.yaml` mengecualikan folder platform** (`android/`, `web/`, `windows/`), sehingga lint Flutter tidak memeriksa kode native.
+8. **`start-relay.ps1` memuat path Dart hardcoded** (`C:\Users\sukron\flutter\bin\dart.bat`); di mesin lain perlu disesuaikan.
+9. **Mode viewer memakai database terpisah** `viewer_<owner_id>.db`; `openViewerDatabase` tidak menulis ke DB utama.
+10. **`app_settings` menyimpan penanda lokal** (mis. `sync.last_*`, `device.*`) yang dikecualikan saat snapshot/impor agar tidak menimpa identitas perangkat tujuan.
+11. **Persetujuan diskon diverifikasi sebelum `db.transaction`** di `createTransaction` (sama seperti `createEstimate`), supaya penghitung gagal PIN di `login_guards` tidak ikut ter-rollback saat PIN salah.
+12. **Konversi estimasi idempoten.** `convertEstimateToNote` mengirim `requestId = estimasi:<sync_id>` dan `createTransaction` hanya mengubah estimasi dengan syarat `status = 'aktif'`; klik ganda atau konversi ulang ditolak tanpa mengurangi stok dua kali.
+13. **Konflik final tidak memblokir.** `SyncConflictRules.isFinal` menandai penolakan izin/harga sebagai `rejected`; `_applyOnce` menganggapnya selesai sehingga kursor maju, sedangkan `blockingConflictCount` mengabaikan `review` dan final sehingga snapshot/backup tetap bisa dibuat.
+14. **Kuota follow-up diautentikasi.** `FollowupService` mengirim token perangkat hasil pairing ke `/relay/followup/quota`; tanpa token, kuota hanya dihitung lokal.
 
 ---
 

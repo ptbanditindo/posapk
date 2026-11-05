@@ -104,6 +104,7 @@ class BackupService {
     required String telegramChatId,
     String? telegramToken,
     bool clearTelegramToken = false,
+    String? autoPassphrase,
   }) async {
     final normalized = _normalizeTime(jam);
     if (normalized == null) {
@@ -124,6 +125,15 @@ class BackupService {
         _telegramTokenKey,
         telegramToken.trim(),
       );
+    }
+    final passphraseValue = autoPassphrase?.trim() ?? '';
+    if (passphraseValue.isNotEmpty) {
+      await setAutoPassphrase(passphraseValue);
+    }
+    if (telegramEnabled) {
+      // Arsip yang diunggah ke Telegram wajib punya kunci yang dapat
+      // ditampilkan ke pemilik; buat otomatis bila belum ada.
+      await _autoPassphrase();
     }
   }
 
@@ -175,12 +185,22 @@ class BackupService {
     }
   }
 
-  /// Passphrase perangkat untuk backup otomatis. Backup ini hanya dapat
-  /// dipulihkan di instalasi yang sama; gunakan backup manual berpassphrase
-  /// untuk memindahkan data ke perangkat lain.
+  /// Passphrase backup otomatis. Disimpan di penyimpanan aman dan dapat
+  /// ditampilkan ke pemilik; tanpa ini arsip Telegram tidak bisa dipulihkan
+  /// setelah aplikasi dipasang ulang atau pindah perangkat.
+  Future<String> autoPassphrase() => _autoPassphrase();
+
+  Future<void> setAutoPassphrase(String value) async {
+    final clean = value.trim();
+    if (clean.length < 8) {
+      throw ArgumentError('Passphrase backup minimal 8 karakter.');
+    }
+    await SecureStore.instance.write(_autoPassphraseKey, clean);
+  }
+
   Future<String> _autoPassphrase() async {
     final existing = await SecureStore.instance.read(_autoPassphraseKey);
-    if (existing != null && existing.trim().length >= 16) return existing;
+    if (existing != null && existing.trim().length >= 8) return existing;
     final random = Random.secure();
     final key = base64Encode(
       List<int>.generate(32, (_) => random.nextInt(256)),
@@ -559,7 +579,8 @@ class BackupService {
     final storeName =
         await db.getSetting('bengkel.nama') ?? 'PusatkuPOS';
     final caption =
-        '$storeName · ${DateTime.now().toIso8601String().substring(0, 10)}';
+        '$storeName · ${DateTime.now().toIso8601String().substring(0, 10)} · '
+        'arsip terkunci passphrase backup';
     try {
       final request = http.MultipartRequest(
         'POST',

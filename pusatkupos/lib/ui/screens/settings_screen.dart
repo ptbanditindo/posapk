@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../data/app_database.dart';
 import '../../data/backup_service.dart';
@@ -29,6 +30,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _garansiSyarat = TextEditingController();
   final _backupChat = TextEditingController();
   final _backupToken = TextEditingController();
+  final _backupPassphrase = TextEditingController();
+  bool _backupPassphraseVisible = false;
   bool _fiturKaryawan = true;
   bool _fiturSupplier = true;
   bool _busy = false;
@@ -53,6 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadBackup() async {
     final settings = await BackupService.instance.loadSettings();
     final status = await BackupService.instance.status();
+    final passphrase = await BackupService.instance.autoPassphrase();
     if (!mounted) return;
     setState(() {
       _backupAuto = settings.autoEnabled;
@@ -60,6 +64,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _backupTelegram = settings.telegramEnabled;
       _backupChat.text = settings.telegramChatId;
       _backupTokenConfigured = settings.telegramTokenConfigured;
+      _backupPassphrase.text = passphrase;
       _backupStatus = status;
     });
   }
@@ -98,6 +103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         telegramEnabled: _backupTelegram,
         telegramChatId: _backupChat.text,
         telegramToken: _backupToken.text,
+        autoPassphrase: _backupPassphrase.text,
       );
       _backupToken.clear();
       await _loadBackup();
@@ -818,6 +824,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _backupPassphrase,
+                  obscureText: !_backupPassphraseVisible,
+                  decoration: InputDecoration(
+                    labelText: 'Passphrase backup otomatis',
+                    helperText:
+                        'Minimal 8 karakter. Simpan di tempat aman agar arsip '
+                        'backup dapat dipulihkan di perangkat lain.',
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: _backupPassphraseVisible
+                              ? 'Sembunyikan'
+                              : 'Tampilkan',
+                          icon: Icon(
+                            _backupPassphraseVisible
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                          ),
+                          onPressed: () => setState(
+                            () => _backupPassphraseVisible =
+                                !_backupPassphraseVisible,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Salin passphrase',
+                          icon: const Icon(Icons.copy_outlined),
+                          onPressed: () async {
+                            await Clipboard.setData(
+                              ClipboardData(
+                                text: _backupPassphrase.text.trim(),
+                              ),
+                            );
+                            if (!mounted) return;
+                            showSnack(context, 'Passphrase disalin.');
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_backupTelegram)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Telegram hanya menerima arsip terenkripsi. Tanpa '
+                      'passphrase ini, backup tidak dapat dipulihkan.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
                 const SizedBox(height: 12),
                 Row(
                   children: [

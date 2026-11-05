@@ -206,7 +206,34 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
 
   bool _admin(Request request) {
     final header = request.headers['authorization'] ?? '';
-    return header == 'Bearer ${config.adminToken}';
+    return _constantTimeEquals(header, 'Bearer ${config.adminToken}');
+  }
+
+  bool _constantTimeEquals(String left, String right) {
+    final a = utf8.encode(left);
+    final b = utf8.encode(right);
+    var diff = a.length ^ b.length;
+    final length = a.length > b.length ? a.length : b.length;
+    for (var i = 0; i < length; i++) {
+      final x = i < a.length ? a[i] : 0;
+      final y = i < b.length ? b[i] : 0;
+      diff |= x ^ y;
+    }
+    return diff == 0;
+  }
+
+  /// Serialisasi nomor `relay_seq` per toko. `BIGSERIAL` dapat commit tidak
+  /// berurutan antar transaksi; tanpa kunci ini perangkat bisa melewati
+  /// amplop yang commit belakangan dengan nomor lebih kecil.
+  Future<void> _lockStore(
+    DatabaseSession tx,
+    String ownerId,
+    String storeId,
+  ) async {
+    await tx.execute(
+      'SELECT pg_advisory_xact_lock(hashtext(@owner), hashtext(@store))',
+      {'owner': ownerId, 'store': storeId},
+    );
   }
 
   /// Kelola akun/perangkat memakai token perangkat pemilik, bukan token
@@ -241,7 +268,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     String action,
   ) async {
     if (entity.isEmpty || action.isEmpty) return false;
-    const direct = {'nota', 'customer', 'unit', 'stock_movement'};
+    const direct = {'customer', 'unit', 'stock_movement'};
     if (direct.contains(entity)) return true;
     final accountId = device['employee_account_id'] as String? ?? '';
     final account = accountId.isEmpty
@@ -285,6 +312,8 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   }
 
   Future<Response> _followupQuota(Request request) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final body = await _body(request);
     final code = '${body['code'] ?? ''}'.trim();
     if (code.length < 8 || code.length > 96) {
@@ -524,9 +553,10 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     final store = '${body['store_id'] ?? ''}';
     try {
       _guardOverload();
-      final saved = await db.tx(
-        (tx) => _ingestEnvelope(tx, device, body),
-      );
+      final saved = await db.tx((tx) async {
+        await _lockStore(tx, device['owner_id'] as String, store);
+        return _ingestEnvelope(tx, device, body);
+      });
       await _pruneAcknowledged(device['owner_id'] as String, store);
       return _json(200, {
         ...saved,
@@ -553,6 +583,15 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
       _guardOverload();
       _writeQueue++;
       final results = await db.tx((tx) async {
+        final stores = <String>{store};
+        for (final item in raw) {
+          if (item is Map) stores.add('${item['store_id'] ?? ''}');
+        }
+        stores.remove('');
+        final ordered = stores.toList()..sort();
+        for (final value in ordered) {
+          await _lockStore(tx, device['owner_id'] as String, value);
+        }
         final output = <Map<String, Object?>>[];
         for (final item in raw) {
           if (item is! Map) {

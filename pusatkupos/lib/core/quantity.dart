@@ -16,6 +16,11 @@ String formatQuantity(int milli, int desimal, {String satuan = ''}) {
   return satuan.isEmpty ? trimmed : '$trimmed $satuan';
 }
 
+/// Satuan bulat untuk kolom `jumlah` lama. Nilai negatif dibulatkan ke bawah
+/// agar stok negatif pecahan tidak tampil sebagai 0.
+int wholeQuantity(int milli) =>
+    milli >= 0 ? milli ~/ 1000 : -((-milli + 999) ~/ 1000);
+
 int? parseQuantityToMilli(String raw, {int desimal = 0}) {
   var clean = raw.trim().replaceAll(' ', '');
   if (clean.isEmpty) return null;

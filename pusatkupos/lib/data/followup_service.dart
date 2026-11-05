@@ -10,6 +10,7 @@ import '../core/money.dart';
 import '../core/phone.dart';
 import '../core/wa_link.dart';
 import '../sync/relay_client.dart';
+import '../sync/sync_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 
@@ -647,8 +648,13 @@ class FollowupService {
     bool consume = false,
   }) async {
     if (!serviceConfigured) return null;
+    final token = await SyncService.instance.relayDeviceToken();
+    if (token == null || token.isEmpty) return null;
     try {
-      final body = await RelayClient(baseUrl: normalizedServiceUrl)
+      final body = await RelayClient(
+        baseUrl: normalizedServiceUrl,
+        deviceToken: token,
+      )
           .followupQuota(
             code: await _quotaCode(),
             used: localUsed,

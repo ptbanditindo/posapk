@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/quantity.dart';
 import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'models.dart';
@@ -335,11 +336,33 @@ extension NoteSyncDatabase on AppDatabase {
         if (movement.isNotEmpty) continue;
         final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        final partSync = part['sync_id'] as String? ?? '';
+        var returnedMilli = 0;
+        if (partSync.isNotEmpty) {
+          final returned = await txn.rawQuery(
+            '''
+SELECT COALESCE(SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000)), 0)
+  AS total
+FROM sale_return_items ri
+JOIN sale_returns sr ON sr.id = ri.return_id
+WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
+  AND ri.deleted_at IS NULL AND ri.line_type = 'part'
+  AND ri.line_sync_id = ?
+''',
+            [existingRecord.first['id'], partSync],
+          );
+          returnedMilli = (returned.first['total'] as num?)?.toInt() ?? 0;
+        }
+        final restockMilli = qtyMilli - returnedMilli;
+        if (restockMilli <= 0) continue;
         final before = StockItem.fromRow(stock.first);
-        final nextMilli = before.jumlahMilli + qtyMilli;
+        final nextMilli = before.jumlahMilli + restockMilli;
         await txn.update(
           'stock_items',
-          {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+          {
+            'jumlah': wholeQuantity(nextMilli),
+            'jumlah_milli': nextMilli,
+          },
           where: 'id = ?',
           whereArgs: [stock.first['id']],
         );
@@ -348,8 +371,8 @@ extension NoteSyncDatabase on AppDatabase {
           'stock_item_id': stock.first['id'],
           'nama_item': part['nama_part'],
           'jenis': 'MASUK',
-          'jumlah': qtyMilli ~/ 1000,
-          'jumlah_milli': qtyMilli,
+          'jumlah': wholeQuantity(restockMilli),
+          'jumlah_milli': restockMilli,
           'alasan': 'Void $recordSync',
           'service_record_id': existingRecord.first['id'],
           'created_at': nowIso(),
@@ -365,6 +388,7 @@ extension NoteSyncDatabase on AppDatabase {
           'status': 'VOID',
           'void_reason': reason,
           'voided_at': record['voided_at'] ?? nowIso(),
+          'sisa_bayar': 0,
           'updated_at': nowIso(),
         },
         where: 'id = ?',
@@ -724,7 +748,7 @@ extension NoteSyncDatabase on AppDatabase {
             'nama': stock?['nama'] ?? part['nama_part'],
             'harga_modal': stock?['harga_modal'] ?? 0,
             'harga_jual': stock?['harga_jual'] ?? 0,
-            'jumlah': (postSale + qtyMilli) ~/ 1000,
+            'jumlah': wholeQuantity(postSale + qtyMilli),
             'jumlah_milli': postSale + qtyMilli,
             'satuan': stock?['satuan'] ?? 'pcs',
             'desimal': stock?['desimal'] ?? 0,
@@ -755,7 +779,7 @@ extension NoteSyncDatabase on AppDatabase {
           final nextMilli = before.jumlahMilli - qtyMilli;
           await txn.update(
             'stock_items',
-            {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+            {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
             where: 'id = ?',
             whereArgs: [stockId],
           );
@@ -764,7 +788,7 @@ extension NoteSyncDatabase on AppDatabase {
             'stock_item_id': stockId,
             'nama_item': part['nama_part'],
             'jenis': 'KELUAR',
-            'jumlah': -qtyMilli ~/ 1000,
+            'jumlah': wholeQuantity(-qtyMilli),
             'jumlah_milli': -qtyMilli,
             'alasan': 'Penjualan ${record['no_nota']}',
             'service_record_id': recordId,
@@ -984,7 +1008,7 @@ extension NoteSyncDatabase on AppDatabase {
       final nextMilli = before + qtyMilli;
       await txn.update(
         'stock_items',
-        {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+        {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
         where: 'id = ?',
         whereArgs: [stockId],
       );
@@ -1002,7 +1026,7 @@ extension NoteSyncDatabase on AppDatabase {
           'stock_item_id': stockId,
           'nama_item': item['deskripsi'] ?? '',
           'jenis': 'MASUK',
-          'jumlah': qtyMilli ~/ 1000,
+          'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
           'alasan': 'Retur $noNota',
           'service_record_id': recordId,

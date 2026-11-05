@@ -14,6 +14,7 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/money.dart';
 import '../core/phone.dart';
+import '../core/quantity.dart';
 import '../sync/crypto.dart';
 import 'approval_service.dart';
 import 'models.dart';
@@ -851,7 +852,7 @@ class AppDatabase {
       'nama': nama.trim(),
       'harga_modal': hargaModalCents,
       'harga_jual': hargaJualCents,
-      'jumlah': milli ~/ 1000,
+      'jumlah': wholeQuantity(milli),
       'jumlah_milli': milli,
       'stok_minimum': stokMinimum,
       'satuan': satuan.trim().isEmpty ? 'pcs' : satuan.trim(),
@@ -882,7 +883,7 @@ class AppDatabase {
           'stock_items',
           {
             ...payload,
-            'jumlah': targetMilli ~/ 1000,
+            'jumlah': wholeQuantity(targetMilli),
             'jumlah_milli': targetMilli,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
@@ -899,7 +900,7 @@ class AppDatabase {
             'stock_item_id': id,
             'nama_item': payload['nama'],
             'jenis': 'KOREKSI',
-            'jumlah': delta ~/ 1000,
+            'jumlah': wholeQuantity(delta),
             'jumlah_milli': delta,
             'alasan': (alasan ?? '').trim().isEmpty
                 ? 'Koreksi stok'
@@ -932,7 +933,7 @@ class AppDatabase {
           'stock_item_id': newId,
           'nama_item': payload['nama'],
           'jenis': 'MASUK',
-          'jumlah': milli ~/ 1000,
+          'jumlah': wholeQuantity(milli),
           'jumlah_milli': milli,
           'alasan': (alasan ?? '').trim().isEmpty
               ? 'Stok awal'
@@ -1023,7 +1024,7 @@ class AppDatabase {
       final delta = jumlahFisikMilli - before.jumlahMilli;
       await txn.update(
         'stock_items',
-        {'jumlah': jumlahFisikMilli ~/ 1000, 'jumlah_milli': jumlahFisikMilli},
+        {'jumlah': wholeQuantity(jumlahFisikMilli), 'jumlah_milli': jumlahFisikMilli},
         where: 'id = ?',
         whereArgs: [item.id],
       );
@@ -1032,7 +1033,7 @@ class AppDatabase {
         'stock_item_id': item.id,
         'nama_item': item.nama,
         'jenis': 'KOREKSI',
-        'jumlah': delta ~/ 1000,
+        'jumlah': wholeQuantity(delta),
         'jumlah_milli': delta,
         'alasan': (alasan ?? '').trim().isEmpty
             ? 'Opname stok'
@@ -1066,7 +1067,7 @@ class AppDatabase {
       final next = before.jumlahMilli + deltaMilli;
       await txn.update(
         'stock_items',
-        {'jumlah': next ~/ 1000, 'jumlah_milli': next},
+        {'jumlah': wholeQuantity(next), 'jumlah_milli': next},
         where: 'id = ?',
         whereArgs: [item.id],
       );
@@ -1075,7 +1076,7 @@ class AppDatabase {
         'stock_item_id': item.id,
         'nama_item': item.nama,
         'jenis': jenis,
-        'jumlah': deltaMilli ~/ 1000,
+        'jumlah': wholeQuantity(deltaMilli),
         'jumlah_milli': deltaMilli,
         'alasan': alasan,
         'service_record_id': serviceRecordId,
@@ -1640,7 +1641,7 @@ class AppDatabase {
         final nextMilli = before.jumlahMilli - part.qtyMilli;
         await txn.update(
           'stock_items',
-          {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
           where: 'id = ?',
           whereArgs: [part.stockItemId],
         );
@@ -1649,7 +1650,7 @@ class AppDatabase {
           'stock_item_id': part.stockItemId,
           'nama_item': part.nama,
           'jenis': 'KELUAR',
-          'jumlah': -(part.qtyMilli ~/ 1000),
+          'jumlah': wholeQuantity(-part.qtyMilli),
           'jumlah_milli': -part.qtyMilli,
           'alasan': 'Penjualan $noNota',
           'service_record_id': recordId,
@@ -1973,12 +1974,18 @@ class AppDatabase {
       'WHERE service_record_id = ? AND deleted_at IS NULL',
       [recordId],
     );
+    // Koreksi bersifat absolut: ambil nilai_baru terakhir menurut HLC, bukan
+    // jumlahkan selisih yang bisa terhitung ganda saat dua perangkat koreksi
+    // bersamaan.
     final adjustmentRows = await txn.rawQuery(
       '''
-      SELECT COALESCE(SUM(a.nilai_selisih), 0) AS total
-      FROM nota_adjustments a
-      JOIN service_records r ON r.sync_id = a.nota_sync_id
-      WHERE r.id = ? AND a.deleted_at IS NULL
+      SELECT COALESCE(
+        (SELECT a.nilai_baru FROM nota_adjustments a
+          WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
+          ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+          LIMIT 1) - r.total_servis,
+        0) AS total
+      FROM service_records r WHERE r.id = ?
       ''',
       [recordId],
     );
@@ -2548,6 +2555,7 @@ class AppDatabase {
     String reason, {
     Operator? actor,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, int recordId)? enqueuePayment,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
   }) async {
@@ -2600,7 +2608,7 @@ class AppDatabase {
         final nextMilli = stock.jumlahMilli + qtyMilli;
         await txn.update(
           'stock_items',
-          {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
           where: 'id = ?',
           whereArgs: [stockId],
         );
@@ -2609,7 +2617,7 @@ class AppDatabase {
           'stock_item_id': stockId,
           'nama_item': part['nama_part'],
           'jenis': 'MASUK',
-          'jumlah': qtyMilli ~/ 1000,
+          'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
           'alasan': 'Void nota ${rows.first['no_nota']}',
           'service_record_id': id,
@@ -2644,6 +2652,9 @@ class AppDatabase {
             'created_at': now,
             'updated_at': now,
           });
+          // Perangkat lain hanya menyamakan status saat void, jadi REFUND
+          // dikirim sebagai amplop pembayaran agar tidak hilang dari kas.
+          if (enqueuePayment != null) await enqueuePayment(txn, id);
         }
       }
       await txn.update(
@@ -2903,11 +2914,15 @@ class AppDatabase {
     final returRow = returnRows.first;
     final adjustmentRows = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(a.nilai_selisih), 0) AS total
-      FROM nota_adjustments a
-      JOIN service_records r ON r.sync_id = a.nota_sync_id
+      SELECT COALESCE(SUM(latest.nilai_baru - r.total_servis), 0) AS total
+      FROM service_records r
+      JOIN nota_adjustments latest ON latest.id = (
+        SELECT a.id FROM nota_adjustments a
+        WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
+        ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+        LIMIT 1
+      )
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
-        AND a.deleted_at IS NULL
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );

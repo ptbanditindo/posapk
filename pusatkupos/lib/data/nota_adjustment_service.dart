@@ -56,13 +56,17 @@ class NotaAdjustmentService {
 
   Future<int> create({
     required String notaSyncId,
-    required int nilaiBaru,
+    int? nilaiBaru,
+    int? selisih,
     required String alasan,
     Operator? actor,
     String? ownerPin,
     String? approverSecret,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
+    if ((nilaiBaru == null) == (selisih == null)) {
+      throw ArgumentError('Isi salah satu: nilai baru atau selisih koreksi.');
+    }
     final cleanReason = alasan.trim();
     if (cleanReason.isEmpty) {
       throw ArgumentError('Alasan koreksi wajib diisi.');
@@ -75,68 +79,82 @@ class NotaAdjustmentService {
     if (!actor.isOwner && !settings.roleAllows(role, 'koreksi')) {
       throw StateError('Peran $role tidak berhak membuat koreksi nota.');
     }
-    return AppDatabase.instance.db.transaction((txn) async {
-      final records = await txn.query(
+    final db = AppDatabase.instance.db;
+    final records = await db.query(
+      'service_records',
+      where: 'sync_id = ?',
+      whereArgs: [notaSyncId],
+      limit: 1,
+    );
+    if (records.isEmpty) {
+      throw StateError('Nota asal tidak ditemukan.');
+    }
+    final record = records.first;
+    if (record['voided_at'] != null || record['status'] == 'VOID') {
+      throw StateError('Nota yang sudah dibatalkan tidak dapat dikoreksi.');
+    }
+    final recordId = record['id'] as int;
+    final modalTotal = await _modalTotal(db, recordId);
+    final previewTarget =
+        nilaiBaru ?? (await _currentTotal(db, recordId)) + selisih!;
+    // Verifikasi PIN di luar transaksi agar hitungan percobaan gagal tetap
+    // tersimpan walau transaksi koreksi dibatalkan.
+    var ownerApproved = actor.isOwner;
+    String? approver = ownerApproved ? actor.label : null;
+    try {
+      PriceRules.validateCorrection(
+        modalTotal: modalTotal,
+        nilaiBaru: previewTarget,
+        ownerApproved: ownerApproved,
+      );
+    } on PriceRuleViolation catch (error) {
+      if (error.code != 'di_bawah_batas_minimal') rethrow;
+      final hasInput =
+          (ownerPin ?? '').trim().isNotEmpty ||
+          (approverSecret ?? '').trim().isNotEmpty;
+      if (!hasInput) rethrow;
+      try {
+        final approval = await ApprovalService.instance.verify(
+          settings: settings,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+        );
+        ownerApproved = true;
+        approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
+      } on ApprovalException catch (failure) {
+        throw PriceRuleViolation('persetujuan_gagal', failure.message);
+      }
+    }
+    return db.transaction((txn) async {
+      final current = await txn.query(
         'service_records',
-        where: 'sync_id = ?',
-        whereArgs: [notaSyncId],
+        columns: ['voided_at', 'status'],
+        where: 'id = ?',
+        whereArgs: [recordId],
         limit: 1,
       );
-      if (records.isEmpty) {
-        throw StateError('Nota asal tidak ditemukan.');
-      }
-      final record = records.first;
-      if (record['voided_at'] != null || record['status'] == 'VOID') {
+      if (current.isEmpty ||
+          current.first['voided_at'] != null ||
+          '${current.first['status']}' == 'VOID') {
         throw StateError('Nota yang sudah dibatalkan tidak dapat dikoreksi.');
-      }
-      final recordId = record['id'] as int;
-      final modalRows = await txn.rawQuery(
-        '''
-        SELECT
-          COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah)
-            FROM service_jobs WHERE service_record_id = ?), 0) +
-          COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah)
-            FROM service_parts WHERE service_record_id = ?), 0) AS modal
-        ''',
-        [recordId, recordId],
-      );
-      final modalTotal = (modalRows.first['modal'] as num?)?.toInt() ?? 0;
-      var ownerApproved = actor.isOwner;
-      String? approver = ownerApproved ? actor.label : null;
-      try {
-        PriceRules.validateCorrection(
-          modalTotal: modalTotal,
-          nilaiBaru: nilaiBaru,
-          ownerApproved: ownerApproved,
-        );
-      } on PriceRuleViolation catch (error) {
-        if (error.code != 'di_bawah_batas_minimal') rethrow;
-        final hasInput =
-            (ownerPin ?? '').trim().isNotEmpty ||
-            (approverSecret ?? '').trim().isNotEmpty;
-        if (!hasInput) rethrow;
-        try {
-          final approval = await ApprovalService.instance.verify(
-            settings: settings,
-            ownerPin: ownerPin,
-            approverSecret: approverSecret,
-            executor: txn,
-          );
-          ownerApproved = true;
-          approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
-        } on ApprovalException catch (failure) {
-          throw PriceRuleViolation('persetujuan_gagal', failure.message);
-        }
       }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final previous = await _currentTotal(txn, recordId);
-      final selisih = nilaiBaru - previous;
+      final target = nilaiBaru ?? previous + selisih!;
+      final delta = target - previous;
+      if (!ownerApproved) {
+        PriceRules.validateCorrection(
+          modalTotal: modalTotal,
+          nilaiBaru: target,
+          ownerApproved: false,
+        );
+      }
       final now = nowIso();
       final id = await txn.insert('nota_adjustments', {
         'sync_id': newSyncId(),
         'nota_sync_id': notaSyncId,
-        'nilai_selisih': selisih,
-        'nilai_baru': nilaiBaru,
+        'nilai_selisih': delta,
+        'nilai_baru': target,
         'alasan': cleanReason,
         'dibuat_oleh': actor?.label ?? 'Pemilik',
         'disetujui_oleh': ownerApproved ? approver : null,
@@ -153,8 +171,8 @@ class NotaAdjustmentService {
         'detail_json': jsonEncode({
           'nota_sync_id': notaSyncId,
           'nilai_lama': previous,
-          'nilai_baru': nilaiBaru,
-          'selisih': selisih,
+          'nilai_baru': target,
+          'selisih': delta,
           'disetujui_oleh': approver,
         }),
         'created_at': now,
@@ -162,6 +180,21 @@ class NotaAdjustmentService {
       if (enqueue != null) await enqueue(txn, id);
       return id;
     });
+  }
+
+  Future<int> _modalTotal(DatabaseExecutor executor, int recordId) async {
+    final rows = await executor.rawQuery(
+      '''
+      SELECT
+        COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah)
+          FROM service_jobs WHERE service_record_id = ?), 0) +
+        COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
+          COALESCE(jumlah_milli, jumlah * 1000) / 1000.0))
+          FROM service_parts WHERE service_record_id = ?), 0) AS modal
+      ''',
+      [recordId, recordId],
+    );
+    return (rows.first['modal'] as num?)?.toInt() ?? 0;
   }
 
   /// Koreksi cepat memakai selisih (boleh negatif untuk retur).
@@ -174,10 +207,9 @@ class NotaAdjustmentService {
     String? approverSecret,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
-    final total = await adjustedTotalBySync(notaSyncId);
     return create(
       notaSyncId: notaSyncId,
-      nilaiBaru: total + selisih,
+      selisih: selisih,
       alasan: alasan,
       actor: actor,
       ownerPin: ownerPin,
@@ -242,11 +274,16 @@ class NotaAdjustmentService {
   }
 
   Future<int> _currentTotal(DatabaseExecutor txn, int recordId) async {
+    // Koreksi terakhir menurut HLC menentukan total; SUM selisih akan
+    // menghitung ganda koreksi yang dibuat bersamaan di dua perangkat.
     final rows = await txn.rawQuery(
       '''
-      SELECT r.total_servis +
-        COALESCE((SELECT SUM(nilai_selisih) FROM nota_adjustments
-          WHERE nota_sync_id = r.sync_id AND deleted_at IS NULL), 0) AS total
+      SELECT COALESCE(
+        (SELECT a.nilai_baru FROM nota_adjustments a
+          WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
+          ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+          LIMIT 1),
+        r.total_servis) AS total
       FROM service_records r WHERE r.id = ? LIMIT 1
       ''',
       [recordId],

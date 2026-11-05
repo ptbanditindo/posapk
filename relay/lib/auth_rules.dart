@@ -59,8 +59,14 @@ bool employeeEntityAllowed({
       extras.contains(permission) ||
       (baseRolePermissions[roleBase]?.contains(permission) ?? false);
   if (entity == 'supplier_followup') return allowed('followup');
+  if (entity == 'nota') {
+    if (action == 'void') return allowed('void');
+    if (action == 'warranty' || action == 'taken') {
+      return allowed('ubah_status');
+    }
+    return allowed('buat_nota');
+  }
   const direct = {
-    'nota',
     'customer',
     'unit',
     'stock_movement',
@@ -68,8 +74,10 @@ bool employeeEntityAllowed({
     'data_response',
   };
   if (direct.contains(entity)) return true;
-  // Harga jasa dan data barang (termasuk harga modal) hanya dari pemilik.
-  if (entity == 'harga_jasa' || entity == 'stock') return false;
+  // Harga jasa hanya dari pemilik. Data barang boleh diubah karyawan yang
+  // punya izin stok; penerima tetap menolak bila harga ikut berubah.
+  if (entity == 'harga_jasa') return false;
+  if (entity == 'stock') return allowed('ubah_stok');
   if (entity == 'estimate') return allowed('buat_estimasi');
   if (entity == 'work_order') return allowed('buat_order');
   if (entity == 'work_order_status') return allowed('ubah_status');

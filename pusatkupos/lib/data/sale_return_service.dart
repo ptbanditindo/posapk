@@ -149,7 +149,7 @@ class SaleReturnService {
           'line_type': lineType,
           'line_sync_id': line['sync_id'] as String? ?? '',
           'deskripsi': line['deskripsi'] as String? ?? '',
-          'jumlah': qtyMilli ~/ 1000,
+          'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
           'harga_satuan': qtyMilli == 0 ? 0 : (refund * 1000 / qtyMilli).round(),
           'subtotal': refund,
@@ -175,7 +175,7 @@ class SaleReturnService {
         final nextMilli = before + qtyMilli;
         await txn.update(
           'stock_items',
-          {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
           where: 'id = ?',
           whereArgs: [stockItemId],
         );
@@ -184,7 +184,7 @@ class SaleReturnService {
           'stock_item_id': stockItemId,
           'nama_item': line['deskripsi'] as String? ?? '',
           'jenis': 'MASUK',
-          'jumlah': qtyMilli ~/ 1000,
+          'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
           'alasan': 'Retur $noNota',
           'service_record_id': recordId,
@@ -192,6 +192,7 @@ class SaleReturnService {
           'updated_at': now,
         });
       }
+      final totalServis = (record['total_servis'] as num?)?.toInt() ?? 0;
       final totals = await txn.rawQuery(
         '''
         SELECT
@@ -199,20 +200,22 @@ class SaleReturnService {
             WHERE service_record_id = ?), 0) AS paid,
           COALESCE((SELECT SUM(total) FROM sale_returns
             WHERE service_record_id = ? AND deleted_at IS NULL), 0) AS returns,
-          COALESCE((SELECT SUM(a.nilai_selisih) FROM nota_adjustments a
-            WHERE a.nota_sync_id = ? AND a.deleted_at IS NULL), 0) AS adjust
+          COALESCE((SELECT a.nilai_baru FROM nota_adjustments a
+            WHERE a.nota_sync_id = ? AND a.deleted_at IS NULL
+            ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+            LIMIT 1), ?) AS adjusted_total
         ''',
-        [recordId, recordId, notaSyncId],
+        [recordId, recordId, notaSyncId, totalServis],
       );
       final paidSoFar = (totals.first['paid'] as num?)?.toInt() ?? 0;
       final returnsSoFar = (totals.first['returns'] as num?)?.toInt() ?? 0;
-      final adjustmentSoFar = (totals.first['adjust'] as num?)?.toInt() ?? 0;
-      final totalServis = (record['total_servis'] as num?)?.toInt() ?? 0;
-      final outstandingBefore = (totalServis +
-              adjustmentSoFar -
+      final adjustedTotal =
+          (totals.first['adjusted_total'] as num?)?.toInt() ?? totalServis;
+      final ceiling = adjustedTotal > 0 ? adjustedTotal : totalServis;
+      final outstandingBefore = (adjustedTotal -
               (returnsSoFar - total) -
               paidSoFar)
-          .clamp(0, totalServis)
+          .clamp(0, ceiling)
           .toInt();
       final cashRefund =
           total > outstandingBefore ? total - outstandingBefore : 0;

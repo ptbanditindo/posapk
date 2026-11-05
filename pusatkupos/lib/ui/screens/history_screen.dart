@@ -229,6 +229,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       recordId,
                       txn: txn,
                     ),
+                    enqueuePayment: (txn, recordId) =>
+                        SyncService.instance.enqueueNotePayment(
+                      recordId,
+                      txn: txn,
+                    ),
                     enqueueEstimate: (txn, syncId) =>
                         SyncService.instance.enqueueEstimate(
                       syncId,

@@ -455,3 +455,20 @@ Setiap perbaikan sebaiknya disertai pengujian manual pada alur: pelanggan → un
 Catatan yang sengaja belum diubah (butuh keputusan pemilik): basis komisi tetap memakai jasa dan margin **sebelum** diskon; label cicilan tetap `DP` sampai cicilan terakhir; `parseQuantityToMilli("1.500")` pada satuan berdesimal dibaca 1,5 (semua pemanggil sudah menolak nol/negatif); lockout login masih berbasis jam perangkat.
 
 
+
+### Kelompok 6 — temuan audit lanjutan: seq relay, izin stok, koreksi, backup, void (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| B-01 | Sudah diperbaiki | Urutan `relay_seq` dijamin per toko dengan `pg_advisory_xact_lock(hashtext(owner), hashtext(store))` pada amplop tunggal dan batch. Celah nomor akibat rollback tidak berbahaya karena feed memakai `relay_seq > since`. | `relay/lib/server.dart` (`_lockStore`, `_ingestEnvelope`) |
+| B-02 | Sudah diperbaiki | Perangkat karyawan boleh mengirim perubahan **jumlah** stok bila punya `ubah_stok`; perubahan harga dari karyawan ditolak sebagai konflik final `harga_dikunci_owner` sehingga delta tidak lagi tertahan permanen dan kursor tetap maju. | `relay/lib/auth_rules.dart`, `pusatkupos/lib/sync/sync_conflict_rules.dart`, `sync/sync_service.dart` |
+| B-03 | Sudah diperbaiki | Backup otomatis memakai passphrase yang disimpan di SecureStore, minimal 8 karakter, dapat dilihat/disalin dari Pengaturan; caption Telegram menandai arsip terkunci. Arsip Telegram kini dapat dipulihkan di perangkat lain. | `data/backup_service.dart`, `ui/screens/settings_screen.dart` |
+| B-04 | Sudah diperbaiki | Koreksi nota: (1) PIN/approval diverifikasi di luar transaksi agar hitungan gagal tidak ikut rollback; (2) target dihitung di dalam transaksi, termasuk mode `selisih`, sehingga koreksi bersamaan tidak saling menimpa; (3) total efektif memakai `nilai_baru` terakhir menurut HLC, bukan `SUM(nilai_selisih)`; (4) modal part memakai `COALESCE(jumlah_milli, jumlah * 1000)`. Berlaku di layar koreksi, laporan, refund retur, dan penerimaan remote. | `data/nota_adjustment_service.dart`, `data/app_database.dart` (`recalculateRecordTotals`, `reportSummary`), `data/sale_return_service.dart`, `sync/sync_service.dart` |
+| B-05 | Sudah diperbaiki | Void dari perangkat lain tidak lagi mengembalikan qty yang sudah diretur, menolkan `sisa_bayar`, dan REFUND ikut disinkronkan lewat amplop `note_payment` agar kas perangkat lain sama. | `data/app_database.dart` (`voidRecord`), `data/note_sync.dart`, `ui/screens/history_screen.dart` |
+| B-06 | Sudah diperbaiki | Izin `nota` di relay dipilah per aksi: `void` butuh `void`, `warranty`/`taken` butuh `ubah_status`, lainnya `buat_nota`; konflik izin dicatat final dan tidak memblokir kursor. | `relay/lib/auth_rules.dart`, `sync/sync_conflict_rules.dart`, `sync/sync_service.dart` |
+| B-07 | Sudah diperbaiki | `/relay/followup/quota` memerlukan token perangkat; aplikasi mengirim token hasil pairing dan jatuh ke kuota lokal bila belum dipasangkan. | `relay/lib/server.dart` (`_followupQuota`), `data/followup_service.dart` |
+| B-08 | Sudah diperbaiki | Perbandingan token admin relay memakai waktu konstan. | `relay/lib/server.dart` (`_admin`, `_constantTimeEquals`) |
+| B-09 | Sudah diperbaiki | Konflik `review` dan konflik final tidak lagi menghalangi snapshot/backup; `blockingConflictCount` hanya menghitung delta yang belum diterapkan. | `sync/sync_service.dart` (`blockingConflictCount`, `_requireCleanBeforeUpload`) |
+| B-10 | Sudah diperbaiki | Kolom lama `jumlah` memakai `wholeQuantity(milli)` yang membulatkan ke bawah untuk nilai negatif, dipakai di stok, retur, void, dan jalur sinkronisasi. | `core/quantity.dart`, `data/app_database.dart`, `data/note_sync.dart`, `data/sale_return_service.dart`, `sync/sync_service.dart` |
+
+Catatan: payload stok memang sudah membawa `jumlah_milli`; kecurigaan soal kuantitas stok yang hilang tidak terbukti. Masalah sebenarnya adalah entitas `stock` diperlakukan sebagai entitas harga sehingga seluruh delta ditolak (B-02).

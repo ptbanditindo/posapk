@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/quantity.dart';
 import '../core/relay_url.dart';
 import '../data/account_service.dart';
 import '../data/app_database.dart';
@@ -710,13 +711,18 @@ class SyncService {
   }
 
   /// Konflik yang masih menghalangi unggahan: delta belum diterapkan atau
-  /// konflik permanen yang belum diselesaikan pengguna.
+  /// konflik permanen yang belum diselesaikan pengguna. Konflik `review`
+  /// tidak menghalangi karena datanya sudah diterapkan.
   Future<int> blockingConflictCount() async {
     final rows = await AppDatabase.instance.db.rawQuery(
       "SELECT COUNT(*) AS total FROM sync_conflicts "
       "WHERE resolved_at IS NULL AND ("
-      "status IN ('failed', 'retrying', 'review') "
-      "OR (status = 'open' AND reason != 'versi_lokal_lebih_baru'))",
+      "status IN ('failed', 'retrying') "
+      "OR (status = 'open' AND reason != 'versi_lokal_lebih_baru' "
+      "AND reason NOT LIKE 'peran_tidak_berhak%' "
+      "AND reason NOT IN ('peran_viewer_hanya_baca', 'hanya_owner', "
+      "'harga_dikunci_owner', 'hapus_order_hanya_owner'))"
+      ")",
     );
     return rows.first['total'] as int? ?? 0;
   }
@@ -2274,7 +2280,8 @@ class SyncService {
         final rejected = reasons.where(
           (reason) =>
               !SyncConflictRules.supersededReasons.contains(reason) &&
-              !SyncConflictRules.reviewReasons.contains(reason),
+              !SyncConflictRules.reviewReasons.contains(reason) &&
+              !SyncConflictRules.isFinal(reason),
         );
         if (rejected.isNotEmpty) {
           // Delta ditolak: batalkan seluruh perubahan agar tidak ada data
@@ -2628,12 +2635,16 @@ class SyncService {
     required Map<String, Object?> detail,
     String status = 'open',
   }) async {
+    final effective =
+        status == 'open' && SyncConflictRules.isFinal(reason)
+            ? 'rejected'
+            : status;
     await txn.insert('sync_conflicts', {
       'entity': entity,
       'entity_id': entityId,
       'reason': reason,
       'detail_json': jsonEncode(detail),
-      'status': status,
+      'status': effective,
       'retry_count': 0,
       'last_error': '${detail['error'] ?? ''}',
       'created_at': nowIso(),
@@ -2831,6 +2842,32 @@ class SyncService {
         );
         return;
       }
+      int cents(Object? value) => (value as num?)?.toInt() ?? 0;
+      if (!senderProfile.isOwner && rows.isNotEmpty) {
+        final current = rows.first;
+        final priceChanged =
+            (payload.containsKey('harga_jual') &&
+                cents(payload['harga_jual']) !=
+                    cents(current['harga_jual'])) ||
+            (payload.containsKey('harga_modal') &&
+                cents(payload['harga_modal']) !=
+                    cents(current['harga_modal']));
+        if (priceChanged) {
+          await _recordConflict(
+            txn,
+            entity: entity,
+            entityId: syncId,
+            reason: 'harga_dikunci_owner',
+            detail: {
+              'envelope_id': envelopeId,
+              'sender_kind': senderKind,
+              'action': action,
+              'error': '',
+            },
+          );
+          return;
+        }
+      }
       final values = {
         'kode': payload['kode'],
         'nama': payload['nama'],
@@ -2853,7 +2890,7 @@ class SyncService {
         await txn.insert('stock_items', {
           'sync_id': syncId,
           ...values,
-          'jumlah': milli ~/ 1000,
+          'jumlah': wholeQuantity(milli),
           'jumlah_milli': milli,
           'created_at': nowIso(),
         });
@@ -2907,7 +2944,7 @@ class SyncService {
         'stock_item_id': stock.first['id'],
         'nama_item': payload['nama_item'] ?? stock.first['nama'],
         'jenis': payload['jenis'] ?? 'KOREKSI',
-        'jumlah': qtyMilli ~/ 1000,
+        'jumlah': wholeQuantity(qtyMilli),
         'jumlah_milli': qtyMilli,
         'alasan': payload['alasan'],
         'service_record_id': recordId,
@@ -2918,7 +2955,7 @@ class SyncService {
       final next = before.jumlahMilli + qtyMilli;
       await txn.update(
         'stock_items',
-        {'jumlah': next ~/ 1000, 'jumlah_milli': next},
+        {'jumlah': wholeQuantity(next), 'jumlah_milli': next},
         where: 'id = ?',
         whereArgs: [stock.first['id']],
       );
@@ -3761,7 +3798,8 @@ class SyncService {
         'SELECT '
         'COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah) '
         'FROM service_jobs WHERE service_record_id = ?), 0) + '
-        'COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah) '
+        'COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi * '
+        'COALESCE(jumlah_milli, jumlah * 1000) / 1000.0)) '
         'FROM service_parts WHERE service_record_id = ?), 0) AS modal',
         [record.first['id'], record.first['id']],
       );
