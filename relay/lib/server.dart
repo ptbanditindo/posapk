@@ -42,6 +42,10 @@ class RelayServer {
     max: 10,
     window: const Duration(minutes: 10),
   );
+  final RateLimiter _inviteRateLimit = RateLimiter(
+    max: 10,
+    window: const Duration(minutes: 10),
+  );
   final Router _router;
   int _activeRequests = 0;
   int _writeQueue = 0;
@@ -685,7 +689,7 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
 
     final existing = await tx.one(
       '''
-SELECT id, relay_seq FROM envelopes
+SELECT id, relay_seq, idempotency_key FROM envelopes
 WHERE owner_id = @owner
   AND (idempotency_key = @key
        OR (store_id = @store AND sender_device_id = @sender AND seq = @seq))
@@ -699,6 +703,13 @@ WHERE owner_id = @owner
       },
     );
     if (existing != null) {
+      if ('${existing['idempotency_key'] ?? ''}' != fields['idempotency_key']) {
+        throw _EnvelopeRejection(
+          409,
+          'Nomor seq sudah dipakai amplop lain.',
+          code: 'seq_conflict',
+        );
+      }
       return {
         'id': existing['id'],
         'relay_seq': existing['relay_seq'],
@@ -738,10 +749,33 @@ ON CONFLICT DO NOTHING
       },
     );
     final saved = await tx.one(
-      'SELECT id, relay_seq FROM envelopes WHERE idempotency_key = @key',
-      {'key': fields['idempotency_key']},
+      'SELECT id, relay_seq FROM envelopes '
+      'WHERE idempotency_key = @key AND owner_id = @owner',
+      {'key': fields['idempotency_key'], 'owner': device['owner_id']},
     );
-    return saved ?? {'id': id};
+    if (saved != null) return saved;
+    final clash = await tx.one(
+      'SELECT id FROM envelopes WHERE owner_id = @owner AND store_id = @store '
+      'AND sender_device_id = @sender AND seq = @seq',
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'sender': sender,
+        'seq': fields['seq'],
+      },
+    );
+    if (clash != null) {
+      throw _EnvelopeRejection(
+        409,
+        'Nomor seq sudah dipakai amplop lain.',
+        code: 'seq_conflict',
+      );
+    }
+    throw _EnvelopeRejection(
+      409,
+      'Amplop gagal disimpan; kirim ulang.',
+      code: 'envelope_not_saved',
+    );
   }
 
   void _guardOverload() {
@@ -800,27 +834,45 @@ FROM envelopes WHERE owner_id = @owner AND store_id = @store
     };
   }
 
-  /// Hapus amplop yang sudah diakui SEMUA perangkat aktif pada toko.
+  /// Perangkat yang ikut menentukan batas pemangkasan: semua perangkat owner
+  /// ditambah satu perangkat karyawan terbaru per akun. Perangkat karyawan
+  /// lama yang tidak pernah ack tidak lagi menahan amplop selamanya.
+  static const String _relevantDevicesCte = '''
+relevant AS (
+  SELECT d.id FROM devices d
+  WHERE d.owner_id = @owner AND d.revoked_at IS NULL
+    AND d.store_ids @> CAST(@stores AS jsonb)
+    AND (
+      d.kind = 'owner'
+      OR (d.kind = 'employee' AND d.id = (
+        SELECT d2.id FROM devices d2
+        WHERE d2.owner_id = d.owner_id
+          AND d2.employee_account_id = d.employee_account_id
+          AND d2.revoked_at IS NULL
+          AND d2.store_ids @> CAST(@stores AS jsonb)
+        ORDER BY d2.created_at DESC LIMIT 1
+      ))
+    )
+)
+''';
+
+  /// Hapus amplop yang sudah diakui SEMUA perangkat relevan pada toko.
   /// Perangkat yang dicabut tidak lagi masuk daftar ack.
   Future<void> _pruneAcknowledged(String ownerId, String store) async {
     if (store.isEmpty) return;
     final activeRow = await db.one(
-      '''
-SELECT COUNT(*) AS total FROM devices
-WHERE owner_id = @owner AND revoked_at IS NULL
-  AND store_ids @> CAST(@stores AS jsonb)
-''',
+      'WITH $_relevantDevicesCte SELECT COUNT(*) AS total FROM relevant',
       {'owner': ownerId, 'stores': jsonEncode([store])},
     );
     final active = (activeRow?['total'] as num?)?.toInt() ?? 0;
     if (active <= 0) return;
     final floorRow = await db.one(
       '''
+WITH $_relevantDevicesCte
 SELECT MIN(c.last_seq) AS seq, COUNT(*) AS total
 FROM cursors c
-JOIN devices d ON d.id = c.device_id AND d.owner_id = c.owner_id
+JOIN relevant r ON r.id = c.device_id
 WHERE c.owner_id = @owner AND c.store_id = @store
-  AND d.revoked_at IS NULL AND d.store_ids @> CAST(@stores AS jsonb)
 ''',
       {
         'owner': ownerId,
@@ -937,10 +989,12 @@ ORDER BY relay_seq ASC LIMIT @limit
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final body = await _body(request);
     final store = '${body['store_id'] ?? ''}';
-    final lastSeq = (body['last_seq'] as num?)?.toInt() ?? 0;
     if (!stringList(device['store_ids']).contains(store)) {
       return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
     }
+    final latestSeq = await _storeLatestSeq(device['owner_id'] as String, store);
+    final lastSeq =
+        ((body['last_seq'] as num?)?.toInt() ?? 0).clamp(0, latestSeq);
     await db.execute(
       '''
 INSERT INTO cursors (owner_id, device_id, store_id, last_seq, updated_at)
@@ -1259,7 +1313,9 @@ ORDER BY created_at DESC LIMIT 1
     if (!listed) {
       return _error(403, 'Perangkat ini tidak termasuk dalam putaran sinkron.');
     }
-    final lastSeq = (body['last_seq'] as num?)?.toInt() ?? 0;
+    final roundLatest = (round['latest_seq'] as num?)?.toInt() ?? 0;
+    final lastSeq =
+        ((body['last_seq'] as num?)?.toInt() ?? 0).clamp(0, roundLatest);
     final pending = ((body['pending_count'] as num?)?.toInt() ?? 0)
         .clamp(0, 1000000);
     await db.execute(
@@ -1302,11 +1358,11 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
     if (!stringList(device['store_ids']).contains(store)) {
       return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
     }
-    if ('${device['kind']}' == 'viewer') {
+    if ('${device['kind']}' != 'owner') {
       return _error(
         403,
-        'Mode ringkasan tidak dapat mengunggah cadangan toko.',
-        code: 'read_only',
+        'Hanya perangkat owner yang dapat mengunggah cadangan toko.',
+        code: 'owner_device_required',
       );
     }
     final roundId = '${body['round_id'] ?? ''}';
@@ -1411,8 +1467,36 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
     });
   }
 
+  /// Toko dianggap sah bila terdaftar pada kunci toko owner. Owner baru yang
+  /// belum pernah mengunggah kunci hanya boleh memakai toko bawaan `utama`.
+  Future<bool> _ownerStoreAllowed(String ownerId, String storeId) async {
+    if (!RegExp(r'^[A-Za-z0-9._:-]{1,64}$').hasMatch(storeId)) return false;
+    final any = await db.one(
+      'SELECT 1 AS ok FROM store_keys WHERE owner_id = @owner LIMIT 1',
+      {'owner': ownerId},
+    );
+    if (any == null) return storeId == 'utama';
+    final match = await db.one(
+      'SELECT 1 AS ok FROM store_keys WHERE owner_id = @owner AND store_id = @store LIMIT 1',
+      {'owner': ownerId, 'store': storeId},
+    );
+    return match != null;
+  }
+
   Future<Response> _claimInvite(Request request) async {
+    if (!_inviteRateLimit.allow(_clientIp(request))) {
+      return _error(
+        429,
+        'Terlalu banyak percobaan klaim undangan. Coba lagi beberapa menit lagi.',
+        code: 'rate_limited',
+      );
+    }
     final body = await _body(request);
+    final publicKey = '${body['public_key'] ?? ''}'.trim();
+    final encryptionKey = '${body['encryption_key'] ?? ''}'.trim();
+    if (publicKey.isEmpty || encryptionKey.isEmpty) {
+      return _error(400, 'Kunci perangkat wajib dikirim.');
+    }
     final code = '${body['code'] ?? ''}'.trim().toUpperCase();
     final invite = await db.one(
       'SELECT * FROM invites WHERE code = @code',
@@ -1434,9 +1518,31 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
       {'owner': ownerId, 'sync': invite['account_sync_id']},
     );
     if (account == null) return _error(404, 'Akun undangan tidak ditemukan.');
+    if (account['aktif'] != true) {
+      return _error(
+        403,
+        'Akun undangan tidak aktif.',
+        code: 'account_inactive',
+      );
+    }
+    final storeId = '${invite['store_id'] ?? ''}';
+    if (!await _ownerStoreAllowed(ownerId, storeId)) {
+      return _error(
+        400,
+        'Toko undangan tidak terdaftar pada owner.',
+        code: 'store_invalid',
+      );
+    }
+    final accountStores = stringList(account['store_ids']);
+    if (accountStores.isNotEmpty && !accountStores.contains(storeId)) {
+      return _error(
+        403,
+        'Akun tidak berhak pada toko undangan.',
+        code: 'store_denied',
+      );
+    }
     final deviceId = _id('dev');
     final token = _token();
-    final storeId = invite['store_id'] as String;
     await db.tx((tx) async {
       await tx.execute(
         '''
@@ -1450,8 +1556,8 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
           'owner': ownerId,
           'nama': '${body['nama'] ?? 'Perangkat karyawan'}',
           'account': account['sync_id'],
-          'public': '${body['public_key'] ?? ''}',
-          'encrypt': '${body['encryption_key'] ?? ''}',
+          'public': publicKey,
+          'encrypt': encryptionKey,
           'ownerPublic': owner['owner_public_key'],
           'stores': jsonEncode([storeId]),
           'hash': _hash(token),
@@ -1634,27 +1740,59 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
     String? token;
     String? deviceId;
     if (device != null && '${device['public_key'] ?? ''}'.isNotEmpty) {
-      deviceId = _id('dev');
-      token = _token();
-      await db.execute(
+      final publicKey = '${device['public_key']}';
+      final existing = await db.one(
         '''
+SELECT id FROM devices
+WHERE owner_id = @owner AND employee_account_id = @account
+  AND public_key = @key AND revoked_at IS NULL
+ORDER BY created_at DESC LIMIT 1
+''',
+        {'owner': ownerId, 'account': accountSyncId, 'key': publicKey},
+      );
+      token = _token();
+      if (existing != null) {
+        // Login ulang dari perangkat yang sama tidak membuat baris baru.
+        deviceId = existing['id'] as String;
+        await db.execute(
+          '''
+UPDATE devices SET nama = @nama, encryption_key = @encrypt,
+  store_ids = CAST(@stores AS jsonb), token_hash = @hash,
+  owner_public_key = COALESCE(NULLIF(@ownerPublic, ''), owner_public_key),
+  last_seen_at = now()
+WHERE id = @id
+''',
+          {
+            'id': deviceId,
+            'nama': '${device['nama'] ?? 'Perangkat karyawan'}',
+            'encrypt': '${device['encryption_key'] ?? ''}',
+            'ownerPublic': owner['owner_public_key'] ?? '',
+            'stores': jsonEncode(storeIds),
+            'hash': _hash(token),
+          },
+        );
+      } else {
+        deviceId = _id('dev');
+        await db.execute(
+          '''
 INSERT INTO devices (id, owner_id, nama, kind, employee_account_id, public_key,
   encryption_key, owner_public_key, store_ids, token_hash)
 VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
   @ownerPublic, CAST(@stores AS jsonb), @hash)
 ''',
-        {
-          'id': deviceId,
-          'owner': ownerId,
-          'nama': '${device['nama'] ?? 'Perangkat karyawan'}',
-          'account': accountSyncId,
-          'public': '${device['public_key']}',
-          'encrypt': '${device['encryption_key'] ?? ''}',
-          'ownerPublic': owner['owner_public_key'] ?? '',
-          'stores': jsonEncode(storeIds),
-          'hash': _hash(token),
-        },
-      );
+          {
+            'id': deviceId,
+            'owner': ownerId,
+            'nama': '${device['nama'] ?? 'Perangkat karyawan'}',
+            'account': accountSyncId,
+            'public': publicKey,
+            'encrypt': '${device['encryption_key'] ?? ''}',
+            'ownerPublic': owner['owner_public_key'] ?? '',
+            'stores': jsonEncode(storeIds),
+            'hash': _hash(token),
+          },
+        );
+      }
     } else {
       final existing = await db.one(
         '''
@@ -1849,6 +1987,12 @@ WHERE owner_id = @owner AND sync_id = @sync
     if (iterations < 120000 || iterations > 2000000) {
       return _error(400, 'Jumlah iterasi password tidak wajar.');
     }
+    final hashChanged = hash.isNotEmpty &&
+        (existing == null ||
+            hash != '${existing['password_hash'] ?? ''}' ||
+            salt != '${existing['password_salt'] ?? ''}' ||
+            iterations !=
+                ((existing['password_iterations'] as num?)?.toInt() ?? 0));
     final values = {
       'owner': ownerId,
       'sync': syncId,
@@ -1861,9 +2005,8 @@ WHERE owner_id = @owner AND sync_id = @sync
       'salt': resolvedSalt,
       'iterations': iterations,
       'aktif': body['aktif'] != false,
-      'must_change': hash.isEmpty
-          ? (existing?['must_change_password'] == true)
-          : true,
+      'must_change': hashChanged ||
+          (existing?['must_change_password'] == true),
       'version': version,
       'payload': jsonEncode(payload),
       'signature': signature,
@@ -1939,13 +2082,42 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     final auth = await _manageAuth(request, ownerId);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final accountSync = '${body['account_sync_id'] ?? ''}';
-    final store = '${body['store_id'] ?? 'utama'}';
+    final store = '${body['store_id'] ?? 'utama'}'.trim();
     final ttl = (body['ttl_minutes'] as num?)?.toInt() ?? 10;
+    if (ttl < 1 || ttl > 1440) {
+      return _error(
+        400,
+        'Masa berlaku undangan harus antara 1 dan 1440 menit.',
+        code: 'ttl_invalid',
+      );
+    }
     final account = await db.one(
-      'SELECT sync_id FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+      'SELECT sync_id, store_ids, aktif FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': accountSync},
     );
     if (account == null) return _error(404, 'Akun tidak ditemukan.');
+    if (account['aktif'] != true) {
+      return _error(
+        403,
+        'Akun tidak aktif; aktifkan akun sebelum membuat undangan.',
+        code: 'account_inactive',
+      );
+    }
+    if (!await _ownerStoreAllowed(ownerId, store)) {
+      return _error(
+        400,
+        'Toko undangan tidak terdaftar pada owner.',
+        code: 'store_invalid',
+      );
+    }
+    final accountStores = stringList(account['store_ids']);
+    if (accountStores.isNotEmpty && !accountStores.contains(store)) {
+      return _error(
+        403,
+        'Akun tidak berhak pada toko undangan.',
+        code: 'store_denied',
+      );
+    }
     const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     final random = Random.secure();
     var code = '';

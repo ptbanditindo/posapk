@@ -13,20 +13,23 @@ import 'price_rules.dart';
 import 'store_settings.dart';
 
 class EstimateItemInput {
-  const EstimateItemInput({
+  EstimateItemInput({
     required this.jenis,
     required this.deskripsi,
-    required this.jumlah,
+    required int jumlah,
     required this.hargaCents,
     required this.modalCents,
     this.stockItemId,
     this.jasaId,
     this.intervalBulan = 0,
-  });
+    int? qtyMilli,
+  })  : jumlah = jumlah,
+        qtyMilli = qtyMilli ?? jumlah * 1000;
 
   final String jenis; // jasa | part
   final String deskripsi;
   final int jumlah;
+  final int qtyMilli;
   final int hargaCents;
   final int modalCents;
   final int? stockItemId;
@@ -221,7 +224,7 @@ class OrderService {
     }
     final lines = <PriceLine>[];
     for (final item in items) {
-      if (item.jumlah <= 0) {
+      if (item.qtyMilli <= 0) {
         throw ArgumentError('Jumlah ${item.deskripsi} harus lebih dari nol.');
       }
       var modal = item.modalCents < 0 ? 0 : item.modalCents;
@@ -271,6 +274,7 @@ class OrderService {
           jenis: item.jenis,
           label: item.deskripsi,
           jumlah: item.jumlah,
+          qtyMilli: item.qtyMilli,
           hargaTerdaftar: item.hargaCents,
           hargaModal: modal,
           stockItemId: item.stockItemId,
@@ -422,14 +426,15 @@ class OrderService {
                   limit: 1,
                 )).map((row) => row['sync_id'] as String?).firstOrNull,
           'deskripsi': item.deskripsi,
-          'jumlah': item.jumlah,
+          'jumlah': item.qtyMilli ~/ 1000,
+          'jumlah_milli': item.qtyMilli,
           'harga_jual_terdaftar': item.hargaCents,
           'harga_batas_saat_transaksi': line.hargaModal,
           'harga_final': line.hargaFinal,
           'harga_modal': line.hargaModal,
           'diskon_alokasi': line.diskonAlokasi,
           'interval_servis_bulan': item.intervalBulan,
-          'subtotal': item.jumlah * line.hargaFinal,
+          'subtotal': line.finalTotal,
           'created_at': now,
           'updated_at': now,
         });
@@ -462,6 +467,8 @@ class OrderService {
     Future<void> Function(Transaction txn, int recordId)? enqueueNote,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+        enqueueCommission,
   }) async {
     final rows = await AppDatabase.instance.db.query(
       'estimates',
@@ -483,6 +490,8 @@ class OrderService {
     final parts = <PartDraft>[];
     for (final item in items) {
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
+      final qtyMilli =
+          (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
       final hargaFinal = (item['harga_final'] as num?)?.toInt() ?? 0;
       final hargaTerdaftar =
           (item['harga_jual_terdaftar'] as num?)?.toInt() ?? hargaFinal;
@@ -503,7 +512,8 @@ class OrderService {
           PartDraft(
             stockItemId: stockItem.id,
             nama: stockItem.nama,
-            jumlah: jumlah,
+            jumlah: qtyMilli ~/ 1000,
+            qtyMilli: qtyMilli,
             hargaCents: hargaTerdaftar,
             modalCents: stockItem.hargaModalCents,
             intervalBulan:
@@ -535,7 +545,35 @@ class OrderService {
         'Periksa ulang estimasi sebelum konversi.',
       );
     }
+    int? customerId;
+    int? unitId;
+    if ((estimate.customerSyncId ?? '').isNotEmpty) {
+      final customerRows = await AppDatabase.instance.db.query(
+        'customers',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [estimate.customerSyncId],
+        limit: 1,
+      );
+      customerId =
+          customerRows.isEmpty ? null : customerRows.first['id'] as int;
+    }
+    if ((estimate.unitSyncId ?? '').isNotEmpty) {
+      final unitRows = await AppDatabase.instance.db.query(
+        'vehicle_or_units',
+        columns: ['id', 'customer_id'],
+        where: 'sync_id = ?',
+        whereArgs: [estimate.unitSyncId],
+        limit: 1,
+      );
+      if (unitRows.isNotEmpty) {
+        unitId = unitRows.first['id'] as int;
+        customerId ??= unitRows.first['customer_id'] as int?;
+      }
+    }
     return AppDatabase.instance.createTransaction(
+      unitId: unitId,
+      customerId: customerId,
       jenisTransaksi: transactionOrderKerja,
       keluhan: 'Konversi estimasi ${estimate.nomorEstimasi}',
       jobs: jobs,
@@ -546,12 +584,14 @@ class OrderService {
       actor: actor,
       ownerPin: ownerPin,
       approverSecret: approverSecret,
+      workOrderSyncId: estimate.workOrderSyncId,
       estimateSyncId: estimateSyncId,
       totalEstimasiTerakhir: estimate.totalCents,
       alasanDiskon: 'Konversi estimasi ${estimate.nomorEstimasi}',
       enqueue: enqueueNote,
       enqueueEstimate: enqueueEstimate,
       enqueueOrder: enqueueOrder,
+      enqueueCommission: enqueueCommission,
     );
   }
 
@@ -854,6 +894,45 @@ class OrderService {
       orderBy: 'created_at DESC',
     );
     return rows.map(EstimateRecord.fromRow).toList();
+  }
+
+  Future<void> cancelEstimate(
+    String syncId, {
+    Operator? actor,
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
+  }) async {
+    await AppDatabase.instance.db.transaction((txn) async {
+      final rows = await txn.query(
+        'estimates',
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('Estimasi tidak ditemukan.');
+      final row = rows.first;
+      final nota = (row['converted_nota_sync_id'] as String?)?.trim() ?? '';
+      if (nota.isNotEmpty) {
+        throw StateError(
+          'Estimasi sudah menjadi nota dan tidak dapat dibatalkan.',
+        );
+      }
+      if ((row['status'] as String? ?? '') != 'aktif') {
+        throw StateError('Hanya estimasi aktif yang dapat dibatalkan.');
+      }
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      await txn.update(
+        'estimates',
+        {
+          'status': 'batal',
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
+        },
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+      );
+      if (enqueue != null) await enqueue(txn, syncId);
+    });
   }
 
   /// Baris estimasi dengan nama pelanggan, unit, dan nomor nota hasil

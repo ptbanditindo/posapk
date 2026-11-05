@@ -90,7 +90,12 @@ class _StockScreenState extends State<StockScreen> {
         enqueueMovement: (txn, movementId) =>
             SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
-      await SupplierService.instance.syncItemSuppliers(id, input.supplierIds);
+      await SupplierService.instance.syncItemSuppliers(
+        id,
+        input.supplierIds,
+        enqueue: (txn, supplierId) =>
+            SyncService.instance.enqueueSupplier(supplierId, txn: txn),
+      );
       AppState.instance.touch();
       _load();
     } catch (error) {

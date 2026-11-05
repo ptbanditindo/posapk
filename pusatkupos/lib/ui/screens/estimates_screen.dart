@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
 import '../../core/money.dart';
+import '../../core/quantity.dart';
 import '../../data/app_database.dart';
+import '../../data/models.dart';
 import '../../data/order_service.dart';
 import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
@@ -16,6 +18,8 @@ class EstimatesScreen extends StatefulWidget {
   @override
   State<EstimatesScreen> createState() => _EstimatesScreenState();
 }
+
+enum _EstimateAction { convert, revise, cancel }
 
 class _EstimatesScreenState extends State<EstimatesScreen> {
   Future<_EstimatesData>? _future;
@@ -62,11 +66,194 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
   ) async {
     final role = AppState.instance.operator?.role ?? 'owner';
     final canConvert = data.settings.roleAllows(role, 'buat_nota');
-    final convert = await showDialog<bool>(
+    final action = await showDialog<_EstimateAction>(
       context: context,
-      builder: (_) => _EstimateDetailDialog(row: row, canConvert: canConvert),
+      builder: (_) =>
+          _EstimateDetailDialog(row: row, canConvert: canConvert),
     );
-    if (convert == true && mounted) await _convert(data, row);
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _EstimateAction.convert:
+        await _convert(data, row);
+      case _EstimateAction.revise:
+        await _revise(data, row);
+      case _EstimateAction.cancel:
+        await _cancel(row);
+    }
+  }
+
+  Future<void> _cancel(Map<String, Object?> row) async {
+    final syncId = row['sync_id'] as String? ?? '';
+    if (syncId.isEmpty) {
+      showSnack(context, 'Estimasi tidak valid.', error: true);
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Batalkan estimasi?'),
+        content: Text(
+          'Estimasi ${row['nomor_estimasi'] ?? ''} akan ditandai batal '
+          'dan tidak dapat dikonversi menjadi nota.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Tidak'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Batalkan estimasi'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await OrderService.instance.cancelEstimate(
+        syncId,
+        actor: AppState.instance.operator,
+        enqueue: (txn, estimateSyncId) =>
+            SyncService.instance.enqueueEstimate(estimateSyncId, txn: txn),
+      );
+      if (!mounted) return;
+      _load();
+      showSnack(context, 'Estimasi dibatalkan.');
+    } catch (error) {
+      if (mounted) showSnack(context, '$error', error: true);
+    }
+  }
+
+  Future<void> _revise(_EstimatesData data, Map<String, Object?> row) async {
+    final syncId = row['sync_id'] as String? ?? '';
+    if (syncId.isEmpty) {
+      showSnack(context, 'Estimasi tidak valid.', error: true);
+      return;
+    }
+    final items = await AppDatabase.instance.db.query(
+      'estimate_items',
+      where: 'estimate_sync_id = ? AND deleted_at IS NULL',
+      whereArgs: [syncId],
+      orderBy: 'id',
+    );
+    if (!mounted) return;
+    if (items.isEmpty) {
+      showSnack(context, 'Estimasi tidak memiliki rincian.', error: true);
+      return;
+    }
+    final lines = <_RevisionLine>[];
+    for (final item in items) {
+      final jenis = item['jenis'] as String? ?? 'jasa';
+      var harga = (item['harga_jual_terdaftar'] as num?)?.toInt() ?? 0;
+      var modal = (item['harga_modal'] as num?)?.toInt() ?? 0;
+      int? stockItemId;
+      final stockSync = (item['stock_sync_id'] as String?)?.trim() ?? '';
+      if (jenis == 'part' && stockSync.isNotEmpty) {
+        final stockRows = await AppDatabase.instance.db.query(
+          'stock_items',
+          where: 'sync_id = ?',
+          whereArgs: [stockSync],
+          limit: 1,
+        );
+        if (stockRows.isNotEmpty) {
+          final stock = StockItem.fromRow(stockRows.first);
+          stockItemId = stock.id;
+          harga = stock.hargaJualCents;
+          modal = stock.hargaModalCents;
+        }
+      }
+      final jumlah = (item['jumlah'] as num?)?.toInt() ?? 1;
+      final qtyMilli =
+          (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
+      lines.add(
+        _RevisionLine(
+          jenis: jenis,
+          deskripsi: item['deskripsi'] as String? ?? '-',
+          jumlah: jumlah,
+          qtyMilli: qtyMilli,
+          hargaCents: harga,
+          modalCents: modal,
+          stockItemId: stockItemId,
+          intervalBulan:
+              (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
+        ),
+      );
+    }
+    final oldTotal = items.fold<int>(
+      0,
+      (sum, item) => sum + ((item['subtotal'] as num?)?.toInt() ?? 0),
+    );
+    final baseTotal = lines.fold<int>(0, (sum, line) => sum + line.subtotal);
+    final defaultDiskon = baseTotal > oldTotal ? baseTotal - oldTotal : 0;
+    if (!mounted) return;
+    final draft = await showDialog<_RevisionDraft>(
+      context: context,
+      builder: (_) => _RevisionDialog(lines: lines, defaultDiskon: defaultDiskon),
+    );
+    if (draft == null || !mounted) return;
+    final customerId = await _localId('customers', row['customer_sync_id']);
+    final unitId = await _localId('vehicle_or_units', row['unit_sync_id']);
+    if (!mounted) return;
+    String? ownerPin;
+    String? approverSecret;
+    var asked = false;
+    while (true) {
+      try {
+        final created = await OrderService.instance.createEstimate(
+          customerId: customerId,
+          unitId: unitId,
+          workOrderSyncId: row['work_order_sync_id'] as String?,
+          revisiDariSyncId: syncId,
+          alasanRevisi: draft.alasan,
+          items: draft.items,
+          diskonCents: draft.diskonCents,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+          actor: AppState.instance.operator,
+          enqueue: (txn, estimateSyncId) =>
+              SyncService.instance.enqueueEstimate(estimateSyncId, txn: txn),
+        );
+        if (!mounted) return;
+        _load();
+        showSnack(
+          context,
+          created == null
+              ? 'Penyimpanan estimasi dimatikan pemilik.'
+              : 'Revisi ${created.nomorEstimasi} v${created.versi} disimpan.',
+        );
+        return;
+      } on StateError catch (error) {
+        final needsApproval = error.message.contains('persetujuan');
+        if (asked || !needsApproval) {
+          if (mounted) showSnack(context, '$error', error: true);
+          return;
+        }
+        final secret = await _askApproval(data.settings);
+        if (secret == null) return;
+        asked = true;
+        if (data.settings.approverMode == approverEmployee) {
+          approverSecret = secret;
+        } else {
+          ownerPin = secret;
+        }
+      } catch (error) {
+        if (mounted) showSnack(context, '$error', error: true);
+        return;
+      }
+    }
+  }
+
+  Future<int?> _localId(String table, Object? syncId) async {
+    final id = '${syncId ?? ''}'.trim();
+    if (id.isEmpty) return null;
+    final rows = await AppDatabase.instance.db.query(
+      table,
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['id'] as int?;
   }
 
   Future<void> _convert(_EstimatesData data, Map<String, Object?> row) async {
@@ -100,6 +287,8 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
               SyncService.instance.enqueueEstimate(estimateSyncId, txn: txn),
           enqueueOrder: (txn, orderSyncId) =>
               SyncService.instance.enqueueWorkOrder(orderSyncId, txn: txn),
+          enqueueCommission: (txn, commissionId) =>
+              SyncService.instance.enqueueCommission(commissionId, txn: txn),
         );
         if (!mounted) return;
         _load();
@@ -530,7 +719,7 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
                               Expanded(
                                 child: Text(
                                   '${item['deskripsi'] ?? '-'} '
-                                  '· ${item['jumlah'] ?? 0}x '
+                                  '· ${formatQuantity((item['jumlah_milli'] as num?)?.toInt() ?? ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000, 3)}x '
                                   '${formatRupiah((item['harga_final'] as num?)?.toInt() ?? 0)}',
                                 ),
                               ),
@@ -552,12 +741,23 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, false),
+          onPressed: () => Navigator.pop(context),
           child: const Text('Tutup'),
         ),
+        if (state == 'aktif')
+          TextButton(
+            onPressed: () => Navigator.pop(context, _EstimateAction.cancel),
+            child: const Text('Batalkan'),
+          ),
+        if (state == 'aktif')
+          OutlinedButton.icon(
+            onPressed: () => Navigator.pop(context, _EstimateAction.revise),
+            icon: const Icon(Icons.edit_note_outlined),
+            label: const Text('Revisi'),
+          ),
         if (convertible)
           FilledButton.icon(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(context, _EstimateAction.convert),
             icon: const Icon(Icons.receipt_long_outlined),
             label: const Text('Jadikan nota'),
           ),
@@ -583,6 +783,216 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
           Expanded(child: Text(value)),
         ],
       ),
+    );
+  }
+}
+
+class _RevisionLine {
+  const _RevisionLine({
+    required this.jenis,
+    required this.deskripsi,
+    required this.jumlah,
+    required this.hargaCents,
+    required this.modalCents,
+    this.qtyMilli,
+    this.stockItemId,
+    this.intervalBulan = 0,
+  });
+
+  final String jenis;
+  final String deskripsi;
+  final int jumlah;
+  final int hargaCents;
+  final int modalCents;
+  final int? qtyMilli;
+  final int? stockItemId;
+  final int intervalBulan;
+
+  int get milli => qtyMilli ?? jumlah * 1000;
+  String get qtyLabel => formatQuantity(milli, 3);
+  int get subtotal => (hargaCents * milli / 1000).round();
+}
+
+class _RevisionDraft {
+  const _RevisionDraft({
+    required this.items,
+    required this.diskonCents,
+    this.alasan,
+  });
+
+  final List<EstimateItemInput> items;
+  final int diskonCents;
+  final String? alasan;
+}
+
+class _RevisionDialog extends StatefulWidget {
+  const _RevisionDialog({required this.lines, required this.defaultDiskon});
+
+  final List<_RevisionLine> lines;
+  final int defaultDiskon;
+
+  @override
+  State<_RevisionDialog> createState() => _RevisionDialogState();
+}
+
+class _RevisionDialogState extends State<_RevisionDialog> {
+  late final List<TextEditingController> _qty;
+  late final TextEditingController _diskon;
+  final _alasan = TextEditingController();
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _qty = widget.lines
+        .map((line) => TextEditingController(text: line.qtyLabel))
+        .toList();
+    _diskon = TextEditingController(
+      text: formatRupiahPlain(widget.defaultDiskon),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _qty) {
+      controller.dispose();
+    }
+    _diskon.dispose();
+    _alasan.dispose();
+    super.dispose();
+  }
+
+  int get _baseTotal {
+    var total = 0;
+    for (var index = 0; index < widget.lines.length; index++) {
+      final qtyMilli =
+          parseQuantityToMilli(_qty[index].text.trim(), desimal: 3) ?? 0;
+      total += (widget.lines[index].hargaCents * qtyMilli / 1000).round();
+    }
+    return total;
+  }
+
+  void _submit() {
+    final items = <EstimateItemInput>[];
+    for (var index = 0; index < widget.lines.length; index++) {
+      final line = widget.lines[index];
+      final qtyMilli = parseQuantityToMilli(
+        _qty[index].text.trim(),
+        desimal: 3,
+      );
+      if (qtyMilli == null || qtyMilli <= 0) {
+        setState(() => _error = 'Jumlah ${line.deskripsi} harus lebih dari 0.');
+        return;
+      }
+      items.add(
+        EstimateItemInput(
+          jenis: line.jenis,
+          deskripsi: line.deskripsi,
+          jumlah: qtyMilli ~/ 1000,
+          qtyMilli: qtyMilli,
+          hargaCents: line.hargaCents,
+          modalCents: line.modalCents,
+          stockItemId: line.stockItemId,
+          intervalBulan: line.intervalBulan,
+        ),
+      );
+    }
+    final diskon = tryParseRupiahToCents(_diskon.text) ?? 0;
+    if (diskon < 0 || diskon > _baseTotal) {
+      setState(() => _error = 'Diskon tidak valid.');
+      return;
+    }
+    final alasan = _alasan.text.trim();
+    Navigator.pop(
+      context,
+      _RevisionDraft(
+        items: items,
+        diskonCents: diskon,
+        alasan: alasan.isEmpty ? null : alasan,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = _baseTotal - (tryParseRupiahToCents(_diskon.text) ?? 0);
+    return AlertDialog(
+      title: const Text('Revisi estimasi'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var index = 0; index < widget.lines.length; index++)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(widget.lines[index].deskripsi),
+                            Text(
+                              formatRupiah(widget.lines[index].hargaCents),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(
+                        width: 64,
+                        child: TextField(
+                          controller: _qty[index],
+                          keyboardType:
+                              const TextInputType.numberWithOptions(
+                                  decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Qty',
+                            isDense: true,
+                          ),
+                          onChanged: (_) => setState(() => _error = null),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const Divider(height: 20),
+              TextField(
+                controller: _diskon,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Diskon total',
+                  prefixText: 'Rp ',
+                  errorText: _error,
+                ),
+                onChanged: (_) => setState(() => _error = null),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Total revisi ${formatRupiah(total < 0 ? 0 : total)}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _alasan,
+                decoration: const InputDecoration(
+                  labelText: 'Alasan revisi (opsional)',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Simpan revisi')),
+      ],
     );
   }
 }

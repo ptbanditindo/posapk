@@ -28,7 +28,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
 
   Database? _db;
   String? _path;
@@ -259,6 +259,9 @@ class AppDatabase {
   Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await migrateSchemaV2(db);
+    }
+    if (oldVersion < 3) {
+      await migrateSchemaV3(db);
     }
   }
 
@@ -1216,6 +1219,8 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int recordId)? enqueue,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+        enqueueCommission,
   }) async {
     final jenis = sparepartOnly ? transactionJualSparepart : jenisTransaksi;
     if (jenis == transactionEstimasiSaja) {
@@ -1321,7 +1326,7 @@ class AppDatabase {
         );
       }
       for (final part in parts) {
-        if (part.jumlah <= 0) {
+        if (part.qtyMilli <= 0) {
           throw ArgumentError('Jumlah part harus lebih dari nol.');
         }
         if (part.hargaCents < 0) {
@@ -1344,7 +1349,7 @@ class AppDatabase {
             'Muat ulang kasir lalu ulangi.',
           );
         }
-        if (stock.jumlahMilli < part.jumlah * 1000) {
+        if (stock.jumlahMilli < part.qtyMilli) {
           throw StateError(
             'Stok ${stock.nama} tidak cukup (tersisa ${stock.jumlahLabel}).',
           );
@@ -1357,6 +1362,7 @@ class AppDatabase {
             jenis: 'part',
             label: stock.nama,
             jumlah: part.jumlah,
+            qtyMilli: part.qtyMilli,
             hargaTerdaftar: stock.hargaJualCents,
             hargaModal: stock.hargaModalCents,
             stockItemId: stock.id,
@@ -1606,7 +1612,8 @@ class AppDatabase {
           'service_record_id': recordId,
           'stock_item_id': part.stockItemId,
           'nama_part': part.nama,
-          'jumlah': part.jumlah,
+          'jumlah': part.qtyMilli ~/ 1000,
+          'jumlah_milli': part.qtyMilli,
           'harga_satuan': part.hargaCents,
           'subtotal': part.subtotalCents,
           'harga_modal': part.modalCents,
@@ -1629,7 +1636,7 @@ class AppDatabase {
           limit: 1,
         );
         final before = StockItem.fromRow(stockRows.first);
-        final nextMilli = before.jumlahMilli - part.jumlah * 1000;
+        final nextMilli = before.jumlahMilli - part.qtyMilli;
         await txn.update(
           'stock_items',
           {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
@@ -1641,8 +1648,8 @@ class AppDatabase {
           'stock_item_id': part.stockItemId,
           'nama_item': part.nama,
           'jenis': 'KELUAR',
-          'jumlah': -part.jumlah,
-          'jumlah_milli': -part.jumlah * 1000,
+          'jumlah': -(part.qtyMilli ~/ 1000),
+          'jumlah_milli': -part.qtyMilli,
           'alasan': 'Penjualan $noNota',
           'service_record_id': recordId,
           'created_at': now,
@@ -1653,7 +1660,7 @@ class AppDatabase {
         await txn.insert('service_payments', {
           'sync_id': newSyncId(),
           'service_record_id': recordId,
-          'jenis': 'PELUNASAN',
+          'jenis': sisa > 0 ? 'DP' : 'PELUNASAN',
           'metode': metodeBayar,
           'nominal': dibayar,
           'waktu': now,
@@ -1688,6 +1695,7 @@ class AppDatabase {
           biayaJasa: biayaJasa,
           jobs: jobs,
           parts: parts,
+          enqueueCommission: enqueueCommission,
         );
       }
       if ((workOrderSyncId ?? '').trim().isNotEmpty) {
@@ -1750,10 +1758,13 @@ class AppDatabase {
     required int biayaJasa,
     required List<JobDraft> jobs,
     required List<PartDraft> parts,
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+        enqueueCommission,
   }) async {
     final margin = parts.fold<int>(
       0,
-      (sum, part) => sum + (part.hargaCents - part.modalCents) * part.jumlah,
+      (sum, part) =>
+          sum + (part.hargaCents - part.modalCents) * part.qtyMilli ~/ 1000,
     );
     final count = mechanics.length;
     var index = 0;
@@ -1778,7 +1789,7 @@ class AppDatabase {
                 (jobs.isNotEmpty ? jasaNilai : 0)
           : (shareJasa * jasaNilai) ~/ 100 + (shareMargin * barangNilai) ~/ 100;
       if (nominal > 0) {
-        await txn.insert('service_record_commissions', {
+        final commissionId = await txn.insert('service_record_commissions', {
           'sync_id': newSyncId(),
           'service_record_id': recordId,
           'employee_sync_id': syncId,
@@ -1786,6 +1797,9 @@ class AppDatabase {
           'created_at': nowIso(),
           'updated_at': nowIso(),
         });
+        if (enqueueCommission != null) {
+          await enqueueCommission(txn, commissionId);
+        }
       }
       index++;
     }
@@ -1794,6 +1808,187 @@ class AppDatabase {
   static int _splitShare(int total, int index, int count) {
     if (count <= 0) return 0;
     return total ~/ count + (index < total % count ? 1 : 0);
+  }
+
+  /// Menghitung ulang komisi nota dengan nilai neto setelah retur.
+  ///
+  /// Basisnya sama dengan saat nota dibuat: jasa sebelum diskon dan margin
+  /// part sebelum diskon, dikurangi porsi baris yang sudah diretur.
+  Future<void> recalculateRecordCommissions(
+    DatabaseExecutor txn,
+    int recordId, {
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+        enqueueCommission,
+  }) async {
+    final commissionRows = await txn.query(
+      'service_record_commissions',
+      where: 'service_record_id = ? AND deleted_at IS NULL',
+      whereArgs: [recordId],
+    );
+    if (commissionRows.isEmpty) return;
+    final mechanics = await txn.query(
+      'service_record_mechanics',
+      columns: ['employee_sync_id'],
+      where: 'service_record_id = ?',
+      whereArgs: [recordId],
+      orderBy: 'urutan',
+    );
+    final count = mechanics.length;
+    if (count == 0) return;
+    final jobRows = await txn.rawQuery(
+      '''
+      SELECT j.jumlah, j.subtotal,
+        COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
+          FROM sale_return_items ri
+          JOIN sale_returns sr ON sr.id = ri.return_id
+          WHERE sr.deleted_at IS NULL AND ri.line_type = 'jasa'
+            AND ri.line_sync_id = j.sync_id), 0) AS returned_milli
+      FROM service_jobs j WHERE j.service_record_id = ?
+      ''',
+      [recordId],
+    );
+    var netJasa = 0;
+    for (final row in jobRows) {
+      final qtyMilli = ((row['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+      final sisaMilli =
+          qtyMilli - ((row['returned_milli'] as num?)?.toInt() ?? 0);
+      if (qtyMilli <= 0 || sisaMilli <= 0) continue;
+      final subtotal = (row['subtotal'] as num?)?.toInt() ?? 0;
+      netJasa += sisaMilli >= qtyMilli
+          ? subtotal
+          : subtotal * sisaMilli ~/ qtyMilli;
+    }
+    final partRows = await txn.rawQuery(
+      '''
+      SELECT COALESCE(p.jumlah_milli, p.jumlah * 1000) AS qty_milli,
+        p.harga_satuan, p.harga_batas_saat_transaksi AS modal,
+        COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
+          FROM sale_return_items ri
+          JOIN sale_returns sr ON sr.id = ri.return_id
+          WHERE sr.deleted_at IS NULL AND ri.line_type = 'part'
+            AND ri.line_sync_id = p.sync_id), 0) AS returned_milli
+      FROM service_parts p WHERE p.service_record_id = ?
+      ''',
+      [recordId],
+    );
+    var netMargin = 0;
+    var hasPart = false;
+    for (final row in partRows) {
+      final qtyMilli = (row['qty_milli'] as num?)?.toInt() ?? 0;
+      final sisaMilli =
+          qtyMilli - ((row['returned_milli'] as num?)?.toInt() ?? 0);
+      if (qtyMilli <= 0 || sisaMilli <= 0) continue;
+      hasPart = true;
+      final margin = ((row['harga_satuan'] as num?)?.toInt() ?? 0) -
+          ((row['modal'] as num?)?.toInt() ?? 0);
+      if (margin <= 0) continue;
+      netMargin += margin * sisaMilli ~/ 1000;
+    }
+    for (final commission in commissionRows) {
+      final employeeSyncId = '${commission['employee_sync_id']}';
+      final rawIndex = mechanics.indexWhere(
+        (row) => row['employee_sync_id'] == employeeSyncId,
+      );
+      final index = rawIndex < 0 ? 0 : rawIndex;
+      final settings = await txn.query(
+        'employee_accounts',
+        columns: ['komisi_mode', 'komisi_barang_nilai', 'komisi_jasa_nilai'],
+        where: 'sync_id = ?',
+        whereArgs: [employeeSyncId],
+        limit: 1,
+      );
+      final mode = settings.isEmpty
+          ? 'PERSEN'
+          : '${settings.first['komisi_mode'] ?? 'PERSEN'}';
+      final barangNilai = settings.isEmpty
+          ? 0
+          : (settings.first['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
+      final jasaNilai = settings.isEmpty
+          ? 0
+          : (settings.first['komisi_jasa_nilai'] as num?)?.toInt() ?? 0;
+      final shareJasa = _splitShare(netJasa, index, count);
+      final shareMargin = _splitShare(netMargin, index, count);
+      final nominal = mode == 'NOMINAL'
+          ? (hasPart ? barangNilai : 0) + (netJasa > 0 ? jasaNilai : 0)
+          : (shareJasa * jasaNilai) ~/ 100 + (shareMargin * barangNilai) ~/ 100;
+      if (nominal == ((commission['nominal'] as num?)?.toInt() ?? 0)) {
+        continue;
+      }
+      final hlc = await nextSyncHlc(txn);
+      await txn.update(
+        'service_record_commissions',
+        {
+          'nominal': nominal,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
+        },
+        where: 'id = ?',
+        whereArgs: [commission['id']],
+      );
+      if (enqueueCommission != null) {
+        await enqueueCommission(txn, commission['id'] as int);
+      }
+    }
+  }
+
+  /// Menghitung sisa tagihan dari pembayaran, retur, dan koreksi tersimpan.
+  ///
+  /// Nilai retur dianggap pertama-tama menghapus piutang; bila sudah lunas,
+  /// selisihnya menjadi uang keluar (baris pembayaran `REFUND` bernilai
+  /// negatif) sehingga rumus yang sama berlaku di semua perangkat.
+  Future<void> recalculateRecordTotals(
+    DatabaseExecutor txn,
+    int recordId,
+  ) async {
+    final record = await txn.query(
+      'service_records',
+      columns: ['total_servis', 'status', 'voided_at'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    if (record.isEmpty) return;
+    if (record.first['voided_at'] != null ||
+        '${record.first['status']}' == 'VOID') {
+      return;
+    }
+    final paidRows = await txn.rawQuery(
+      'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
+      'WHERE service_record_id = ?',
+      [recordId],
+    );
+    final returnRows = await txn.rawQuery(
+      'SELECT COALESCE(SUM(total), 0) AS total FROM sale_returns '
+      'WHERE service_record_id = ? AND deleted_at IS NULL',
+      [recordId],
+    );
+    final adjustmentRows = await txn.rawQuery(
+      '''
+      SELECT COALESCE(SUM(a.nilai_selisih), 0) AS total
+      FROM nota_adjustments a
+      JOIN service_records r ON r.sync_id = a.nota_sync_id
+      WHERE r.id = ? AND a.deleted_at IS NULL
+      ''',
+      [recordId],
+    );
+    final total = (record.first['total_servis'] as num?)?.toInt() ?? 0;
+    final paid = (paidRows.first['total'] as num?)?.toInt() ?? 0;
+    final retur = (returnRows.first['total'] as num?)?.toInt() ?? 0;
+    final adjustment = (adjustmentRows.first['total'] as num?)?.toInt() ?? 0;
+    final outstanding = total + adjustment - retur - paid;
+    final sisa = outstanding < 0 ? 0 : outstanding;
+    await txn.update(
+      'service_records',
+      {
+        'total_dibayar': paid,
+        'sisa_bayar': sisa,
+        'status_bayar': sisa == 0 ? 'LUNAS' : 'KREDIT',
+        'updated_at': nowIso(),
+      },
+      where: 'id = ?',
+      whereArgs: [recordId],
+    );
   }
 
   /// Nomor dokumen selalu ada dan unik tanpa koordinasi server.
@@ -2090,15 +2285,34 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int recordId)? enqueue,
   }) async {
     await db.transaction((txn) async {
-      final updated = await txn.update(
+      final rows = await txn.query(
         'service_records',
-        {'diambil_at': diambil ? nowIso() : null, 'updated_at': nowIso()},
-        where: 'unit_ditinggal = 1 AND id = ?',
+        where: 'id = ?',
         whereArgs: [recordId],
+        limit: 1,
       );
-      if (updated == 0) {
+      if (rows.isEmpty) throw StateError('Nota tidak ditemukan.');
+      final record = rows.first;
+      if (record['unit_ditinggal'] != 1) {
         throw StateError('Nota ini tidak ditandai unit ditinggal.');
       }
+      if (record['voided_at'] != null || record['status'] == 'VOID') {
+        throw StateError('Nota yang dibatalkan tidak dapat diambil unitnya.');
+      }
+      if (diambil) {
+        final sisa = (record['sisa_bayar'] as num?)?.toInt() ?? 0;
+        if (sisa > 0) {
+          throw StateError(
+            'Unit belum bisa diambil selama masih ada sisa tagihan.',
+          );
+        }
+      }
+      await txn.update(
+        'service_records',
+        {'diambil_at': diambil ? nowIso() : null, 'updated_at': nowIso()},
+        where: 'id = ?',
+        whereArgs: [recordId],
+      );
       if (enqueue != null) await enqueue(txn, recordId);
     });
   }
@@ -2254,6 +2468,7 @@ class AppDatabase {
               stockItemId: item['stock_item_id'] as int? ?? 0,
               nama: item['nama_part'] as String,
               jumlah: item['jumlah'] as int,
+              qtyMilli: (item['jumlah_milli'] as num?)?.toInt(),
               hargaCents: item['harga_satuan'] as int,
               modalCents: item['harga_batas_saat_transaksi'] as int? ??
                   item['harga_modal'] as int? ??
@@ -2338,6 +2553,18 @@ class AppDatabase {
       );
       if (rows.isEmpty) throw StateError('Nota tidak ditemukan.');
       if (rows.first['voided_at'] != null) return;
+      final existingReturns = await txn.query(
+        'sale_returns',
+        columns: ['id'],
+        where: 'service_record_id = ? AND deleted_at IS NULL',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (existingReturns.isNotEmpty) {
+        throw StateError(
+          'Nota sudah memiliki retur; void tidak dapat dilakukan.',
+        );
+      }
       final parts = await txn.query(
         'service_parts',
         where: 'service_record_id = ?',
@@ -2378,15 +2605,15 @@ class AppDatabase {
       }
       final payments = await txn.rawQuery(
         'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
-        'WHERE service_record_id = ? AND jenis = ? AND nominal > 0',
-        [id, 'PELUNASAN'],
+        "WHERE service_record_id = ? AND nominal > 0 AND jenis != 'REFUND'",
+        [id],
       );
       final paid = (payments.first['total'] as int?) ?? 0;
       if (paid > 0) {
         final refunded = await txn.query(
           'service_payments',
-          where: 'service_record_id = ? AND jenis = ?',
-          whereArgs: [id, 'REFUND'],
+          where: 'service_record_id = ? AND jenis = ? AND request_id = ?',
+          whereArgs: [id, 'REFUND', 'void-${rows.first['sync_id']}'],
           limit: 1,
         );
         if (refunded.isEmpty) {
@@ -2411,6 +2638,7 @@ class AppDatabase {
           'status': 'VOID',
           'voided_at': now,
           'void_reason': cleanReason,
+          'sisa_bayar': 0,
           'updated_at': now,
         },
         where: 'id = ?',
@@ -2459,6 +2687,25 @@ class AppDatabase {
       if (record['voided_at'] != null) {
         throw StateError('Nota sudah di-void.');
       }
+      final cleanRequest = (requestId ?? '').trim();
+      if (cleanRequest.isNotEmpty) {
+        final existing = await txn.query(
+          'service_payments',
+          columns: ['sync_id'],
+          where: 'request_id = ?',
+          whereArgs: [cleanRequest],
+          limit: 1,
+        );
+        if (existing.isNotEmpty) {
+          return {
+            'payment_sync_id': existing.first['sync_id'],
+            'sisa_bayar': record['sisa_bayar'] as int? ?? 0,
+            'status_bayar': record['status_bayar'],
+            'total_dibayar': record['total_dibayar'] as int? ?? 0,
+            'duplicate': true,
+          };
+        }
+      }
       final sisa = record['sisa_bayar'] as int? ?? 0;
       if (sisa <= 0) throw StateError('Nota ini tidak memiliki sisa piutang.');
       if (nominalCents > sisa) {
@@ -2471,14 +2718,12 @@ class AppDatabase {
       await txn.insert('service_payments', {
         'sync_id': paymentSyncId,
         'service_record_id': recordId,
-        'jenis': 'PELUNASAN',
+        'jenis': newSisa == 0 ? 'PELUNASAN' : 'DP',
         'metode': metode,
         'nominal': nominalCents,
         'waktu': now,
         'operator': actor?.label ?? 'Pemilik',
-        'request_id': (requestId ?? '').trim().isEmpty
-            ? newSyncId()
-            : requestId!.trim(),
+        'request_id': cleanRequest.isEmpty ? newSyncId() : cleanRequest,
         'catatan': 'Pelunasan piutang',
         'created_at': now,
         'updated_at': now,
@@ -2522,8 +2767,10 @@ class AppDatabase {
     final row = rows.first;
     final parts = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(sp.subtotal), 0) AS omzet,
-        COALESCE(SUM(sp.harga_modal * sp.jumlah), 0) AS modal
+      SELECT COALESCE(SUM(sp.subtotal - COALESCE(sp.diskon_alokasi, 0)), 0)
+          AS omzet,
+        COALESCE(SUM(ROUND(sp.harga_modal *
+          COALESCE(sp.jumlah_milli, sp.jumlah * 1000) / 1000.0)), 0) AS modal
       FROM service_parts sp
       JOIN service_records r ON r.id = sp.service_record_id
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
@@ -2532,7 +2779,8 @@ class AppDatabase {
     );
     final jobs = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(sj.subtotal), 0) AS omzet,
+      SELECT COALESCE(SUM(sj.subtotal - COALESCE(sj.diskon_alokasi, 0)), 0)
+          AS omzet,
         COALESCE(SUM(sj.harga_batas_saat_transaksi * sj.jumlah), 0) AS modal
       FROM service_jobs sj
       JOIN service_records r ON r.id = sj.service_record_id
@@ -2576,10 +2824,10 @@ class AppDatabase {
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
-    final omzetPart = parts.first['omzet'] as int? ?? 0;
-    final modalPart = parts.first['modal'] as int? ?? 0;
-    final omzetJasa = jobs.first['omzet'] as int? ?? 0;
-    final modalJasa = jobs.first['modal'] as int? ?? 0;
+    final omzetPart = (parts.first['omzet'] as num?)?.toInt() ?? 0;
+    final modalPart = (parts.first['modal'] as num?)?.toInt() ?? 0;
+    final omzetJasa = (jobs.first['omzet'] as num?)?.toInt() ?? 0;
+    final modalJasa = (jobs.first['modal'] as num?)?.toInt() ?? 0;
     final returnRows = await db.rawQuery(
       '''
       SELECT
@@ -2588,7 +2836,9 @@ class AppDatabase {
         COALESCE(SUM(CASE WHEN i.line_type = 'part'
           THEN i.subtotal ELSE 0 END), 0) AS retur_part,
         COALESCE(SUM(CASE WHEN i.line_type = 'part'
-          THEN i.modal_satuan * i.jumlah ELSE 0 END), 0) AS retur_modal
+          THEN ROUND(i.modal_satuan *
+            COALESCE(i.jumlah_milli, i.jumlah * 1000) / 1000.0)
+          ELSE 0 END), 0) AS retur_modal
       FROM sale_return_items i
       JOIN sale_returns r ON r.id = i.return_id
       WHERE r.created_at BETWEEN ? AND ?
@@ -2597,12 +2847,24 @@ class AppDatabase {
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
     final returRow = returnRows.first;
+    final adjustmentRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(a.nilai_selisih), 0) AS total
+      FROM nota_adjustments a
+      JOIN service_records r ON r.sync_id = a.nota_sync_id
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+        AND a.deleted_at IS NULL
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to)],
+    );
+    final adjustmentTotal =
+        (adjustmentRows.first['total'] as num?)?.toInt() ?? 0;
     return ReportSummary(
       transaksi: row['transaksi'] as int? ?? 0,
       totalJasaCents: row['total_jasa'] as int? ?? 0,
       totalPartCents: row['total_part'] as int? ?? 0,
       diskonCents: row['diskon'] as int? ?? 0,
-      totalCents: row['total'] as int? ?? 0,
+      totalCents: (row['total'] as int? ?? 0) + adjustmentTotal,
       dibayarCents: row['dibayar'] as int? ?? 0,
       piutangCents: row['piutang'] as int? ?? 0,
       totalModalPartCents: modalPart,
@@ -2639,7 +2901,8 @@ class AppDatabase {
     final rows = await db.rawQuery(
       '''
       SELECT r.no_nota, r.waktu_service, r.jenis_transaksi, r.created_by,
-        j.deskripsi, j.jumlah, j.harga_jual_terdaftar, j.harga_final,
+        j.deskripsi, j.jumlah, j.jumlah * 1000 AS qty_milli,
+        j.harga_jual_terdaftar, j.harga_final,
         j.disetujui_oleh
       FROM service_jobs j
       JOIN service_records r ON r.id = j.service_record_id
@@ -2647,7 +2910,9 @@ class AppDatabase {
         AND j.harga_final < j.harga_jual_terdaftar
       UNION ALL
       SELECT r.no_nota, r.waktu_service, r.jenis_transaksi, r.created_by,
-        p.nama_part, p.jumlah, p.harga_jual_terdaftar, p.harga_final,
+        p.nama_part, p.jumlah,
+        COALESCE(p.jumlah_milli, p.jumlah * 1000) AS qty_milli,
+        p.harga_jual_terdaftar, p.harga_final,
         p.disetujui_oleh
       FROM service_parts p
       JOIN service_records r ON r.id = p.service_record_id
@@ -2674,6 +2939,7 @@ class AppDatabase {
             jenis: row['jenis_transaksi'] as String? ?? '',
             deskripsi: row['deskripsi'] as String? ?? '',
             jumlah: (row['jumlah'] as num?)?.toInt() ?? 0,
+            qtyMilli: (row['qty_milli'] as num?)?.toInt() ?? 0,
             hargaTerdaftarCents:
                 (row['harga_jual_terdaftar'] as num?)?.toInt() ?? 0,
             hargaFinalCents: (row['harga_final'] as num?)?.toInt() ?? 0,

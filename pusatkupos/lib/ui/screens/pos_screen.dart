@@ -4,6 +4,7 @@ import '../../auth/operator.dart';
 import '../../core/dates.dart';
 import '../../core/ids.dart';
 import '../../core/money.dart';
+import '../../core/quantity.dart';
 import '../../data/account_service.dart';
 import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
@@ -89,7 +90,9 @@ class _PosScreenState extends State<PosScreen> {
         _mechanics.where((row) => _mechanicIds.contains(row['id'])).toList();
     final margin = _parts.fold<int>(
       0,
-      (sum, part) => sum + (part.hargaCents - part.modalCents) * part.jumlah,
+      (sum, part) =>
+          sum +
+          ((part.hargaCents - part.modalCents) * part.qtyMilli) ~/ 1000,
     );
     return EmployeeService.estimateRecordCommissions(
       selected,
@@ -115,7 +118,8 @@ class _PosScreenState extends State<PosScreen> {
         _parts.fold<int>(
           0,
           (sum, part) =>
-              sum + (part.hargaCents - part.modalCents) * part.jumlah,
+              sum +
+              ((part.hargaCents - part.modalCents) * part.qtyMilli) ~/ 1000,
         );
     return margin < 0 ? 0 : margin;
   }
@@ -220,6 +224,8 @@ class _PosScreenState extends State<PosScreen> {
         nama: input.nama,
         nomorHp: input.nomorHp,
         alamat: input.alamat,
+        enqueue: (txn, customerId) =>
+            SyncService.instance.enqueueCustomer(customerId, txn: txn),
       );
       _customerId = id;
       _unitId = null;
@@ -259,6 +265,8 @@ class _PosScreenState extends State<PosScreen> {
       nopol: input.nopol,
       jenisMobil: input.jenisMobil,
       tahunMobil: input.tahunMobil,
+      enqueue: (txn, unitId) =>
+          SyncService.instance.enqueueUnit(unitId, txn: txn),
     );
     _unitId = id;
     AppState.instance.touch();
@@ -440,6 +448,7 @@ class _PosScreenState extends State<PosScreen> {
             jenis: 'part',
             deskripsi: part.nama,
             jumlah: part.jumlah,
+            qtyMilli: part.qtyMilli,
             hargaCents: part.hargaCents,
             modalCents: part.modalCents,
             stockItemId: part.stockItemId,
@@ -564,7 +573,7 @@ class _PosScreenState extends State<PosScreen> {
       for (final job in _jobs)
         '${job.deskripsi} ${job.jumlah}x = ${formatRupiah(job.subtotalCents)}',
       for (final part in _parts)
-        '${part.nama} ${part.jumlah}x = ${formatRupiah(part.subtotalCents)}',
+        '${part.nama} ${part.qtyLabel}x = ${formatRupiah(part.subtotalCents)}',
       List.filled(printer.width, '-').join(),
       'Total: ${formatRupiah(record?.totalCents ?? _total)}',
       '',
@@ -636,6 +645,8 @@ class _PosScreenState extends State<PosScreen> {
           approverSecret: approverSecret,
           enqueue: (txn, recordId) =>
               SyncService.instance.enqueueNote(recordId, txn: txn),
+          enqueueCommission: (txn, commissionId) =>
+              SyncService.instance.enqueueCommission(commissionId, txn: txn),
         );
       } on StateError catch (error) {
         if (asked || !error.message.contains('persetujuan')) rethrow;
@@ -965,7 +976,7 @@ class _PosScreenState extends State<PosScreen> {
                         contentPadding: EdgeInsets.zero,
                         title: Text(_parts[i].nama),
                         subtitle: Text(
-                          '${_parts[i].jumlah} × ${formatRupiah(_parts[i].hargaCents)}',
+                          '${_parts[i].qtyLabel} × ${formatRupiah(_parts[i].hargaCents)}',
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -1589,9 +1600,11 @@ class _PartDialogState extends State<_PartDialog> {
           const SizedBox(height: 10),
           TextField(
             controller: _qty,
-            keyboardType: TextInputType.number,
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
               labelText: 'Qty',
+              hintText: 'Contoh: 1 atau 0,5',
               errorText: _error,
             ),
             onChanged: (_) {
@@ -1619,12 +1632,13 @@ class _PartDialogState extends State<_PartDialog> {
         FilledButton(
           onPressed: () {
             final item = selected;
-            final qty = int.tryParse(_qty.text.trim()) ?? 0;
-            if (item == null || qty < 1) {
+            final qtyMilli =
+                parseQuantityToMilli(_qty.text.trim(), desimal: 3);
+            if (item == null || qtyMilli == null || qtyMilli <= 0) {
               setState(() => _error = 'Jumlah harus lebih dari nol.');
               return;
             }
-            if (qty * 1000 > item.jumlahMilli) {
+            if (qtyMilli > item.jumlahMilli) {
               setState(
                 () => _error =
                     'Stok tidak cukup. Tersisa ${item.jumlahLabel}.',
@@ -1636,7 +1650,8 @@ class _PartDialogState extends State<_PartDialog> {
               PartDraft(
                 stockItemId: item.id,
                 nama: item.nama,
-                jumlah: qty,
+                jumlah: qtyMilli ~/ 1000,
+                qtyMilli: qtyMilli,
                 hargaCents: item.hargaJualCents,
                 modalCents: item.hargaModalCents,
                 intervalBulan: item.intervalBulan,

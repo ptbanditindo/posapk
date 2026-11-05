@@ -19,6 +19,7 @@ const roleLabels = {
 };
 const permissionLabels = {
   'void': 'Void nota',
+  'retur': 'Retur penjualan',
   'ubah_harga_jasa': 'Ubah harga jasa',
   'ubah_stok': 'Ubah data stok',
   'stok_masuk': 'Stok masuk',
@@ -33,6 +34,7 @@ const permissionLabels = {
 const rolePermissions = {
   'KASIR': {
     'void',
+    'retur',
     'diskon',
     'stok_masuk',
     'stok_keluar',
@@ -43,6 +45,7 @@ const rolePermissions = {
   'MEKANIK': <String>{},
   'KEDUANYA': {
     'void',
+    'retur',
     'diskon',
     'stok_masuk',
     'stok_keluar',

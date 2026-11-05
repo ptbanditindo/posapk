@@ -248,7 +248,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         formatRupiah(summary.totalModalPartCents),
                       ),
                       _line(
-                        'Laba kotor part (sebelum diskon)',
+                        'Laba kotor part (setelah diskon)',
                         formatRupiah(summary.labaKotorPartCents),
                       ),
                       _line(
@@ -256,7 +256,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         formatRupiah(summary.totalModalJasaCents),
                       ),
                       _line(
-                        'Laba kotor jasa (sebelum diskon)',
+                        'Laba kotor jasa (setelah diskon)',
                         formatRupiah(summary.labaKotorJasaCents),
                       ),
                       const Divider(),

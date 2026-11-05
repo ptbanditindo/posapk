@@ -324,6 +324,7 @@ class PartDraft {
     required this.jumlah,
     required this.hargaCents,
     required this.modalCents,
+    int? qtyMilli,
     this.intervalBulan = 0,
     this.syncId,
     int? hargaTerdaftarCents,
@@ -331,11 +332,13 @@ class PartDraft {
     this.diskonAlokasiCents = 0,
     this.alasanDiskon,
     this.disetujuiOleh,
-  }) : hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
+  }) : qtyMilli = qtyMilli ?? jumlah * 1000,
+       hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
 
   final int stockItemId;
   String nama;
   int jumlah;
+  final int qtyMilli;
   int hargaCents;
   int modalCents;
   final int intervalBulan;
@@ -346,8 +349,9 @@ class PartDraft {
   String? alasanDiskon;
   String? disetujuiOleh;
 
-  int get subtotalCents => jumlah * hargaCents;
+  int get subtotalCents => (hargaCents * qtyMilli / 1000).round();
   int get lineTotalCents => subtotalCents - diskonAlokasiCents;
+  String get qtyLabel => formatQuantity(qtyMilli, 3);
 }
 
 class PaymentRow {
@@ -376,6 +380,7 @@ class SaleReturnItemRow {
     required this.jumlah,
     required this.hargaSatuanCents,
     required this.subtotalCents,
+    this.qtyMilli = 0,
   });
 
   final String lineType;
@@ -384,6 +389,10 @@ class SaleReturnItemRow {
   final int jumlah;
   final int hargaSatuanCents;
   final int subtotalCents;
+  final int qtyMilli;
+
+  int get milli => qtyMilli > 0 ? qtyMilli : jumlah * 1000;
+  String get qtyLabel => formatQuantity(milli, 3);
 }
 
 class SaleReturnRow {
@@ -536,6 +545,7 @@ class BelowPriceSale {
     required this.jumlah,
     required this.hargaTerdaftarCents,
     required this.hargaFinalCents,
+    this.qtyMilli = 0,
     this.kasir,
     this.disetujuiOleh,
   });
@@ -547,10 +557,14 @@ class BelowPriceSale {
   final int jumlah;
   final int hargaTerdaftarCents;
   final int hargaFinalCents;
+  final int qtyMilli;
   final String? kasir;
   final String? disetujuiOleh;
 
-  int get selisihCents => (hargaFinalCents - hargaTerdaftarCents) * jumlah;
+  int get milli => qtyMilli > 0 ? qtyMilli : jumlah * 1000;
+  String get qtyLabel => formatQuantity(milli, 3);
+  int get selisihCents =>
+      ((hargaFinalCents - hargaTerdaftarCents) * milli / 1000).round();
 }
 
 class CorrectionEntry {

@@ -102,8 +102,42 @@ class EmployeeAuthService {
         deviceId: null,
       );
     }
-    final signing = await generateSigningKey();
-    final encryption = await generateEncryptionKey();
+    var reuseLocalId = '';
+    KeyMaterial? reuseSigning;
+    KeyMaterial? reuseEncryption;
+    final storedId = await AppDatabase.instance.getSetting('sync.local_device_id');
+    if (storedId != null && storedId.isNotEmpty) {
+      final rows = await AppDatabase.instance.db.query(
+        'devices',
+        where: 'id = ? AND kind = ? AND revoked_at IS NULL',
+        whereArgs: [storedId, 'employee'],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final privateSign =
+            await SecureStore.instance.read('device.$storedId.sign');
+        final privateEncrypt =
+            await SecureStore.instance.read('device.$storedId.encrypt');
+        final publicSign = '${rows.first['public_key'] ?? ''}';
+        final publicEncrypt = '${rows.first['encryption_key'] ?? ''}';
+        if (privateSign != null &&
+            privateEncrypt != null &&
+            publicSign.isNotEmpty &&
+            publicEncrypt.isNotEmpty) {
+          reuseLocalId = storedId;
+          reuseSigning = KeyMaterial(
+            privateKey: privateSign,
+            publicKey: publicSign,
+          );
+          reuseEncryption = KeyMaterial(
+            privateKey: privateEncrypt,
+            publicKey: publicEncrypt,
+          );
+        }
+      }
+    }
+    final signing = reuseSigning ?? await generateSigningKey();
+    final encryption = reuseEncryption ?? await generateEncryptionKey();
     Map<String, Object?> result;
     try {
       result = await RelayClient(baseUrl: normalizedServiceUrl).employeeLogin(
@@ -156,21 +190,37 @@ class EmployeeAuthService {
     await AppDatabase.instance.setSetting('sync.relay_url', normalizedServiceUrl);
     await AppDatabase.instance.setSetting('sync.store_id', storeIds.first);
 
-    final localId = newSyncId();
+    final localId = reuseLocalId.isEmpty ? newSyncId() : reuseLocalId;
     final token = result['token'] as String? ?? '';
-    await AppDatabase.instance.db.insert('devices', {
-      'id': localId,
-      'owner_id': owner,
-      'nama': deviceName,
-      'kind': 'employee',
-      'employee_account_id': null,
-      'public_key': signing.publicKey,
-      'encryption_key': encryption.publicKey,
-      'token_hash': token.isEmpty
-          ? crypto.sha256.convert(utf8.encode(localId)).toString()
-          : crypto.sha256.convert(utf8.encode(token)).toString(),
-      'created_at': nowIso(),
-    });
+    final tokenHash = token.isEmpty
+        ? crypto.sha256.convert(utf8.encode(localId)).toString()
+        : crypto.sha256.convert(utf8.encode(token)).toString();
+    if (reuseLocalId.isEmpty) {
+      await AppDatabase.instance.db.insert('devices', {
+        'id': localId,
+        'owner_id': owner,
+        'nama': deviceName,
+        'kind': 'employee',
+        'employee_account_id': null,
+        'public_key': signing.publicKey,
+        'encryption_key': encryption.publicKey,
+        'token_hash': tokenHash,
+        'created_at': nowIso(),
+      });
+    } else {
+      await AppDatabase.instance.db.update(
+        'devices',
+        {
+          'owner_id': owner,
+          'nama': deviceName,
+          'public_key': signing.publicKey,
+          'encryption_key': encryption.publicKey,
+          'token_hash': tokenHash,
+        },
+        where: 'id = ?',
+        whereArgs: [localId],
+      );
+    }
     await SecureStore.instance
         .write('device.$localId.sign', signing.privateKey);
     await SecureStore.instance

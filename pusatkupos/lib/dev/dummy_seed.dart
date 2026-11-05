@@ -390,6 +390,7 @@ Future<void> _part(
     'stock_item_id': stockId,
     'nama_part': nama,
     'jumlah': 1,
+    'jumlah_milli': 1000,
     'harga_satuan': _rp(harga),
     'subtotal': _rp(harga),
     'harga_modal': _rp(modal),

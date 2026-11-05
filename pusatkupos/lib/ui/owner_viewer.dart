@@ -149,10 +149,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       if (signature.isEmpty || publicKey.isEmpty) {
         throw const FormatException('Tanda tangan ringkasan tidak ada.');
       }
-      final trustedKey = serverLicensePublicKey.trim().isNotEmpty
-          ? serverLicensePublicKey.trim()
-          : publicKey;
-      if (trustedKey != publicKey && serverLicensePublicKey.isNotEmpty) {
+      final trustedKey = serverLicensePublicKey.trim();
+      if (trustedKey.isEmpty) {
+        throw const FormatException(
+          'Kunci lisensi server belum tersedia. Ringkasan tidak dapat '
+          'diverifikasi.',
+        );
+      }
+      if (trustedKey != publicKey) {
         throw const FormatException(
           'Ringkasan ditandatangani kunci tak dikenal.',
         );

@@ -209,13 +209,13 @@ Batasi unggah snapshot ke perangkat `owner` (atau pemilik dengan izin eksplisit)
 |---|---|---|---|
 | Pelanggan + unit kendaraan | Ada | Ada | Flutter mewajibkan HP unik; unit mendukung radiator. |
 | Katalog jasa + batas modal | Ada | Ada | Flutter punya validasi harga di bawah modal + PIN owner. |
-| Stok + pergerakan | Ada | Ada | Flutter mendukung desimal; POS belum memakai desimal. |
-| Supplier + mapping supplier | Ada | Ada | Mapping Flutter tidak di-enqueue. |
+| Stok + pergerakan | Ada | Ada | Flutter mendukung desimal; POS memakai desimal hingga 3 digit (P2-14). |
+| Supplier + mapping supplier | Ada | Ada | Mapping Flutter ikut sinkronisasi (P2-13). |
 | Barcode/scan produk | Tidak ada | Ada | Flutter hanya scan printer. |
-| Estimasi + versi revisi | Ada | Ada (lebih sederhana) | Flutter lebih kaya, tetapi UI revisi/batal belum ada. |
+| Estimasi + versi revisi | Ada | Ada (lebih sederhana) | Flutter lebih kaya; aksi revisi/batal tersedia (P2-16). |
 | Work order + antrian harian | Ada | Ada | Flutter punya status log dan nomor antrian. |
 | POS jasa + part + diskon per baris | Ada | Ada | Alokasi diskon dilakukan per baris. |
-| Uang muka (DP) eksplisit | Tidak ada | Ada | Flutter mencatat pembayaran pertama sebagai `PELUNASAN`. |
+| Uang muka (DP) eksplisit | Sebagian | Ada | Pembayaran sebagian kini berlabel `DP`; rencana angsuran terjadwal belum ada. |
 | Rencana bayar/angsuran terjadwal | Tidak ada | Ada | Python punya `rencana_bayar`. |
 | Jatuh tempo piutang | Ada | Ada | Flutter punya banner dan daftar lewat tempo. |
 | Pelunasan bertahap | Ada | Ada | Flutter belum idempoten. |
@@ -274,12 +274,12 @@ Urutan ini mengikuti alur yang benar untuk bengkel, sekaligus menandai titik yan
 16. Ubah status pengerjaan (antri → dikerjakan → selesai) dengan catatan.
 17. Estimasi aktif dapat **dijadikan nota**.
 
-> Catatan audit: konversi saat ini tidak membawa pelanggan/unit/work order (P1-05). Revisi/batal estimasi belum ada tombolnya (P2-16).
+> Catatan audit: konversi sudah membawa pelanggan/unit/work order (P1-05) dan detail estimasi kini punya aksi Revisi/Batalkan (P2-16).
 
 ### Tahap 3 — Transaksi POS
 
 18. Buka POS, pilih **pelanggan** dan **unit** (wajib; kecuali mode sparepart-only).
-19. Tambah **jasa** dan **part**. Qty part masih bilangan bulat (P2-14).
+19. Tambah **jasa** dan **part**. Qty part mendukung desimal hingga 3 digit (mis. 0,5 L) sejak P2-14.
 20. Terapkan **diskon** (per baris, dialokasikan ke item). Bila harga jatuh di bawah batas modal, minta PIN owner atau persetujuan penanggung jawab.
 21. Pilih **metode bayar**: CASH atau TRANSFER.
 22. Isi **jumlah dibayar**:
@@ -288,7 +288,7 @@ Urutan ini mengikuti alur yang benar untuk bengkel, sekaligus menandai titik yan
 23. Isi keluhan, mekanik, garansi, unit ditinggal, dan catatan.
 24. Simpan nota. Sistem menulis nota, item, pembayaran, pergerakan stok, komisi, audit diskon, dan outbox sinkronisasi.
 
-> Catatan audit: pembayaran pertama selalu berlabel `PELUNASAN`; belum ada DP eksplisit.
+> Catatan audit: pembayaran sebagian berlabel `DP`, pelunasan penuh `PELUNASAN` (P3). Rencana angsuran terjadwal belum ada.
 
 ### Tahap 4 — Struk dan pengiriman
 
@@ -386,3 +386,55 @@ Setiap perbaikan sebaiknya disertai pengujian manual pada alur: pelanggan → un
 - `api/schemas.py`, `api/stock_routes.py`
 
 **Catatan:** audit ini hanya membaca kode. Tidak ada file aplikasi yang diubah dan tidak ada dependency yang dipasang.
+
+---
+
+## 10. Log Perbaikan
+
+### Kelompok 1 — temuan mudah (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| P1-03 | Sudah diperbaiki | Ambil unit ditolak bila `sisa_bayar > 0` atau nota sudah void. | `pusatkupos/lib/data/app_database.dart` (`markUnitTaken`) |
+| P1-04 | Sudah diperbaiki | Pelanggan/unit yang dibuat dari POS ikut di-enqueue ke sinkronisasi. | `pusatkupos/lib/ui/screens/pos_screen.dart` |
+| P1-05 | Sudah diperbaiki | Konversi estimasi meneruskan `customerId`, `unitId`, dan `workOrderSyncId`. | `pusatkupos/lib/data/order_service.dart` |
+| P2-03 | Sudah diperbaiki | Pelunasan memeriksa `request_id`; UI mengirim id unik per percobaan. | `pusatkupos/lib/data/app_database.dart`, `ui/screens/history_screen.dart` |
+| P2-05 | Sudah diperbaiki | Ack cursor dan ack putaran dibatasi sampai `latest_seq` toko/putaran. | `relay/lib/server.dart` |
+| P2-11 | Sudah diperbaiki | Push akun tidak lagi memaksa ganti password bila hash/salt/iterasi tidak berubah. | `relay/lib/server.dart` |
+| P2-12 | Sudah diperbaiki | Nomor HP struk memakai `LEFT JOIN` dan `COALESCE(r.customer_id, u.customer_id)`. | `pusatkupos/lib/data/receipt_service.dart` |
+| P2-13 | Sudah diperbaiki | Mapping supplier ikut payload supplier dan di-enqueue saat diubah. Perubahan kompensasi karyawan kini menaikkan HLC dan meng-enqueue entitas `employee` sehingga diterapkan ke perangkat lain. | `sync/sync_service.dart`, `data/supplier_service.dart`, `data/employee_service.dart`, `ui/screens/stock_screen.dart` |
+| P2-15 | Sudah diperbaiki | Ringkasan viewer ditolak bila kunci lisensi server tidak tersedia. | `pusatkupos/lib/ui/owner_viewer.dart` |
+| P2-17 | Sudah diperbaiki | Void menetapkan `sisa_bayar = 0`. | `pusatkupos/lib/data/app_database.dart` |
+| P3 | Sudah diperbaiki | Follow-up lunas dipindah ke filter arsip; `cicilan_hutang` diisi jumlah cicilan yang benar-benar dipotong. | `data/followup_service.dart`, `data/employee_service.dart` |
+
+### Kelompok 2 — retur, void, koreksi, dan uang (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| P1-01 | Sudah diperbaiki | Void ditolak bila nota sudah memiliki retur aktif. Refund void kini dicek per `request_id` sehingga tidak bentrok dengan refund retur. | `pusatkupos/lib/data/app_database.dart` (`voidRecord`) |
+| P1-02 | Sudah diperbaiki | Retur kini: (1) menghapus piutang lebih dulu, (2) membuat baris pembayaran `REFUND` negatif hanya untuk kelebihan yang harus dikembalikan tunai, (3) menghitung ulang `total_dibayar`, `sisa_bayar`, dan `status_bayar`, (4) ikut diterapkan saat retur masuk dari perangkat lain. | `pusatkupos/lib/data/sale_return_service.dart`, `data/app_database.dart` (`recalculateRecordTotals`), `data/note_sync.dart` |
+| P2-02 | Sudah diperbaiki | Koreksi nota bisa dibuat dari riwayat (tombol “Koreksi total nota”, dengan PIN pemilik/penanggung jawab bila di bawah batas modal). Koreksi langsung mengubah piutang/status bayar, ikut disinkronkan, dan total laporan memakai nilai setelah koreksi. | `pusatkupos/lib/ui/screens/history_screen.dart`, `data/nota_adjustment_service.dart`, `data/app_database.dart` |
+| P2-01 | Sudah diperbaiki | Omzet part/jasa di laporan memakai `subtotal - diskon_alokasi`, sehingga laba kotor sudah setelah diskon. Label laporan diperjelas “(setelah diskon)”. | `data/app_database.dart` (`reportSummary`), `ui/screens/reports_screen.dart` |
+
+### Kelompok 3 — relay, perangkat, dan undangan (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| P1-06 | Sudah diperbaiki | Snapshot toko hanya boleh diunggah perangkat owner (`owner_device_required`). | `relay/lib/server.dart` |
+| P2-06 | Sudah diperbaiki | Klaim undangan: rate limit per IP, akun harus aktif, kunci perangkat wajib, toko harus terdaftar pada owner dan termasuk toko akun. | `relay/lib/server.dart` (`_claimInvite`, `_ownerStoreAllowed`) |
+| P2-07 | Sudah diperbaiki | Pembuatan undangan menolak TTL di luar 1–1440 menit, akun nonaktif, dan toko yang tidak terdaftar/tidak menjadi hak akun. | `relay/lib/server.dart` (`_createInvite`) |
+| P2-08 | Sudah diperbaiki | Relay memakai ulang baris perangkat karyawan yang sama (owner+akun+kunci publik) saat login; aplikasi memakai ulang pasangan kunci lokal sehingga login berulang tidak menambah perangkat. | `relay/lib/server.dart` (`_employeeLogin`), `pusatkupos/lib/data/employee_auth_service.dart` |
+| P2-09 | Sudah diperbaiki | Pemangkasan amplop hanya menghitung perangkat relevan: semua perangkat owner + satu perangkat karyawan terbaru per akun, sehingga perangkat lama yang tidak pernah ack tidak menahan pemangkasan. | `relay/lib/server.dart` (`_pruneAcknowledged`) |
+| P2-10 | Sudah diperbaiki | Bentrok `seq` menghasilkan `409 seq_conflict`, bukan id karangan; klien memberi nomor seq baru agar amplop dikirim ulang, bukan ditandai terkirim. | `relay/lib/server.dart` (`_ingestEnvelope`), `pusatkupos/lib/sync/sync_service.dart` (`_failOutbox`) |
+
+### Kelompok 4 — estimasi, kompensasi, laporan, dan qty desimal (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| P2-01 | Sudah diperbaiki | Laba kotor part dan jasa dihitung dari `subtotal - diskon_alokasi`; label laporan menyebut “setelah diskon”. | `pusatkupos/lib/data/app_database.dart` (`reportSummary`), `ui/screens/reports_screen.dart` |
+| P2-13 | Sudah diperbaiki | Perubahan kompensasi karyawan (gaji, komisi, payroll, bank, status aktif) menaikkan HLC lalu meng-enqueue entitas `employee`; perangkat pasangan menerapkannya. | `data/employee_service.dart`, `sync/sync_service.dart` |
+| P2-16 | Sudah diperbaiki | Detail estimasi memiliki aksi **Revisi** (qty, diskon, alasan) dan **Batalkan**; keduanya menulis status/HLC dan meng-enqueue sinkronisasi. | `data/order_service.dart` (`cancelEstimate`), `ui/screens/estimates_screen.dart` |
+| P2-14 | Sudah diperbaiki | Qty part menerima desimal hingga 3 digit (mis. 0,5 L) di POS, revisi estimasi, retur, struk, detail nota, dan laporan. Kolom `jumlah_milli` ditambahkan ke `service_parts`, `sale_return_items`, dan `estimate_items` lewat skema v3 + backfill; sisa stok, pergerakan stok, komisi, dan sinkronisasi memakai milli. | `data/schema.dart`, `data/app_database.dart`, `data/models.dart`, `data/price_rules.dart`, `data/order_service.dart`, `data/sale_return_service.dart`, `data/note_sync.dart`, `data/receipt_service.dart`, `printer/receipt_builder.dart`, `ui/screens/pos_screen.dart`, `ui/screens/estimates_screen.dart`, `ui/screens/history_screen.dart` |
+| P3 | Sudah diperbaiki | Pembayaran sebagian diberi label `DP` dan pelunasan penuh `PELUNASAN`; izin retur dipisahkan dari `void` (peran kasir/keduanya mendapat `retur`). | `data/app_database.dart`, `data/account_service.dart`, `ui/screens/history_screen.dart` |
+
+

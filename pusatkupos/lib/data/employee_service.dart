@@ -6,6 +6,7 @@ import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../sync/crypto.dart';
+import '../sync/sync_service.dart';
 import 'app_database.dart';
 
 const imbalanTypes = ['KOMISI', 'GAJI'];
@@ -110,26 +111,32 @@ class EmployeeService {
     if (await findEmployee(syncId) == null) {
       throw StateError('Karyawan tidak ditemukan.');
     }
-    await _db.update(
-      'employee_accounts',
-      {
-        'jenis_imbalan': jenisImbalan,
-        'gaji_bulanan': gajiBulananCents,
-        'komisi_mode': komisiMode,
-        'komisi_barang_nilai': komisiBarangNilai,
-        'komisi_jasa_nilai': komisiJasaNilai,
-        'payroll_period': payrollPeriod,
-        'payroll_tanggal': payrollTanggal,
-        'payroll_hari': payrollHari,
-        'bank_nama': _clean(bankNama),
-        'bank_nomor': _clean(bankNomor),
-        'bank_pemilik': _clean(bankPemilik),
-        'tanggal_masuk': _clean(tanggalMasuk),
-        'updated_at': nowIso(),
-      },
-      where: 'sync_id = ?',
-      whereArgs: [syncId],
-    );
+    await _db.transaction((txn) async {
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      await txn.update(
+        'employee_accounts',
+        {
+          'jenis_imbalan': jenisImbalan,
+          'gaji_bulanan': gajiBulananCents,
+          'komisi_mode': komisiMode,
+          'komisi_barang_nilai': komisiBarangNilai,
+          'komisi_jasa_nilai': komisiJasaNilai,
+          'payroll_period': payrollPeriod,
+          'payroll_tanggal': payrollTanggal,
+          'payroll_hari': payrollHari,
+          'bank_nama': _clean(bankNama),
+          'bank_nomor': _clean(bankNomor),
+          'bank_pemilik': _clean(bankPemilik),
+          'tanggal_masuk': _clean(tanggalMasuk),
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
+        },
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+      );
+      await SyncService.instance.enqueueEmployee(syncId, txn: txn);
+    });
   }
 
   Future<int> totalDebt(String employeeSyncId) async {
@@ -304,7 +311,7 @@ class EmployeeService {
         throw StateError('Gaji untuk siklus ini sudah dibayar.');
       }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
-      final remaining = await _applyDebtPayment(
+      await _applyDebtPayment(
         txn,
         employeeSyncId,
         summary.deductionCents,
@@ -321,7 +328,7 @@ class EmployeeService {
         'tanggal': isoStartOfDay(paidAt),
         'nominal': summary.grossCents,
         'potongan_hutang': summary.deductionCents,
-        'cicilan_hutang': remaining,
+        'cicilan_hutang': summary.deductionCents,
         'bonus': summary.bonusCents,
         'metode': metode,
         'catatan': _clean(catatan),

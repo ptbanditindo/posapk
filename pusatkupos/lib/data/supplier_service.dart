@@ -164,8 +164,9 @@ class SupplierService {
 
   Future<void> syncItemSuppliers(
     int stockItemId,
-    Set<int> supplierIds,
-  ) async {
+    Set<int> supplierIds, {
+    Future<void> Function(Transaction txn, int supplierId)? enqueue,
+  }) async {
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       final current = await txn.query(
@@ -196,6 +197,21 @@ class SupplierService {
           },
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
+      }
+      final affected = {...existing, ...supplierIds};
+      for (final supplierId in affected) {
+        final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+        await txn.update(
+          'suppliers',
+          {
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'updated_at': nowIso(),
+          },
+          where: 'id = ?',
+          whereArgs: [supplierId],
+        );
+        if (enqueue != null) await enqueue(txn, supplierId);
       }
     });
   }

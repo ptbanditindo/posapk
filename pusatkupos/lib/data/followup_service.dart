@@ -558,18 +558,20 @@ class FollowupService {
     final args = <Object?>[];
     switch (filter) {
       case 'hari_ini':
-        conditions.add("f.status <> 'ARSIP' AND f.jatuh_tempo = ?");
+        conditions.add(
+          "f.status NOT IN ('ARSIP', 'SUDAH_BAYAR') AND f.jatuh_tempo = ?",
+        );
         args.add(_isoDay(today));
       case 'terlambat':
         conditions.add(
-          "f.status <> 'ARSIP' AND f.jatuh_tempo < ? "
+          "f.status NOT IN ('ARSIP', 'SUDAH_BAYAR') AND f.jatuh_tempo < ? "
           "AND f.status <> 'AKAN_DATANG'",
         );
         args.add(_isoDay(today));
       case 'arsip':
-        conditions.add("f.status = 'ARSIP'");
+        conditions.add("f.status IN ('ARSIP', 'SUDAH_BAYAR')");
       default:
-        conditions.add("f.status <> 'ARSIP'");
+        conditions.add("f.status NOT IN ('ARSIP', 'SUDAH_BAYAR')");
     }
     if (jenis != null && jenis.isNotEmpty) {
       conditions.add('f.jenis = ?');

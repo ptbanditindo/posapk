@@ -145,6 +145,7 @@ class NotaAdjustmentService {
         'created_at': now,
         'updated_at': now,
       });
+      await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
       await txn.insert('permission_audits', {
         'actor': actor?.label ?? 'Pemilik',
         'target_account_id': actor?.employeeId,
@@ -177,6 +178,35 @@ class NotaAdjustmentService {
     return create(
       notaSyncId: notaSyncId,
       nilaiBaru: total + selisih,
+      alasan: alasan,
+      actor: actor,
+      ownerPin: ownerPin,
+      approverSecret: approverSecret,
+      enqueue: enqueue,
+    );
+  }
+
+  /// Koreksi dari layar riwayat yang hanya memegang id lokal.
+  Future<int> createForRecord({
+    required int recordId,
+    required int nilaiBaru,
+    required String alasan,
+    Operator? actor,
+    String? ownerPin,
+    String? approverSecret,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+  }) async {
+    final rows = await AppDatabase.instance.db.query(
+      'service_records',
+      columns: ['sync_id'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('Nota asal tidak ditemukan.');
+    return create(
+      notaSyncId: rows.first['sync_id'] as String,
+      nilaiBaru: nilaiBaru,
       alasan: alasan,
       actor: actor,
       ownerPin: ownerPin,
@@ -265,5 +295,9 @@ class NotaAdjustmentService {
       'created_at': payload['created_at'] ?? nowIso(),
       'updated_at': nowIso(),
     });
+    await AppDatabase.instance.recalculateRecordTotals(
+      txn,
+      record.first['id'] as int,
+    );
   }
 }

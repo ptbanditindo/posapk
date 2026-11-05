@@ -6,20 +6,24 @@ import '../auth/operator.dart';
 import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/quantity.dart';
 import 'app_database.dart';
 import 'models.dart';
 import 'store_settings.dart';
 
 class ReturnLineInput {
-  const ReturnLineInput({
+  ReturnLineInput({
     required this.lineType,
     required this.lineSyncId,
-    required this.jumlah,
-  });
+    required int jumlah,
+    int? qtyMilli,
+  })  : jumlah = jumlah,
+        qtyMilli = qtyMilli ?? jumlah * 1000;
 
   final String lineType; // jasa | part
   final String lineSyncId;
   final int jumlah;
+  final int qtyMilli;
 }
 
 /// Retur penjualan tingkat baris. Nota asli tidak diubah; total retur
@@ -35,6 +39,8 @@ class SaleReturnService {
     required String alasan,
     Operator? actor,
     Future<void> Function(Transaction txn, int id)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+        enqueueCommission,
   }) async {
     final cleanReason = alasan.trim();
     if (cleanReason.isEmpty) {
@@ -73,11 +79,11 @@ class SaleReturnService {
       };
       final picked = <String, int>{};
       for (final item in items) {
-        if (item.jumlah <= 0) {
+        if (item.qtyMilli <= 0) {
           throw ArgumentError('Jumlah retur harus lebih dari nol.');
         }
         final key = '${item.lineType}:${item.lineSyncId}';
-        picked[key] = (picked[key] ?? 0) + item.jumlah;
+        picked[key] = (picked[key] ?? 0) + item.qtyMilli;
       }
       final resolved = <Map<String, Object?>>[];
       var total = 0;
@@ -87,23 +93,25 @@ class SaleReturnService {
         if (line == null) {
           throw StateError('Baris retur tidak ditemukan pada nota.');
         }
-        final original = (line['jumlah'] as num?)?.toInt() ?? 0;
+        final original = (line['qty_milli'] as num?)?.toInt() ?? 0;
         final returned = (line['returned'] as num?)?.toInt() ?? 0;
         final sisa = original - returned;
         if (entry.value > sisa) {
           throw StateError(
-            'Jumlah retur ${line['deskripsi']} melebihi sisa $sisa.',
+            'Jumlah retur ${line['deskripsi']} melebihi sisa '
+            '${formatQuantity(sisa, 3)}.',
           );
         }
         final net = ((line['subtotal'] as num?)?.toInt() ?? 0) -
             ((line['diskon_alokasi'] as num?)?.toInt() ?? 0);
-        final refund = original == 0 ? 0 : net * entry.value ~/ original;
+        final refund =
+            original == 0 ? 0 : (net * entry.value / original).round();
         final modal = (line['modal'] as num?)?.toInt() ?? 0;
         total += refund;
-        modalTotal += modal * entry.value;
+        modalTotal += (modal * entry.value / 1000).round();
         resolved.add({
           ...line,
-          'jumlah_retur': entry.value,
+          'jumlah_retur_milli': entry.value,
           'refund': refund,
           'modal_satuan': modal,
         });
@@ -132,7 +140,8 @@ class SaleReturnService {
       });
       for (final line in resolved) {
         final lineType = line['line_type'] as String;
-        final jumlah = line['jumlah_retur'] as int;
+        final qtyMilli = line['jumlah_retur_milli'] as int;
+        final refund = line['refund'] as int;
         final itemSyncId = newSyncId();
         await txn.insert('sale_return_items', {
           'sync_id': itemSyncId,
@@ -140,9 +149,10 @@ class SaleReturnService {
           'line_type': lineType,
           'line_sync_id': line['sync_id'] as String? ?? '',
           'deskripsi': line['deskripsi'] as String? ?? '',
-          'jumlah': jumlah,
-          'harga_satuan': jumlah == 0 ? 0 : (line['refund'] as int) ~/ jumlah,
-          'subtotal': line['refund'] as int,
+          'jumlah': qtyMilli ~/ 1000,
+          'jumlah_milli': qtyMilli,
+          'harga_satuan': qtyMilli == 0 ? 0 : (refund * 1000 / qtyMilli).round(),
+          'subtotal': refund,
           'modal_satuan': line['modal_satuan'] as int? ?? 0,
           'stock_item_id': line['stock_item_id'] as int?,
           'sync_hlc_wall': hlc.wall,
@@ -162,7 +172,7 @@ class SaleReturnService {
         if (stockRows.isEmpty) continue;
         final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ??
             ((stockRows.first['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-        final nextMilli = before + jumlah * 1000;
+        final nextMilli = before + qtyMilli;
         await txn.update(
           'stock_items',
           {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
@@ -174,14 +184,59 @@ class SaleReturnService {
           'stock_item_id': stockItemId,
           'nama_item': line['deskripsi'] as String? ?? '',
           'jenis': 'MASUK',
-          'jumlah': jumlah,
-          'jumlah_milli': jumlah * 1000,
+          'jumlah': qtyMilli ~/ 1000,
+          'jumlah_milli': qtyMilli,
           'alasan': 'Retur $noNota',
           'service_record_id': recordId,
           'created_at': now,
           'updated_at': now,
         });
       }
+      final totals = await txn.rawQuery(
+        '''
+        SELECT
+          COALESCE((SELECT SUM(nominal) FROM service_payments
+            WHERE service_record_id = ?), 0) AS paid,
+          COALESCE((SELECT SUM(total) FROM sale_returns
+            WHERE service_record_id = ? AND deleted_at IS NULL), 0) AS returns,
+          COALESCE((SELECT SUM(a.nilai_selisih) FROM nota_adjustments a
+            WHERE a.nota_sync_id = ? AND a.deleted_at IS NULL), 0) AS adjust
+        ''',
+        [recordId, recordId, notaSyncId],
+      );
+      final paidSoFar = (totals.first['paid'] as num?)?.toInt() ?? 0;
+      final returnsSoFar = (totals.first['returns'] as num?)?.toInt() ?? 0;
+      final adjustmentSoFar = (totals.first['adjust'] as num?)?.toInt() ?? 0;
+      final totalServis = (record['total_servis'] as num?)?.toInt() ?? 0;
+      final outstandingBefore = (totalServis +
+              adjustmentSoFar -
+              (returnsSoFar - total) -
+              paidSoFar)
+          .clamp(0, totalServis)
+          .toInt();
+      final cashRefund =
+          total > outstandingBefore ? total - outstandingBefore : 0;
+      if (cashRefund > 0) {
+        await txn.insert('service_payments', {
+          'sync_id': newSyncId(),
+          'service_record_id': recordId,
+          'jenis': 'REFUND',
+          'metode': record['metode_bayar'] ?? 'CASH',
+          'nominal': -cashRefund,
+          'waktu': now,
+          'operator': actor?.label ?? 'Pemilik',
+          'request_id': 'retur-$returnSyncId',
+          'catatan': 'Retur $noRetur',
+          'created_at': now,
+          'updated_at': now,
+        });
+      }
+      await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
+      await AppDatabase.instance.recalculateRecordCommissions(
+        txn,
+        recordId,
+        enqueueCommission: enqueueCommission,
+      );
       await txn.insert('permission_audits', {
         'actor': actor?.label ?? 'Pemilik',
         'target_account_id': actor?.employeeId,
@@ -190,6 +245,7 @@ class SaleReturnService {
           'no_nota': noNota,
           'no_retur': noRetur,
           'total': total,
+          'refund_tunai': cashRefund,
           'modal': modalTotal,
           'alasan': cleanReason,
         }),
@@ -250,10 +306,12 @@ class SaleReturnService {
     final jobs = await txn.rawQuery(
       '''
       SELECT j.sync_id, 'jasa' AS line_type, j.deskripsi,
-        j.jumlah, j.subtotal, j.diskon_alokasi,
+        j.jumlah, j.jumlah * 1000 AS qty_milli,
+        j.subtotal, j.diskon_alokasi,
         j.harga_batas_saat_transaksi AS modal,
         NULL AS stock_item_id,
-        COALESCE((SELECT SUM(ri.jumlah) FROM sale_return_items ri
+        COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
+          FROM sale_return_items ri
           JOIN sale_returns sr ON sr.id = ri.return_id
           WHERE sr.deleted_at IS NULL AND ri.line_type = 'jasa'
             AND ri.line_sync_id = j.sync_id), 0) AS returned
@@ -264,10 +322,12 @@ class SaleReturnService {
     final parts = await txn.rawQuery(
       '''
       SELECT p.sync_id, 'part' AS line_type, p.nama_part AS deskripsi,
-        p.jumlah, p.subtotal, p.diskon_alokasi,
+        p.jumlah, COALESCE(p.jumlah_milli, p.jumlah * 1000) AS qty_milli,
+        p.subtotal, p.diskon_alokasi,
         p.harga_batas_saat_transaksi AS modal,
         p.stock_item_id,
-        COALESCE((SELECT SUM(ri.jumlah) FROM sale_return_items ri
+        COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
+          FROM sale_return_items ri
           JOIN sale_returns sr ON sr.id = ri.return_id
           WHERE sr.deleted_at IS NULL AND ri.line_type = 'part'
             AND ri.line_sync_id = p.sync_id), 0) AS returned
@@ -278,7 +338,7 @@ class SaleReturnService {
     return [...jobs, ...parts]
         .where(
           (line) =>
-              ((line['jumlah'] as num?)?.toInt() ?? 0) >
+              ((line['qty_milli'] as num?)?.toInt() ?? 0) >
               ((line['returned'] as num?)?.toInt() ?? 0),
         )
         .toList();
@@ -301,6 +361,7 @@ class SaleReturnService {
               lineSyncId: item['line_sync_id'] as String? ?? '',
               deskripsi: item['deskripsi'] as String? ?? '',
               jumlah: (item['jumlah'] as num?)?.toInt() ?? 0,
+              qtyMilli: (item['jumlah_milli'] as num?)?.toInt() ?? 0,
               hargaSatuanCents:
                   (item['harga_satuan'] as num?)?.toInt() ?? 0,
               subtotalCents: (item['subtotal'] as num?)?.toInt() ?? 0,

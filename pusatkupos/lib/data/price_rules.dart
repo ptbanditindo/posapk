@@ -16,16 +16,18 @@ class PriceLine {
     required this.jumlah,
     required this.hargaTerdaftar,
     required this.hargaModal,
+    int? qtyMilli,
     this.stockItemId,
     this.jasaId,
     this.intervalBulan = 0,
     this.alasanDiskon,
     this.disetujuiOleh,
-  });
+  }) : qtyMilli = qtyMilli ?? jumlah * 1000;
 
   final String jenis; // jasa | part
   final String label;
   final int jumlah;
+  final int qtyMilli;
   final int hargaTerdaftar;
   final int hargaModal;
   final int? stockItemId;
@@ -34,13 +36,13 @@ class PriceLine {
   String? alasanDiskon;
   String? disetujuiOleh;
 
-  int get subtotal => jumlah * hargaTerdaftar;
-  int get batasTotal => jumlah * hargaModal;
+  int get subtotal => (hargaTerdaftar * qtyMilli / 1000).round();
+  int get batasTotal => (hargaModal * qtyMilli / 1000).round();
 
   int hargaFinal = 0;
   int diskonAlokasi = 0;
 
-  int get finalTotal => hargaFinal * jumlah;
+  int get finalTotal => (hargaFinal * qtyMilli / 1000).round();
 }
 
 class PriceRuleViolation implements Exception {
@@ -94,6 +96,7 @@ class PriceRules {
             jenis: line.jenis,
             label: line.label,
             jumlah: line.jumlah,
+            qtyMilli: line.qtyMilli,
             hargaTerdaftar: line.hargaTerdaftar,
             hargaModal: line.hargaModal,
             stockItemId: line.stockItemId,
@@ -111,7 +114,7 @@ class PriceRules {
       );
     }
     for (final line in lines) {
-      if (line.jumlah <= 0) {
+      if (line.qtyMilli <= 0) {
         throw PriceRuleViolation(
           'jumlah_tidak_valid',
           'Jumlah ${line.label} harus lebih dari nol.',
@@ -191,7 +194,9 @@ class PriceRules {
       allocated += share;
       line.diskonAlokasi = share;
       final finalTotal = line.subtotal - share;
-      line.hargaFinal = finalTotal ~/ line.jumlah;
+      line.hargaFinal = line.qtyMilli <= 0
+          ? 0
+          : (finalTotal * 1000 / line.qtyMilli).round();
     }
     var belowMinimum = false;
     for (final line in lines) {

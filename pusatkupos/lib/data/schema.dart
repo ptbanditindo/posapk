@@ -22,6 +22,29 @@ Future<void> migrateSchemaV2(Database db) async {
   );
 }
 
+Future<void> migrateSchemaV3(Database db) async {
+  await _addColumnIfMissing(db, 'service_parts', 'jumlah_milli', 'INTEGER');
+  await _addColumnIfMissing(
+    db,
+    'sale_return_items',
+    'jumlah_milli',
+    'INTEGER',
+  );
+  await _addColumnIfMissing(db, 'estimate_items', 'jumlah_milli', 'INTEGER');
+  await db.execute(
+    'UPDATE service_parts SET jumlah_milli = jumlah * 1000 '
+    'WHERE jumlah_milli IS NULL',
+  );
+  await db.execute(
+    'UPDATE sale_return_items SET jumlah_milli = jumlah * 1000 '
+    'WHERE jumlah_milli IS NULL',
+  );
+  await db.execute(
+    'UPDATE estimate_items SET jumlah_milli = jumlah * 1000 '
+    'WHERE jumlah_milli IS NULL',
+  );
+}
+
 Future<void> _addColumnIfMissing(
   Database db,
   String table,
@@ -72,6 +95,7 @@ Future<void> createReturnTables(Database db) async {
       line_sync_id TEXT NOT NULL DEFAULT '',
       deskripsi TEXT NOT NULL,
       jumlah INTEGER NOT NULL,
+      jumlah_milli INTEGER,
       harga_satuan INTEGER NOT NULL DEFAULT 0,
       subtotal INTEGER NOT NULL DEFAULT 0,
       modal_satuan INTEGER NOT NULL DEFAULT 0,
@@ -522,6 +546,7 @@ Future<void> createCleanSchema(Database db) async {
       stock_item_id INTEGER,
       nama_part TEXT NOT NULL,
       jumlah INTEGER NOT NULL,
+      jumlah_milli INTEGER,
       harga_satuan INTEGER NOT NULL,
       subtotal INTEGER NOT NULL,
       harga_modal INTEGER NOT NULL DEFAULT 0,
@@ -771,6 +796,7 @@ Future<void> createCleanSchema(Database db) async {
       stock_sync_id TEXT,
       deskripsi TEXT NOT NULL,
       jumlah INTEGER NOT NULL,
+      jumlah_milli INTEGER,
       harga_jual_terdaftar INTEGER NOT NULL DEFAULT 0,
       harga_batas_saat_transaksi INTEGER NOT NULL DEFAULT 0,
       harga_final INTEGER NOT NULL DEFAULT 0,

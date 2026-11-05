@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
 import '../../core/money.dart';
+import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
+import '../../data/nota_adjustment_service.dart';
+import '../../data/price_rules.dart';
 import '../../data/sale_return_service.dart';
+import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../receipt_dialog.dart';
@@ -239,7 +243,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 }
               },
-        onReturn: detail.record.isVoid || !AppState.instance.can('void')
+        onReturn: detail.record.isVoid || !AppState.instance.can('retur')
             ? null
             : () async {
                 final request = await showDialog<_ReturnRequest>(
@@ -257,6 +261,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       id,
                       txn: txn,
                     ),
+                    enqueueCommission: (txn, commissionId) =>
+                        SyncService.instance.enqueueCommission(
+                          commissionId,
+                          txn: txn,
+                        ),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -283,6 +292,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     recordId: id,
                     nominalCents: input.nominalCents,
                     metode: input.metode,
+                    requestId:
+                        'settle-${detail.record.id}-'
+                        '${DateTime.now().microsecondsSinceEpoch}',
                     actor: AppState.instance.operator,
                     enqueue: (txn, recordId) =>
                         SyncService.instance.enqueueNotePayment(
@@ -300,6 +312,64 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 } catch (error) {
                   if (context.mounted) {
                     showSnack(context, 'Gagal pelunasan: $error', error: true);
+                  }
+                }
+              },
+        onCorrect: detail.record.isVoid || !AppState.instance.can('koreksi')
+            ? null
+            : () async {
+                final current = detail.corrections.isEmpty
+                    ? detail.record.totalCents
+                    : detail.corrections.last.nilaiBaruCents;
+                final input = await _askCorrection(context, current);
+                if (input == null) return;
+                final settings = await StoreSettingsService.instance.ensure();
+                String? ownerPin;
+                String? approverSecret;
+                var asked = false;
+                while (true) {
+                  try {
+                    await NotaAdjustmentService.instance.createForRecord(
+                      recordId: id,
+                      nilaiBaru: input.nilaiBaruCents,
+                      alasan: input.alasan,
+                      actor: AppState.instance.operator,
+                      ownerPin: ownerPin,
+                      approverSecret: approverSecret,
+                      enqueue: (txn, adjustmentId) =>
+                          SyncService.instance.enqueueNotaAdjustment(
+                        adjustmentId,
+                        txn: txn,
+                      ),
+                    );
+                    AppState.instance.touch();
+                    FollowupService.instance.scheduleSync();
+                    if (context.mounted) Navigator.pop(context);
+                    if (mounted) _load();
+                    if (mounted) {
+                      showSnack(this.context, 'Koreksi nota dicatat.');
+                    }
+                    if (mounted) await _openDetail(id);
+                    return;
+                  } on PriceRuleViolation catch (error) {
+                    if (asked || error.code != 'di_bawah_batas_minimal') {
+                      if (mounted) {
+                        showSnack(
+                          this.context,
+                          'Gagal koreksi: $error',
+                          error: true,
+                        );
+                      }
+                      return;
+                    }
+                    final secret = await _askApprovalSecret(context, settings);
+                    if (secret == null) return;
+                    asked = true;
+                    if (settings.approverMode == approverEmployee) {
+                      approverSecret = secret;
+                    } else {
+                      ownerPin = secret;
+                    }
                   }
                 }
               },
@@ -479,6 +549,122 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return result;
   }
 
+  Future<_CorrectionInput?> _askCorrection(
+    BuildContext context,
+    int currentCents,
+  ) async {
+    final nominal = TextEditingController(
+      text: formatRupiahPlain(currentCents),
+    );
+    final reason = TextEditingController();
+    String? error;
+    final result = await showDialog<_CorrectionInput>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Koreksi total nota'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Total saat ini ${formatRupiah(currentCents)}'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: nominal,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Total baru',
+                  errorText: error,
+                ),
+                onChanged: (_) {
+                  if (error != null) setDialogState(() => error = null);
+                },
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: reason,
+                decoration: const InputDecoration(
+                  labelText: 'Alasan koreksi',
+                  hintText: 'Contoh: salah input harga jasa',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final cents = tryParseRupiahToCents(nominal.text);
+                final note = reason.text.trim();
+                if (cents == null || cents < 0) {
+                  setDialogState(() => error = 'Total baru tidak valid.');
+                  return;
+                }
+                if (cents == currentCents) {
+                  setDialogState(
+                    () => error = 'Total baru sama dengan total saat ini.',
+                  );
+                  return;
+                }
+                if (note.length < 3) {
+                  setDialogState(
+                    () => error = 'Alasan minimal 3 karakter.',
+                  );
+                  return;
+                }
+                Navigator.pop(context, _CorrectionInput(cents, note));
+              },
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nominal.dispose();
+    reason.dispose();
+    return result;
+  }
+
+  Future<String?> _askApprovalSecret(
+    BuildContext context,
+    StoreSettings settings,
+  ) async {
+    final delegated = settings.approverMode == approverEmployee;
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(delegated ? 'PIN penanggung jawab' : 'PIN pemilik'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'PIN'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isEmpty) return;
+              Navigator.pop(context, value);
+            },
+            child: const Text('Setujui'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
   Future<String?> _askVoidReason(BuildContext context) async {
     final controller = TextEditingController();
     String? error;
@@ -532,6 +718,7 @@ class _RecordDetailSheet extends StatelessWidget {
     this.onVoid,
     this.onReturn,
     this.onSettle,
+    this.onCorrect,
     this.onClaim,
     this.onUnitTaken,
     this.onEditCommission,
@@ -541,6 +728,7 @@ class _RecordDetailSheet extends StatelessWidget {
   final Future<void> Function()? onVoid;
   final Future<void> Function()? onReturn;
   final Future<void> Function()? onSettle;
+  final Future<void> Function()? onCorrect;
   final Future<void> Function()? onClaim;
   final Future<void> Function()? onUnitTaken;
   final Future<void> Function()? onEditCommission;
@@ -712,7 +900,7 @@ class _RecordDetailSheet extends StatelessWidget {
                         .map(
                           (part) => _line(
                             context,
-                            '${part.nama} × ${part.jumlah}'
+                            '${part.nama} × ${part.qtyLabel}'
                             '${part.diskonAlokasiCents > 0 ? ' · diskon ${formatRupiah(part.diskonAlokasiCents)}' : ''}',
                             formatRupiah(part.lineTotalCents),
                           ),
@@ -782,7 +970,7 @@ class _RecordDetailSheet extends StatelessWidget {
                         for (final item in retur.items)
                           _line(
                             context,
-                            '  ${item.deskripsi} × ${item.jumlah}',
+                            '  ${item.deskripsi} × ${item.qtyLabel}',
                             formatRupiah(item.subtotalCents),
                           ),
                         if (retur.alasan.trim().isNotEmpty)
@@ -872,6 +1060,12 @@ class _RecordDetailSheet extends StatelessWidget {
                 onPressed: onReturn == null ? null : () => onReturn!(),
                 icon: const Icon(Icons.assignment_return_outlined),
                 label: const Text('Retur penjualan'),
+              ),
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: onCorrect == null ? null : () => onCorrect!(),
+                icon: const Icon(Icons.edit_note_outlined),
+                label: const Text('Koreksi total nota'),
               ),
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
@@ -1014,6 +1208,13 @@ class _SettlementInput {
   final String metode;
 }
 
+class _CorrectionInput {
+  const _CorrectionInput(this.nilaiBaruCents, this.alasan);
+
+  final int nilaiBaruCents;
+  final String alasan;
+}
+
 class _ReturnRequest {
   const _ReturnRequest(this.items, this.alasan);
 
@@ -1026,17 +1227,19 @@ class _ReturnLineState {
     required this.lineType,
     required this.lineSyncId,
     required this.label,
-    required this.remaining,
+    required this.remainingMilli,
     required this.unitNetCents,
   });
 
   final String lineType;
   final String lineSyncId;
   final String label;
-  final int remaining;
+  final int remainingMilli;
   final int unitNetCents;
   bool selected = false;
   final qty = TextEditingController(text: '1');
+
+  String get remainingLabel => formatQuantity(remainingMilli, 3);
 
   void dispose() => qty.dispose();
 }
@@ -1062,39 +1265,41 @@ class _ReturnDialogState extends State<_ReturnDialog> {
     for (final retur in widget.detail.returns) {
       for (final item in retur.items) {
         final key = '${item.lineType}:${item.lineSyncId}';
-        returned[key] = (returned[key] ?? 0) + item.jumlah;
+        returned[key] = (returned[key] ?? 0) + item.milli;
       }
     }
     _lines = [];
     for (final job in widget.detail.jobs) {
       final syncId = job.syncId ?? '';
       if (syncId.isEmpty) continue;
-      final sisa = job.jumlah - (returned['jasa:$syncId'] ?? 0);
+      final totalMilli = job.jumlah * 1000;
+      final sisa = totalMilli - (returned['jasa:$syncId'] ?? 0);
       if (sisa <= 0) continue;
       _lines.add(
         _ReturnLineState(
           lineType: 'jasa',
           lineSyncId: syncId,
           label: job.deskripsi,
-          remaining: sisa,
+          remainingMilli: sisa,
           unitNetCents:
-              job.jumlah == 0 ? 0 : job.lineTotalCents ~/ job.jumlah,
+              totalMilli == 0 ? 0 : (job.lineTotalCents * 1000 / totalMilli).round(),
         ),
       );
     }
     for (final part in widget.detail.parts) {
       final syncId = part.syncId ?? '';
       if (syncId.isEmpty) continue;
-      final sisa = part.jumlah - (returned['part:$syncId'] ?? 0);
+      final sisa = part.qtyMilli - (returned['part:$syncId'] ?? 0);
       if (sisa <= 0) continue;
       _lines.add(
         _ReturnLineState(
           lineType: 'part',
           lineSyncId: syncId,
           label: part.nama,
-          remaining: sisa,
-          unitNetCents:
-              part.jumlah == 0 ? 0 : part.lineTotalCents ~/ part.jumlah,
+          remainingMilli: sisa,
+          unitNetCents: part.qtyMilli == 0
+              ? 0
+              : (part.lineTotalCents * 1000 / part.qtyMilli).round(),
         ),
       );
     }
@@ -1113,15 +1318,15 @@ class _ReturnDialogState extends State<_ReturnDialog> {
     final items = <ReturnLineInput>[];
     for (final line in _lines) {
       if (!line.selected) continue;
-      final qty = int.tryParse(line.qty.text.trim());
-      if (qty == null || qty <= 0) {
+      final qtyMilli = parseQuantityToMilli(line.qty.text.trim(), desimal: 3);
+      if (qtyMilli == null || qtyMilli <= 0) {
         setState(() => _error = 'Jumlah retur ${line.label} tidak valid.');
         return;
       }
-      if (qty > line.remaining) {
+      if (qtyMilli > line.remainingMilli) {
         setState(
           () => _error = 'Jumlah retur ${line.label} melebihi sisa '
-              '${line.remaining}.',
+              '${line.remainingLabel}.',
         );
         return;
       }
@@ -1129,7 +1334,8 @@ class _ReturnDialogState extends State<_ReturnDialog> {
         ReturnLineInput(
           lineType: line.lineType,
           lineSyncId: line.lineSyncId,
-          jumlah: qty,
+          jumlah: qtyMilli ~/ 1000,
+          qtyMilli: qtyMilli,
         ),
       );
     }
@@ -1178,7 +1384,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                                 ' · ${line.label}',
                               ),
                               Text(
-                                'Sisa ${line.remaining} · '
+                                'Sisa ${line.remainingLabel} · '
                                 '${formatRupiah(line.unitNetCents)}/unit',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
@@ -1190,7 +1396,9 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                           child: TextField(
                             controller: line.qty,
                             enabled: line.selected,
-                            keyboardType: TextInputType.number,
+                            keyboardType:
+                                const TextInputType.numberWithOptions(
+                                    decimal: true),
                             textAlign: TextAlign.center,
                             decoration: const InputDecoration(
                               labelText: 'Qty',

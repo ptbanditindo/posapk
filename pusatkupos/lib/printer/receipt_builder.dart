@@ -102,11 +102,20 @@ class ReceiptBuilder {
     }
   }
 
-  void item(String name, int qty, int priceCents, int subtotalCents) {
+  void item(
+    String name,
+    int qty,
+    int priceCents,
+    int subtotalCents, {
+    String? qtyLabel,
+  }) {
     for (final line in wrapText(name, math.max(1, width - 4))) {
       _lines.add(ReceiptLine('  $line'));
     }
-    amount('  $qty x ${formatRupiah(priceCents)}', subtotalCents);
+    amount(
+      '  ${qtyLabel ?? '$qty'} x ${formatRupiah(priceCents)}',
+      subtotalCents,
+    );
   }
 
   static String _align(String value, int width, ReceiptAlign align) {

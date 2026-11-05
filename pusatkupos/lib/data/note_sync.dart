@@ -83,6 +83,8 @@ extension NoteSyncDatabase on AppDatabase {
           'line_sync_id': item['line_sync_id'],
           'deskripsi': item['deskripsi'],
           'jumlah': item['jumlah'],
+          'jumlah_milli': item['jumlah_milli'] ??
+              ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000,
           'harga_satuan': item['harga_satuan'],
           'subtotal': item['subtotal'],
           'modal_satuan': item['modal_satuan'] ?? 0,
@@ -131,6 +133,8 @@ extension NoteSyncDatabase on AppDatabase {
         'stock_sync_id': stock?['sync_id'],
         'nama_part': part['nama_part'],
         'jumlah': part['jumlah'],
+        'jumlah_milli': part['jumlah_milli'] ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000,
         'harga_satuan': part['harga_satuan'],
         'subtotal': part['subtotal'],
         'harga_modal': part['harga_modal'],
@@ -329,7 +333,8 @@ extension NoteSyncDatabase on AppDatabase {
           limit: 1,
         );
         if (movement.isNotEmpty) continue;
-        final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
+        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         final before = StockItem.fromRow(stock.first);
         final nextMilli = before.jumlahMilli + qtyMilli;
         await txn.update(
@@ -491,6 +496,9 @@ extension NoteSyncDatabase on AppDatabase {
         returnAdded = returnAdded || inserted;
       }
       changed = changed || returnAdded;
+      if (returnAdded) {
+        await _recalculateRecordTotals(txn, existingRecord.first['id'] as int);
+      }
       return changed ? 'updated' : 'duplicate';
     }
     final customerSync = customer['sync_id'] as String? ?? '';
@@ -708,7 +716,8 @@ extension NoteSyncDatabase on AppDatabase {
           final postSale =
               (stock?['jumlah_milli'] as num?)?.toInt() ??
               ((stock?['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-          final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
+          final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+              ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
           stockId = await txn.insert('stock_items', {
             'sync_id': stockSync,
             'kode': stock?['kode'] ?? stockSync,
@@ -734,7 +743,8 @@ extension NoteSyncDatabase on AppDatabase {
           limit: 1,
         );
         if (movement.isEmpty) {
-          final qtyMilli = (part['jumlah'] as int? ?? 0) * 1000;
+          final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+              ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
           final current = await txn.query(
             'stock_items',
             where: 'id = ?',
@@ -782,6 +792,8 @@ extension NoteSyncDatabase on AppDatabase {
         'stock_item_id': stockId,
         'nama_part': part['nama_part'] ?? '',
         'jumlah': part['jumlah'] ?? 0,
+        'jumlah_milli': part['jumlah_milli'] ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000,
         'harga_satuan': part['harga_satuan'] ?? 0,
         'subtotal': part['subtotal'] ?? 0,
         'harga_modal': part['harga_modal'] ?? 0,
@@ -927,6 +939,8 @@ extension NoteSyncDatabase on AppDatabase {
         .toList();
     for (final item in items) {
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
+      final qtyMilli = (item['jumlah_milli'] as num?)?.toInt() ??
+          jumlah * 1000;
       final lineType = '${item['line_type'] ?? 'part'}';
       int? stockId;
       final stockSync = '${item['stock_sync_id'] ?? ''}';
@@ -949,6 +963,7 @@ extension NoteSyncDatabase on AppDatabase {
         'line_sync_id': item['line_sync_id'] ?? '',
         'deskripsi': item['deskripsi'] ?? '',
         'jumlah': jumlah,
+        'jumlah_milli': qtyMilli,
         'harga_satuan': item['harga_satuan'] ?? 0,
         'subtotal': item['subtotal'] ?? 0,
         'modal_satuan': item['modal_satuan'] ?? 0,
@@ -966,7 +981,7 @@ extension NoteSyncDatabase on AppDatabase {
       if (stockRows.isEmpty) continue;
       final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ??
           ((stockRows.first['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-      final nextMilli = before + jumlah * 1000;
+      final nextMilli = before + qtyMilli;
       await txn.update(
         'stock_items',
         {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
@@ -987,8 +1002,8 @@ extension NoteSyncDatabase on AppDatabase {
           'stock_item_id': stockId,
           'nama_item': item['deskripsi'] ?? '',
           'jenis': 'MASUK',
-          'jumlah': jumlah,
-          'jumlah_milli': jumlah * 1000,
+          'jumlah': qtyMilli ~/ 1000,
+          'jumlah_milli': qtyMilli,
           'alasan': 'Retur $noNota',
           'service_record_id': recordId,
           'created_at': nowIso(),
@@ -1002,33 +1017,6 @@ extension NoteSyncDatabase on AppDatabase {
   Future<void> _recalculateRecordTotals(
     DatabaseExecutor txn,
     int recordId,
-  ) async {
-    final record = await txn.query(
-      'service_records',
-      columns: ['total_servis'],
-      where: 'id = ?',
-      whereArgs: [recordId],
-      limit: 1,
-    );
-    if (record.isEmpty) return;
-    final paidRows = await txn.rawQuery(
-      'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
-      'WHERE service_record_id = ?',
-      [recordId],
-    );
-    final total = record.first['total_servis'] as int? ?? 0;
-    final paid = paidRows.first['total'] as int? ?? 0;
-    final sisa = total - paid < 0 ? 0 : total - paid;
-    await txn.update(
-      'service_records',
-      {
-        'total_dibayar': paid,
-        'sisa_bayar': sisa,
-        'status_bayar': sisa == 0 ? 'LUNAS' : 'KREDIT',
-        'updated_at': nowIso(),
-      },
-      where: 'id = ?',
-      whereArgs: [recordId],
-    );
-  }
+  ) =>
+      AppDatabase.instance.recalculateRecordTotals(txn, recordId);
 }

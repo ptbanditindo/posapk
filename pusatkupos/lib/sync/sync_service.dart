@@ -1172,6 +1172,14 @@ class SyncService {
     );
     if (rows.isEmpty) return;
     final row = rows.first;
+    final mappingRows = await executor.rawQuery(
+      '''
+      SELECT st.sync_id FROM supplier_items i
+      JOIN stock_items st ON st.id = i.stock_item_id
+      WHERE i.supplier_id = ?
+      ''',
+      [id],
+    );
     await enqueue(
       txn: txn,
       entity: 'supplier',
@@ -1188,6 +1196,8 @@ class SyncService {
         'aktif': row['aktif'] ?? 1,
         'created_at': row['created_at'],
         'deleted_at': row['deleted_at'],
+        'stock_sync_ids':
+            mappingRows.map((item) => '${item['sync_id']}').toList(),
       },
     );
   }
@@ -1285,6 +1295,44 @@ class SyncService {
         'terbayar': row['terbayar'] ?? 0,
         'catatan': row['catatan'],
         'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueEmployee(String syncId, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'employee_accounts',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'employee',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'nama': row['nama'],
+        'aktif': row['aktif'] ?? 1,
+        'jenis_imbalan': row['jenis_imbalan'],
+        'gaji_bulanan': row['gaji_bulanan'],
+        'komisi_mode': row['komisi_mode'],
+        'komisi_barang_nilai': row['komisi_barang_nilai'],
+        'komisi_jasa_nilai': row['komisi_jasa_nilai'],
+        'payroll_period': row['payroll_period'],
+        'payroll_tanggal': row['payroll_tanggal'],
+        'payroll_hari': row['payroll_hari'],
+        'bank_nama': row['bank_nama'],
+        'bank_nomor': row['bank_nomor'],
+        'bank_pemilik': row['bank_pemilik'],
+        'tanggal_masuk': row['tanggal_masuk'],
+        'updated_at': row['updated_at'],
       },
     );
   }
@@ -1450,6 +1498,8 @@ class SyncService {
                 'stock_sync_id': item['stock_sync_id'],
                 'deskripsi': item['deskripsi'],
                 'jumlah': item['jumlah'],
+                'jumlah_milli': item['jumlah_milli'] ??
+                    ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000,
                 'harga_jual_terdaftar': item['harga_jual_terdaftar'],
                 'harga_batas_saat_transaksi':
                     item['harga_batas_saat_transaksi'],
@@ -1985,6 +2035,24 @@ class SyncService {
 
   Future<void> _failOutbox(Map<String, Object?> row, Object error) async {
     final attempts = ((row['retry_count'] as num?)?.toInt() ?? 0) + 1;
+    if (error is RelayException &&
+        error.statusCode == 409 &&
+        '$error'.toLowerCase().contains('seq')) {
+      final deviceId = '${row['device_id'] ?? ''}';
+      final maxRows = await AppDatabase.instance.db.rawQuery(
+        'SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_outbox '
+        'WHERE device_id = ?',
+        [deviceId],
+      );
+      final next = ((maxRows.first['seq'] as num?)?.toInt() ?? 0) + 1;
+      await AppDatabase.instance.db.update(
+        'sync_outbox',
+        {'seq': next},
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+      row['seq'] = next;
+    }
     await AppDatabase.instance.db.update(
       'sync_outbox',
       {
@@ -3022,6 +3090,38 @@ class SyncService {
           where: 'supplier_id = ?',
           whereArgs: [supplierId],
         );
+      } else if (payload['stock_sync_ids'] is List) {
+        final stockIds = <int>[];
+        for (final raw in payload['stock_sync_ids'] as List) {
+          final stockSync = '$raw';
+          if (stockSync.isEmpty) continue;
+          final stock = await txn.query(
+            'stock_items',
+            columns: ['id'],
+            where: 'sync_id = ?',
+            whereArgs: [stockSync],
+            limit: 1,
+          );
+          if (stock.isNotEmpty) stockIds.add(stock.first['id'] as int);
+        }
+        await txn.delete(
+          'supplier_items',
+          where: 'supplier_id = ?',
+          whereArgs: [supplierId],
+        );
+        for (final stockId in stockIds) {
+          await txn.insert(
+            'supplier_items',
+            {
+              'sync_id': newSyncId(),
+              'supplier_id': supplierId,
+              'stock_item_id': stockId,
+              'created_at': nowIso(),
+              'updated_at': nowIso(),
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
       }
     } else if (entity == 'supplier_followup') {
       final supplierSync = payload['supplier_sync_id'] as String? ?? '';
@@ -3145,6 +3245,51 @@ class SyncService {
           whereArgs: [rows.first['id']],
         );
       }
+    } else if (entity == 'employee') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      final local = await txn.query(
+        'employee_accounts',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      // Akun belum pernah dipasangkan di perangkat ini; tidak ada yang
+      // diperbarui dan tidak perlu ditahan sebagai konflik.
+      if (local.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'employee_accounts',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        return;
+      }
+      await txn.update(
+        'employee_accounts',
+        {
+          'nama': payload['nama'],
+          'aktif': payload['aktif'] ?? 1,
+          'jenis_imbalan': payload['jenis_imbalan'],
+          'gaji_bulanan': payload['gaji_bulanan'],
+          'komisi_mode': payload['komisi_mode'],
+          'komisi_barang_nilai': payload['komisi_barang_nilai'],
+          'komisi_jasa_nilai': payload['komisi_jasa_nilai'],
+          'payroll_period': payload['payroll_period'],
+          'payroll_tanggal': payload['payroll_tanggal'],
+          'payroll_hari': payload['payroll_hari'],
+          'bank_nama': payload['bank_nama'],
+          'bank_nomor': payload['bank_nomor'],
+          'bank_pemilik': payload['bank_pemilik'],
+          'tanggal_masuk': payload['tanggal_masuk'],
+          ...hlc,
+          'updated_at': payload['updated_at'] ?? nowIso(),
+        },
+        where: 'id = ?',
+        whereArgs: [local.first['id']],
+      );
     } else if (entity == 'debt') {
       final syncId = payload['sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
@@ -3818,6 +3963,8 @@ class SyncService {
           'stock_sync_id': item['stock_sync_id'],
           'deskripsi': item['deskripsi'] ?? '',
           'jumlah': item['jumlah'] ?? 0,
+          'jumlah_milli': item['jumlah_milli'] ??
+              ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000,
           'harga_jual_terdaftar': item['harga_jual_terdaftar'] ?? 0,
           'harga_batas_saat_transaksi':
               item['harga_batas_saat_transaksi'] ?? 0,
@@ -3947,6 +4094,8 @@ class SyncService {
                   'jenis': item['jenis'],
                   'deskripsi': item['deskripsi'],
                   'jumlah': item['jumlah'],
+                  'jumlah_milli': item['jumlah_milli'] ??
+                      ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000,
                   'harga_jual_terdaftar': item['harga_jual_terdaftar'],
                   'harga_batas_saat_transaksi':
                       item['harga_batas_saat_transaksi'],

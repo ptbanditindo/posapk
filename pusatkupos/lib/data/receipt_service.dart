@@ -70,8 +70,8 @@ class ReceiptService {
       '''
       SELECT c.nomor_hp
       FROM service_records r
-      JOIN vehicle_or_units u ON u.id = r.unit_id
-      JOIN customers c ON c.id = u.customer_id
+      LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
+      LEFT JOIN customers c ON c.id = COALESCE(r.customer_id, u.customer_id)
       WHERE r.id = ? LIMIT 1
       ''',
       [recordId],
@@ -230,9 +230,10 @@ class ReceiptService {
         int jumlah,
         int harga,
         int subtotal,
-        int diskon,
-      ) {
-        builder.item(nama, jumlah, harga, subtotal);
+        int diskon, {
+        String? qtyLabel,
+      }) {
+        builder.item(nama, jumlah, harga, subtotal, qtyLabel: qtyLabel);
         if (!template.showLineDiscount || diskon <= 0) return;
         builder.amount('  ${template.label('diskon')}', -diskon);
       }
@@ -260,6 +261,7 @@ class ReceiptService {
             part.hargaTerdaftarCents,
             part.subtotalCents,
             part.diskonAlokasiCents,
+            qtyLabel: part.qtyLabel,
           );
         }
         printed = true;
