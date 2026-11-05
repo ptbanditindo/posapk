@@ -4,9 +4,10 @@ Tanggal: 5 November 2026
 Cakupan: `pusatkupos/` (Flutter + SQLite/SQLCipher) dan `relay/` (Dart Shelf + PostgreSQL)
 Referensi fitur struk: `github.com/ptbanditindo/aplikasiposbengkel` (Python/FastAPI)
 
-Status: seluruh temuan P0, P1, dan P2 sudah diperbaiki, editor struk v2 sudah
-dibangun, dan sembilan fitur lanjutan sudah ditulis ke kode. Tidak ada
-dependency baru yang dipasang. Dokumen ini hanya memuat keadaan kode saat ini.
+Status: seluruh temuan P0, P1, P2, dan kelompok audit lanjutan B-01–B-10 sudah
+diperbaiki, editor struk v2 sudah dibangun, dan sembilan fitur lanjutan sudah
+ditulis ke kode. Tidak ada dependency baru yang dipasang. Dokumen ini hanya
+memuat keadaan kode saat ini.
 
 ---
 
@@ -20,6 +21,10 @@ dependency baru yang dipasang. Dokumen ini hanya memuat keadaan kode saat ini.
   tingkat baris beserta sinkronisasinya, editor struk v2, dan tujuh fitur struk
   (logo raster, WhatsApp, ekspor/impor JSON, pratinjau debounce + validasi
   inline, jatuh tempo + banner pelunasan, diskon per baris, pratinjau 58/80 mm).
+- **Audit lanjutan selesai (B-01–B-10):** urutan `relay_seq` dikunci per toko,
+  konflik izin/harga bersifat final tanpa memblokir kursor, koreksi nota
+  memakai nilai absolut terakhir, void menyinkronkan REFUND, passphrase backup
+  dapat dipulihkan, dan pembulatan kuantitas negatif konsisten.
 - **Skema naik ke versi 2 secara aditif.** Migrasi menambah kolom dan tabel
   retur tanpa menghapus data; database versi 1 tetap dapat dibuka.
 - **Relay tetap buta isi.** Relay hanya menyimpan amplop terenkripsi dan tidak
@@ -37,6 +42,7 @@ Audit menemukan tujuh kelas masalah utama. Semuanya sudah ditutup:
 | UI | Aksi gagal tanpa pesan, state basi, race | `try/catch/finally`, epoch load, `AppState.touch()`, validasi inline |
 | Printer | Lebar dokumen salah, status cetak tidak jujur, codepage tidak dipilih | Dokumen dibangun ulang sesuai printer, status dibedakan, codepage + transliterasi |
 | Struk | Hanya toggle dan empat teks | Template v2 lengkap, 58/80, logo, WhatsApp, JSON, diskon baris, jatuh tempo, banner pelunasan |
+| Audit lanjutan | `relay_seq` dapat terlewat, delta stok tertahan, koreksi ganda, passphrase backup tidak dapat dipulihkan | Advisory lock per toko, konflik final tanpa blokir kursor, total koreksi absolut, passphrase dapat dilihat/disalin |
 
 ---
 
@@ -265,6 +271,25 @@ ReceiptService.build(recordId, width)
 9. **`catch` menelan error.** Aksi kritis menampilkan pesan dan tidak mengunci
    tombol.
 
+### 4.5 Kelompok audit lanjutan B-01–B-10 (sudah diperbaiki)
+
+| ID | Severity | Masalah | Perbaikan |
+|---|---|---|---|
+| B-01 | P1 | `relay_seq BIGSERIAL` dapat ter-commit tidak berurutan antar transaksi sehingga perangkat melewati amplop yang commit belakangan | `pg_advisory_xact_lock(hashtext(owner), hashtext(store))` pada submit tunggal dan batch; celah nomor akibat rollback aman karena feed memakai `relay_seq > since` |
+| B-02 | P1 | Perangkat karyawan mengubah stok ditolak oleh aturan harga sehingga delta tertahan permanen dan kursor tidak maju | `priceEntities` hanya `harga_jasa`; jumlah stok diterapkan bila punya `ubah_stok`, perubahan harga dicatat final `harga_dikunci_owner` tanpa memblokir kursor |
+| B-03 | P1 | Passphrase backup otomatis tidak dapat dilihat sehingga arsip Telegram tidak dapat dipulihkan | Passphrase disimpan di SecureStore, minimal 8 karakter, dapat dilihat/disalin dari Pengaturan; caption Telegram menandai arsip terkunci |
+| B-04 | P1 | Koreksi nota: PIN di dalam transaksi, `SUM(nilai_selisih)` ganda, dan modal part memakai `jumlah` bulat | Approval di luar transaksi; total efektif = `nilai_baru` terakhir menurut HLC di semua jalur (layar, laporan, refund retur, terima remote); modal memakai `jumlah_milli` |
+| B-05 | P2 | Void lewat sinkronisasi mengabaikan retur dan tidak mengirim REFUND | Restock qty sisa, `sisa_bayar = 0`, REFUND dikirim sebagai amplop `note_payment` dari dalam transaksi void |
+| B-06 | P2 | Izin `nota` dan `void` dari perangkat karyawan tidak dipilah per aksi | Relay memeriksa `void`/`ubah_status`/`buat_nota` sesuai aksi; pelanggaran dicatat final |
+| B-07 | P2 | `/relay/followup/quota` dapat dipanggil tanpa autentikasi | Wajib token perangkat; tanpa pairing aplikasi memakai kuota lokal |
+| B-08 | P2 | Token admin relay dibandingkan dengan `==` | Perbandingan waktu konstan `_constantTimeEquals` |
+| B-09 | P3 | Konflik `review` menghalangi snapshot dan backup | `blockingConflictCount` hanya menghitung delta yang belum diterapkan; konflik final berstatus `rejected` |
+| B-10 | P3 | Pembulatan `~/ 1000` ke arah nol membuat stok negatif pecahan tampil salah | `wholeQuantity(milli)` membulatkan ke bawah untuk nilai negatif, dipakai di stok, opname, retur, void, dan jalur sinkronisasi |
+
+Catatan: payload stok memang sudah membawa `jumlah_milli`; kecurigaan kuantitas
+stok hilang tidak terbukti. Akar masalahnya adalah `stock` diperlakukan sebagai
+entitas harga pada aturan konflik (B-02).
+
 ---
 
 ## 5. Pekerjaan yang Sudah Selesai
@@ -277,13 +302,14 @@ ReceiptService.build(recordId, width)
 | Enkripsi lokal | SQLCipher dengan kunci acak di SecureStore pada Android/iOS/macOS. Windows/Linux/web memakai SQLite biasa dan menampilkan keterangan di Pengaturan → Keamanan. |
 | Harga | Modal menjadi batas bawah mutlak bagi selain pemilik; diskon maksimal sebesar selisih harga jual dan modal; persetujuan tidak dapat membuka batas itu. |
 | Persetujuan | Mode penyetuju `owner` (PIN pemilik) atau `penanggung_jawab` (akun aktif dengan izin `setujui`), dengan `LoginGuard` terpisah. Saklar persetujuan diskon default mati. |
-| Koreksi nota | Baris `nota_adjustments` baru; nota asli tidak diubah. Total baru divalidasi terhadap modal baris asli. |
+| Koreksi nota | Baris `nota_adjustments` baru; nota asli tidak diubah. Total efektif memakai `nilai_baru` terakhir menurut HLC (bukan `SUM`), target dihitung ulang di dalam transaksi, dan approval diverifikasi di luar transaksi. |
 | Transaksi | Lima jenis transaksi, lima tahap order, tiga preset, izin per peran, dan snapshot mode saat transaksi dibuat. |
 | Estimasi | Revisi append-only dengan `versi + 1` dan `revisi_dari_sync_id`; konversi ke nota menautkan `estimate_sync_id` dan `total_estimasi_terakhir`. |
 | Work order | Nomor order dan nomor antrian harian per perangkat; log status append-only; status minimal saat tahap pengerjaan dimatikan. |
 | Sinkron | Scheduler 15 menit (10–20 menit) dengan jitter, batch adaptif, retensi berbasis ack semua perangkat, peringatan penyimpanan relay, dan rekonsiliasi ringkasan harian. |
-| Relay | Scope token per peran, pengelolaan akun hanya owner, hash password di server, `hints_signature` wajib, cek keanggotaan toko saat bootstrap, dan penolakan entity di luar izin. |
-| Penerapan delta | Tri-state apply: delta yang ditolak tidak di-ack; snapshot lama tidak menimpa data yang lebih baru; `applied_deltas` dibersihkan bersama cursor. |
+| Relay | Scope token per peran, pengelolaan akun hanya owner, hash password di server, `hints_signature` wajib, cek keanggotaan toko saat bootstrap, penolakan entity di luar izin, advisory lock urutan `relay_seq` per toko, perbandingan token admin waktu konstan, dan kuota follow-up yang memerlukan token perangkat. |
+| Penerapan delta | Tri-state apply: delta yang ditolak tidak di-ack; konflik izin/harga bersifat final (`rejected`) sehingga kursor tetap maju; snapshot lama tidak menimpa data yang lebih baru; `applied_deltas` dibersihkan bersama cursor. |
+| Void dan retur | Void mengembalikan qty yang belum diretur, menolkan `sisa_bayar`, dan meng-enqueue REFUND sebagai amplop `note_payment`; perangkat penerima menyamakan status tanpa membuat refund ganda. |
 | Sesi | Logout dan pencabutan perangkat menghapus token serta kunci sync; rahasia disimpan per `store_id`. |
 | Pairing | Kode karyawan enam karakter, berlaku 10 menit, sekali pakai; akun dipasang dari payload yang ditandatangani. |
 
@@ -291,7 +317,7 @@ ReceiptService.build(recordId, width)
 
 | Pekerjaan | Hasil | Berkas utama |
 |---|---|---|
-| Backup multi-toko | Format arsip 3: `manifest.json` berisi `stores[]`; setiap toko punya payload terenkripsi AES-256-GCM, checksum SHA-256, dan metadata cipher. Restore memvalidasi seluruh payload, membuat safety `.bak`, mengganti berkas secara atomik, membangun ulang registry, lalu membuka toko aktif. Format 1 dan 2 tetap didukung. | `lib/data/backup_service.dart`, `lib/data/store_registry.dart`, `lib/data/app_database.dart`, `lib/data/backup_platform_io.dart` |
+| Backup multi-toko | Format arsip 3: `manifest.json` berisi `stores[]`; setiap toko punya payload terenkripsi AES-256-GCM, checksum SHA-256, dan metadata cipher. Restore memvalidasi seluruh payload, membuat safety `.bak`, mengganti berkas secara atomik, membangun ulang registry, lalu membuka toko aktif. Format 1 dan 2 tetap didukung. Passphrase backup otomatis disimpan di SecureStore (minimal 8 karakter), dapat dilihat/disalin dari Pengaturan, dan arsip Telegram diberi caption terkunci agar dapat dipulihkan di perangkat lain. | `lib/data/backup_service.dart`, `lib/data/store_registry.dart`, `lib/data/app_database.dart`, `lib/data/backup_platform_io.dart`, `lib/ui/screens/settings_screen.dart` |
 | Retur / penjualan neto | Tabel append-only `sale_returns` dan `sale_return_items`; retur per baris dengan sisa jumlah, refund proporsional dari harga neto, pengembalian stok part + `stock_movements`, audit `retur_nota`. Laporan memakai omzet neto, retur jasa/part, dan laba neto. | `lib/data/sale_return_service.dart`, `lib/data/schema.dart`, `lib/data/app_database.dart`, `lib/ui/screens/history_screen.dart`, `lib/ui/screens/reports_screen.dart` |
 | Sinkron retur | Payload nota membawa `returns`; penerima membuat `sale_returns`/`sale_return_items`, memetakan stok lewat `stock_sync_id`, dan memakai `sync_id` pergerakan stok deterministik agar kedua sisi konvergen. Tabel retur ikut snapshot dan urutan hapus. | `lib/data/note_sync.dart`, `lib/sync/snapshot_sync.dart` |
 | Editor struk v2 | Template JSON dengan blok, label, placeholder, validasi, migrasi dari 25 toggle + 4 teks lama, pratinjau, dan cetak percobaan. | `lib/data/receipt_template.dart`, `lib/data/receipt_settings.dart`, `lib/data/receipt_service.dart`, `lib/ui/screens/receipt_settings_screen.dart` |
@@ -400,6 +426,12 @@ ReceiptService.build(recordId, width)
 4. Relay menghapus amplop yang sudah diakui semua perangkat aktif.
 5. Ringkasan harian dibandingkan antarperangkat; selisih membuat permintaan
    rekonsiliasi dan konflik yang dapat ditinjau pemilik.
+6. Relay mengunci `(owner_id, store_id)` saat menerima amplop tunggal/batch,
+   sehingga urutan `relay_seq` sama dengan urutan commit dan tidak ada amplop
+   terlewat.
+7. Konflik izin/harga dicatat final (`rejected`) dan tidak diputar ulang;
+   kursor tetap maju dan hanya delta yang belum diterapkan yang menahan
+   snapshot/backup.
 
 ### 7.5 Backup multi-toko
 
@@ -417,6 +449,10 @@ restoreBackup
   → ganti registry, aktifkan toko dari manifest
   → reset seq/kode perangkat dan wajibkan bootstrap sync
 ```
+
+Passphrase backup otomatis disimpan di SecureStore dan dapat dilihat/disalin
+dari Pengaturan, sehingga arsip yang diunggah ke Telegram tetap dapat dipulihkan
+di perangkat lain.
 
 Format 1 (database tunggal) dan format 2 (single-store dengan manifest) tetap
 memiliki jalur restore.
@@ -499,6 +535,21 @@ Verifikasi yang dilakukan bersifat statis:
 - Pemeriksaan bahwa format backup 1/2/3 tetap memiliki jalur restore.
 - Pemeriksaan bahwa tidak ada dependency baru pada `pubspec.yaml`.
 
+Untuk kelompok B-01–B-10, verifikasi statis tambahan yang dilakukan:
+
+- Pembacaan ulang seluruh berkas yang berubah: relay (`server.dart`,
+  `auth_rules.dart`), sinkronisasi (`sync_service.dart`,
+  `sync_conflict_rules.dart`, `note_sync.dart`), domain (`app_database.dart`,
+  `nota_adjustment_service.dart`, `sale_return_service.dart`,
+  `backup_service.dart`, `quantity.dart`), dan UI (`history_screen.dart`,
+  `settings_screen.dart`).
+- Penelusuran pemanggil: `enqueuePayment` terhubung dari riwayat ke
+  `enqueueNotePayment`; `autoPassphrase` dipakai layar Pengaturan dan
+  `saveSettings`; `_lockStore` dipanggil pada jalur submit tunggal dan batch.
+- Pemeriksaan konsistensi semantik total koreksi di lima jalur (layar koreksi,
+  `recalculateRecordTotals`, laporan, refund retur, penerimaan remote).
+- Tidak ada test yang dibuat atau dijalankan.
+
 Pemeriksaan perilaku tetap dilakukan pemilik melalui APK atau localhost.
 
 ### 10.2 Build yang disarankan setelah SDK tersedia
@@ -533,6 +584,10 @@ dart analyze
 | Multi-toko | Seluruh toko dan toko aktif pulih dari satu arsip |
 | Relay | Viewer tidak bisa enroll owner/menulis akun; entity spoof ditolak |
 | Sync | Delta ditolak tidak di-ack; snapshot lama ditolak; seq tidak pernah mundur |
+| Urutan relay | Feed `relay_seq > since` tidak melewatkan amplop yang commit belakangan |
+| Konflik kursor | Konflik izin/harga berstatus final tidak menghalangi feed, snapshot, atau backup |
+| Koreksi nota | Dua koreksi bersamaan tidak terhitung ganda; total sama di layar, laporan, dan refund |
+| Passphrase backup | Pemilik dapat melihat passphrase arsip otomatis dan memulihkannya di perangkat lain |
 | Retur | Sisa jumlah benar, stok kembali, laporan neto, retur diterima perangkat lain |
 | Logout | Token dan kunci perangkat terhapus; sync berhenti |
 | Laporan | Laba = total - modal part - modal jasa - komisi - gaji - retur |
@@ -594,3 +649,5 @@ dart analyze
 - Rencana dan butir yang sudah selesai dihapus dari dokumen.
 - Sesi terakhir hanya melakukan verifikasi statis karena SDK tidak tersedia dan
   dependency tidak boleh dipasang.
+- Kelompok audit lanjutan B-01–B-10 (Bagian 4.5) sudah diterapkan pada kode dan
+  tercatat juga di `AUDIT_LOGIKA_BISNIS_DAN_ALUR_OPERASIONAL.md` (Kelompok 6).
