@@ -3,7 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:crypto/crypto.dart';
+import 'package:crypto/crypto.dart' hide Hmac;
 import 'package:cryptography/cryptography.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -14,7 +14,8 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import 'app_database.dart';
 import 'backup_platform_stub.dart'
-    if (dart.library.io) 'backup_platform_io.dart' as platform;
+    if (dart.library.io) 'backup_platform_io.dart'
+    as platform;
 import 'secure_store.dart';
 import 'store_registry.dart';
 
@@ -83,8 +84,8 @@ class BackupService {
   Future<BackupSettings> loadSettings() async {
     final db = AppDatabase.instance;
     final auto = await db.getSetting('backup.auto_enabled') ?? '1';
-    final jam = _normalizeTime(await db.getSetting('backup.jam') ?? '') ??
-        '02:00';
+    final jam =
+        _normalizeTime(await db.getSetting('backup.jam') ?? '') ?? '02:00';
     final telegram = await db.getSetting('backup.telegram_enabled') ?? '0';
     final chat = await db.getSetting('backup.telegram_chat') ?? '';
     final token = await SecureStore.instance.read(_telegramTokenKey) ?? '';
@@ -113,18 +114,12 @@ class BackupService {
     final db = AppDatabase.instance;
     await db.setSetting('backup.auto_enabled', autoEnabled ? '1' : '0');
     await db.setSetting('backup.jam', normalized);
-    await db.setSetting(
-      'backup.telegram_enabled',
-      telegramEnabled ? '1' : '0',
-    );
+    await db.setSetting('backup.telegram_enabled', telegramEnabled ? '1' : '0');
     await db.setSetting('backup.telegram_chat', telegramChatId.trim());
     if (clearTelegramToken) {
       await SecureStore.instance.delete(_telegramTokenKey);
     } else if (telegramToken != null && telegramToken.trim().isNotEmpty) {
-      await SecureStore.instance.write(
-        _telegramTokenKey,
-        telegramToken.trim(),
-      );
+      await SecureStore.instance.write(_telegramTokenKey, telegramToken.trim());
     }
     final passphraseValue = autoPassphrase?.trim() ?? '';
     if (passphraseValue.isNotEmpty) {
@@ -164,12 +159,12 @@ class BackupService {
   }
 
   Future<DateTime?> lastLocalAt() async => DateTime.tryParse(
-        await AppDatabase.instance.getSetting('backup.last_local_at') ?? '',
-      );
+    await AppDatabase.instance.getSetting('backup.last_local_at') ?? '',
+  );
 
   Future<DateTime?> lastAttemptAt() async => DateTime.tryParse(
-        await AppDatabase.instance.getSetting('backup.last_attempt_at') ?? '',
-      );
+    await AppDatabase.instance.getSetting('backup.last_attempt_at') ?? '',
+  );
 
   Future<bool> telegramPending() async =>
       (await AppDatabase.instance.getSetting('backup.telegram_pending') ??
@@ -443,8 +438,8 @@ class BackupService {
         message: portable
             ? 'Backup tersimpan dan terkunci passphrase.'
             : 'Backup tersimpan. Tanpa passphrase, berkas ini hanya dapat '
-                'dipulihkan di perangkat ini; buat backup manual dengan '
-                'passphrase untuk memindahkan data.',
+                  'dipulihkan di perangkat ini; buat backup manual dengan '
+                  'passphrase untuk memindahkan data.',
       );
     } catch (error) {
       return BackupResult(ok: false, message: 'Backup gagal: $error');
@@ -582,28 +577,28 @@ class BackupService {
       return const BackupResult(ok: false, message: message);
     }
     final token = await SecureStore.instance.read(_telegramTokenKey) ?? '';
-    final storeName =
-        await db.getSetting('bengkel.nama') ?? 'PusatkuPOS';
+    final storeName = await db.getSetting('bengkel.nama') ?? 'PusatkuPOS';
     final caption =
         '$storeName · ${DateTime.now().toIso8601String().substring(0, 10)} · '
         'arsip terkunci passphrase backup';
     try {
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('https://api.telegram.org/bot$token/sendDocument'),
-      )
-        ..fields['chat_id'] = settings.telegramChatId.trim()
-        ..fields['caption'] = caption
-        ..files.add(
-          http.MultipartFile.fromBytes(
-            'document',
-            bytes,
-            filename: filename,
-          ),
-        );
+      final request =
+          http.MultipartRequest(
+              'POST',
+              Uri.parse('https://api.telegram.org/bot$token/sendDocument'),
+            )
+            ..fields['chat_id'] = settings.telegramChatId.trim()
+            ..fields['caption'] = caption
+            ..files.add(
+              http.MultipartFile.fromBytes(
+                'document',
+                bytes,
+                filename: filename,
+              ),
+            );
       final streamed = await request.send().timeout(
-            const Duration(seconds: 90),
-          );
+        const Duration(seconds: 90),
+      );
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode != 200) {
         String detail = 'HTTP ${response.statusCode}';
@@ -672,9 +667,7 @@ class BackupService {
   /// True bila arsip memerlukan passphrase buatan pengguna.
   Future<bool> needsPassphrase(String path) async {
     try {
-      final archive = ZipDecoder().decodeBytes(
-        await platform.readFile(path),
-      );
+      final archive = ZipDecoder().decodeBytes(await platform.readFile(path));
       final manifest = _readManifest(archive);
       if (manifest == null) return false;
       final format = manifest['format'];
@@ -702,19 +695,14 @@ class BackupService {
         .firstOrNull;
     if (file == null || file.size > _maxManifestBytes) return null;
     try {
-      final decoded = jsonDecode(
-        utf8.decode(file.content as List<int>),
-      );
+      final decoded = jsonDecode(utf8.decode(file.content as List<int>));
       return decoded is Map<String, dynamic> ? decoded : null;
     } catch (_) {
       return null;
     }
   }
 
-  Future<BackupResult> restoreBackup({
-    String? path,
-    String? passphrase,
-  }) async {
+  Future<BackupResult> restoreBackup({String? path, String? passphrase}) async {
     if (kIsWeb) {
       return const BackupResult(
         ok: false,
@@ -786,7 +774,8 @@ class BackupService {
         if (secret.isEmpty) {
           return const BackupResult(
             ok: false,
-            message: 'Backup terkunci passphrase. Masukkan passphrase yang '
+            message:
+                'Backup terkunci passphrase. Masukkan passphrase yang '
                 'dipakai saat membuat backup.',
           );
         }
@@ -811,7 +800,7 @@ class BackupService {
           ok: false,
           message: format == 1
               ? 'Backup lama ini masih terenkripsi kunci perangkat dan tidak '
-                  'dapat dipulihkan. Buat backup baru dari aplikasi versi ini.'
+                    'dapat dipulihkan. Buat backup baru dari aplikasi versi ini.'
               : 'Berkas database tidak sah.',
         );
       }
@@ -843,19 +832,14 @@ class BackupService {
       } catch (error) {
         await platform.deleteFile(plainPath);
         await platform.deleteFile(newPath);
-        return BackupResult(
-          ok: false,
-          message: 'Backup ditolak: $error',
-        );
+        return BackupResult(ok: false, message: 'Backup ditolak: $error');
       } finally {
         await platform.deleteFile(plainPath);
       }
 
       final oldMaxSeq = await _maxOutboxSeq();
-      final oldFloor = int.tryParse(
-            await db.getSetting('device.seq_floor') ?? '',
-          ) ??
-          0;
+      final oldFloor =
+          int.tryParse(await db.getSetting('device.seq_floor') ?? '') ?? 0;
       await db.checkpoint();
       String? safetyCopy;
       try {
@@ -903,7 +887,8 @@ class BackupService {
       await db.setSetting('sync.restore_requires_bootstrap', '1');
       return const BackupResult(
         ok: true,
-        message: 'Backup dipulihkan. Kode perangkat baru dibuat agar nomor '
+        message:
+            'Backup dipulihkan. Kode perangkat baru dibuat agar nomor '
             'nota tidak bentrok. Jalankan bootstrap sebelum sinkronisasi.',
       );
     } catch (error) {
@@ -990,7 +975,8 @@ class BackupService {
       if (secret.isEmpty) {
         return const BackupResult(
           ok: false,
-          message: 'Backup terkunci passphrase. Masukkan passphrase yang '
+          message:
+              'Backup terkunci passphrase. Masukkan passphrase yang '
               'dipakai saat membuat backup.',
         );
       }
@@ -1026,8 +1012,8 @@ class BackupService {
       final existing = StoreRegistry.instance.isOpen
           ? await StoreRegistry.instance.byId(storeId)
           : null;
-      var targetPath = existing?.databasePath ??
-          p.join(root, 'stores', '$databaseId.db');
+      var targetPath =
+          existing?.databasePath ?? p.join(root, 'stores', '$databaseId.db');
       while (usedPaths.contains(targetPath)) {
         databaseId = newSyncId();
         targetPath = p.join(root, 'stores', '$databaseId.db');
@@ -1061,10 +1047,7 @@ class BackupService {
       } catch (error) {
         await platform.deleteFile(plainPath);
         await platform.deleteFile(newPath);
-        return BackupResult(
-          ok: false,
-          message: 'Toko $label ditolak: $error',
-        );
+        return BackupResult(ok: false, message: 'Toko $label ditolak: $error');
       } finally {
         await platform.deleteFile(plainPath);
       }
@@ -1120,7 +1103,8 @@ class BackupService {
       }
       return BackupResult(
         ok: false,
-        message: 'Restore multi-toko gagal dan berkas lama dikembalikan: '
+        message:
+            'Restore multi-toko gagal dan berkas lama dikembalikan: '
             '$error',
       );
     }
@@ -1160,7 +1144,8 @@ class BackupService {
       }
       return BackupResult(
         ok: false,
-        message: 'Berkas toko dipulihkan tetapi registry gagal diperbarui: '
+        message:
+            'Berkas toko dipulihkan tetapi registry gagal diperbarui: '
             '$error',
       );
     }
@@ -1186,7 +1171,8 @@ class BackupService {
     }
     return BackupResult(
       ok: true,
-      message: 'Backup multi-toko dipulihkan (${records.length} toko). '
+      message:
+          'Backup multi-toko dipulihkan (${records.length} toko). '
           'Kode perangkat baru dibuat agar nomor nota tidak bentrok. '
           'Jalankan bootstrap sebelum sinkronisasi.',
     );

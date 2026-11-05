@@ -126,9 +126,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       children: [
         Text(
           'Laporan',
-          style: Theme.of(context)
-              .textTheme
-              .headlineSmall
+          style: Theme.of(context).textTheme.headlineSmall
               ?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 12),
@@ -194,7 +192,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Dibayar',
+                            label: 'Dibayar nota periode',
                             value: formatRupiah(summary.dibayarCents),
                             icon: Icons.account_balance_wallet_outlined,
                             tone: Colors.green,
@@ -203,15 +201,36 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Piutang',
+                            label: 'Piutang saldo nota periode',
                             value: formatRupiah(summary.piutangCents),
                             icon: Icons.schedule_outlined,
                             tone: Colors.orange,
                           ),
                         ),
+                        SizedBox(
+                          width: width,
+                          child: StatCard(
+                            label: 'Uang diterima neto',
+                            value: formatRupiah(
+                              summary.cashByMethod.values.fold<int>(
+                                0,
+                                (sum, value) => sum + value,
+                              ),
+                            ),
+                            icon: Icons.savings_outlined,
+                            tone: Colors.teal,
+                          ),
+                        ),
                       ],
                     );
                   },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Omzet bruto, dibayar, dan piutang mengikuti tanggal nota; '
+                  'retur mengikuti tanggal retur; uang diterima mengikuti '
+                  'tanggal pembayaran.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 16),
                 SectionCard(
@@ -277,6 +296,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 const SizedBox(height: 16),
                 SectionCard(
                   title: 'Per jenis transaksi',
+                  subtitle: 'Setelah koreksi nota, sebelum retur',
                   child: summary.countByType.isEmpty
                       ? const Text('Belum ada transaksi pada periode ini.')
                       : Column(
@@ -315,7 +335,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                       '${dateId.format(row.waktu)} · '
                                       'Kasir: ${row.kasir ?? '-'}'
                                       '${row.disetujuiOleh == null ? '' : ' · '
-                                          'Disetujui: ${row.disetujuiOleh}'}',
+                                                'Disetujui: ${row.disetujuiOleh}'}',
                                     ),
                                     trailing: Text(
                                       formatRupiah(row.selisihCents),
@@ -350,7 +370,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                       '${row.alasan} · '
                                       '${row.dibuatOleh ?? '-'}'
                                       '${row.disetujuiOleh == null ? '' : ' · '
-                                          'Disetujui: ${row.disetujuiOleh}'}',
+                                                'Disetujui: ${row.disetujuiOleh}'}',
                                     ),
                                     trailing: Text(
                                       formatRupiah(row.nilaiSelisihCents),
@@ -358,8 +378,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                         fontWeight: FontWeight.w700,
                                         color: row.nilaiSelisihCents < 0
                                             ? Theme.of(context)
-                                                .colorScheme
-                                                .error
+                                                  .colorScheme
+                                                  .error
                                             : Colors.green,
                                       ),
                                     ),
@@ -377,17 +397,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ],
                 const SizedBox(height: 16),
                 SectionCard(
-                  title: 'Kas per metode',
+                  title: 'Uang diterima per metode',
                   subtitle: 'Berdasarkan tanggal pembayaran, termasuk refund',
                   child: summary.cashByMethod.isEmpty
                       ? const Text('Belum ada pembayaran pada periode ini.')
                       : Column(
                           children: summary.cashByMethod.entries
                               .map(
-                                (entry) => _line(
-                                  entry.key,
-                                  formatRupiah(entry.value),
-                                ),
+                                (entry) =>
+                                    _line(entry.key, formatRupiah(entry.value)),
                               )
                               .toList(),
                         ),
@@ -467,10 +485,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         if (perCashier.isNotEmpty) ...[
           const Divider(),
           ...perCashier.entries.map(
-            (entry) => _line(
-              'Belum konversi · ${entry.key}',
-              '${entry.value}',
-            ),
+            (entry) => _line('Belum konversi · ${entry.key}', '${entry.value}'),
           ),
         ],
       ],

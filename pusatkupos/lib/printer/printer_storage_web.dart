@@ -12,6 +12,9 @@ class WebPrinterStorage implements PrinterStorage {
   Future<String?> read() async => html.window.localStorage[key];
 
   @override
+  Future<String?> readBackup() async => null;
+
+  @override
   Future<void> write(String data) async {
     html.window.localStorage[key] = data;
   }

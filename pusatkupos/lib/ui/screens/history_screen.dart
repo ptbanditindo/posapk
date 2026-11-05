@@ -150,9 +150,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         onTap: () => _openDetail(row.id),
                         leading: CircleAvatar(
                           backgroundColor: row.isVoid
-                              ? Theme.of(context)
-                                  .colorScheme
-                                  .errorContainer
+                              ? Theme.of(context).colorScheme.errorContainer
                               : null,
                           child: Icon(
                             row.isVoid
@@ -180,8 +178,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           children: [
                             Text(
                               formatRupiah(row.totalCents),
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w700),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                             Text(
                               row.isVoid ? 'VOID' : row.statusBayar,
@@ -208,6 +207,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
       showSnack(context, 'Nota tidak ditemukan.', error: true);
       return;
     }
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!mounted) return;
+    final role = AppState.instance.operator?.role ?? 'owner';
+    final canChangeStatus =
+        role == 'owner' || settings.roleAllows(role, 'ubah_status');
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -224,33 +228,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     id,
                     reason,
                     actor: AppState.instance.operator,
-                    enqueue: (txn, recordId) =>
-                        SyncService.instance.enqueueNoteVoid(
-                      recordId,
-                      txn: txn,
-                    ),
-                    enqueuePayment: (txn, recordId) =>
-                        SyncService.instance.enqueueNotePayment(
-                      recordId,
-                      txn: txn,
-                    ),
+                    enqueue: (txn, recordId) => SyncService.instance
+                        .enqueueNoteVoid(recordId, txn: txn),
+                    enqueuePayment: (txn, recordId) => SyncService.instance
+                        .enqueueNotePayment(recordId, txn: txn),
                     enqueueEstimate: (txn, syncId) =>
-                        SyncService.instance.enqueueEstimate(
-                      syncId,
-                      txn: txn,
-                    ),
+                        SyncService.instance.enqueueEstimate(syncId, txn: txn),
                     enqueueOrder: (txn, syncId) =>
-                        SyncService.instance.enqueueWorkOrder(
-                      syncId,
-                      txn: txn,
-                    ),
+                        SyncService.instance.enqueueWorkOrder(syncId, txn: txn),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
                   if (context.mounted) Navigator.pop(context);
                   if (mounted) _load();
                   if (mounted) {
-                    showSnack(this.context, 'Nota ${detail.record.noNota} di-void.');
+                    showSnack(
+                      this.context,
+                      'Nota ${detail.record.noNota} di-void.',
+                    );
                   }
                 } catch (error) {
                   if (context.mounted) {
@@ -272,15 +267,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     items: request.items,
                     alasan: request.alasan,
                     actor: AppState.instance.operator,
-                    enqueue: (txn, _) => SyncService.instance.enqueueNote(
-                      id,
-                      txn: txn,
-                    ),
-                    enqueueCommission: (txn, commissionId) =>
-                        SyncService.instance.enqueueCommission(
-                          commissionId,
-                          txn: txn,
-                        ),
+                    enqueue: (txn, _) =>
+                        SyncService.instance.enqueueNote(id, txn: txn),
+                    enqueueCommission: (txn, commissionId) => SyncService
+                        .instance
+                        .enqueueCommission(commissionId, txn: txn),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -295,7 +286,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 }
               },
-        onSettle: detail.record.isVoid ||
+        onSettle:
+            detail.record.isVoid ||
                 detail.sisaCents <= 0 ||
                 !AppState.instance.canWriteMoney
             ? null
@@ -311,11 +303,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         'settle-${detail.record.id}-'
                         '${DateTime.now().microsecondsSinceEpoch}',
                     actor: AppState.instance.operator,
-                    enqueue: (txn, recordId) =>
-                        SyncService.instance.enqueueNotePayment(
-                      recordId,
-                      txn: txn,
-                    ),
+                    enqueue: (txn, recordId) => SyncService.instance
+                        .enqueueNotePayment(recordId, txn: txn),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -351,11 +340,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       actor: AppState.instance.operator,
                       ownerPin: ownerPin,
                       approverSecret: approverSecret,
-                      enqueue: (txn, adjustmentId) =>
-                          SyncService.instance.enqueueNotaAdjustment(
-                        adjustmentId,
-                        txn: txn,
-                      ),
+                      enqueue: (txn, adjustmentId) => SyncService.instance
+                          .enqueueNotaAdjustment(adjustmentId, txn: txn),
                     );
                     AppState.instance.touch();
                     FollowupService.instance.scheduleSync();
@@ -388,7 +374,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 }
               },
-        onClaim: !detail.record.warrantyActive
+        onClaim: !detail.record.warrantyActive || !canChangeStatus
             ? null
             : () async {
                 final ok = await confirmAction(
@@ -404,11 +390,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   await AppDatabase.instance.claimWarranty(
                     id,
                     actor: AppState.instance.operator,
-                    enqueue: (txn, recordId) =>
-                        SyncService.instance.enqueueNoteWarranty(
-                      recordId,
-                      txn: txn,
-                    ),
+                    enqueue: (txn, recordId) => SyncService.instance
+                        .enqueueNoteWarranty(recordId, txn: txn),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -423,18 +406,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 }
               },
-        onUnitTaken: detail.record.unitDitinggal &&                detail.record.diambilAt == null &&
-                !detail.record.isVoid
+        onUnitTaken:
+            detail.record.unitDitinggal &&
+                detail.record.diambilAt == null &&
+                !detail.record.isVoid &&
+                canChangeStatus
             ? () async {
                 try {
                   await AppDatabase.instance.markUnitTaken(
                     id,
                     diambil: true,
-                    enqueue: (txn, recordId) =>
-                        SyncService.instance.enqueueNoteTaken(
-                      recordId,
-                      txn: txn,
-                    ),
+                    actor: AppState.instance.operator,
+                    enqueue: (txn, recordId) => SyncService.instance
+                        .enqueueNoteTaken(recordId, txn: txn),
                   );
                   AppState.instance.touch();
                   FollowupService.instance.scheduleSync();
@@ -445,22 +429,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal menandai unit: $error',
-                        error: true);
+                    showSnack(
+                      context,
+                      'Gagal menandai unit: $error',
+                      error: true,
+                    );
                   }
                 }
               }
             : null,
-        onEditCommission: detail.commissions.isEmpty ||
+        onEditCommission:
+            detail.commissions.isEmpty ||
                 detail.record.isVoid ||
                 !AppState.instance.isOwner
             ? null
             : () async {
                 final values = await showDialog<Map<String, int>>(
                   context: context,
-                  builder: (context) => _CommissionDialog(
-                    rows: detail.commissions,
-                  ),
+                  builder: (context) =>
+                      _CommissionDialog(rows: detail.commissions),
                 );
                 if (values == null) return;
                 try {
@@ -470,11 +457,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       entry.key,
                       entry.value,
                       actor: AppState.instance.operator,
-                      enqueue: (txn, commissionId) =>
-                          SyncService.instance.enqueueCommission(
-                        commissionId,
-                        txn: txn,
-                      ),
+                      enqueue: (txn, commissionId) => SyncService.instance
+                          .enqueueCommission(commissionId, txn: txn),
                     );
                   }
                   AppState.instance.touch();
@@ -485,8 +469,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal mengubah komisi: $error',
-                        error: true);
+                    showSnack(
+                      context,
+                      'Gagal mengubah komisi: $error',
+                      error: true,
+                    );
                   }
                 }
               },
@@ -498,9 +485,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     BuildContext context,
     int sisaCents,
   ) async {
-    final nominal = TextEditingController(
-      text: formatRupiahPlain(sisaCents),
-    );
+    final nominal = TextEditingController(text: formatRupiahPlain(sisaCents));
     var metode = 'CASH';
     final result = await showDialog<_SettlementInput>(
       context: context,
@@ -625,9 +610,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   return;
                 }
                 if (note.length < 3) {
-                  setDialogState(
-                    () => error = 'Alasan minimal 3 karakter.',
-                  );
+                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
                   return;
                 }
                 Navigator.pop(context, _CorrectionInput(cents, note));
@@ -709,9 +692,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               onPressed: () {
                 final value = controller.text.trim();
                 if (value.length < 3) {
-                  setDialogState(
-                    () => error = 'Alasan minimal 3 karakter.',
-                  );
+                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
                   return;
                 }
                 Navigator.pop(context, value);
@@ -768,9 +749,7 @@ class _RecordDetailSheet extends StatelessWidget {
                     children: [
                       Text(
                         record.noNota,
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleLarge
+                        style: Theme.of(context).textTheme.titleLarge
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                       Text(record.customerNama),
@@ -798,7 +777,11 @@ class _RecordDetailSheet extends StatelessWidget {
                 children: [
                   _row(context, 'Jasa', formatRupiah(record.biayaJasaCents)),
                   _row(context, 'Part', formatRupiah(record.totalPartCents)),
-                  _row(context, 'Diskon', '-${formatRupiah(record.diskonCents)}'),
+                  _row(
+                    context,
+                    'Diskon',
+                    '-${formatRupiah(record.diskonCents)}',
+                  ),
                   const Divider(),
                   _row(
                     context,
@@ -806,14 +789,18 @@ class _RecordDetailSheet extends StatelessWidget {
                     formatRupiah(record.totalCents),
                     bold: true,
                   ),
-                  _row(context, 'Dibayar', formatRupiah(detail.totalDibayarCents)),
+                  _row(
+                    context,
+                    'Dibayar',
+                    formatRupiah(detail.totalDibayarCents),
+                  ),
                   _row(context, 'Sisa', formatRupiah(detail.sisaCents)),
                   if (record.jatuhTempo != null)
                     _row(
                       context,
                       'Jatuh tempo',
                       '${dateId.format(record.jatuhTempo!)}'
-                      '${record.jatuhTempoLewat ? ' (lewat)' : ''}',
+                          '${record.jatuhTempoLewat ? ' (lewat)' : ''}',
                     ),
                   _row(context, 'Metode', record.metodeBayar),
                   if ((detail.createdBy ?? '').isNotEmpty)
@@ -840,18 +827,16 @@ class _RecordDetailSheet extends StatelessWidget {
                       (correction) => _row(
                         context,
                         '${dateId.format(correction.waktu)} · '
-                        '${correction.alasan}',
+                            '${correction.alasan}',
                         '${correction.nilaiSelisihCents >= 0 ? '+' : ''}'
-                        '${formatRupiah(correction.nilaiSelisihCents)}',
+                            '${formatRupiah(correction.nilaiSelisihCents)}',
                       ),
                     ),
                     const Divider(),
                     _row(
                       context,
                       'Total setelah koreksi',
-                      formatRupiah(
-                        detail.corrections.last.nilaiBaruCents,
-                      ),
+                      formatRupiah(detail.corrections.last.nilaiBaruCents),
                       bold: true,
                     ),
                   ],
@@ -890,21 +875,21 @@ class _RecordDetailSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-              SectionCard(
-                title: 'Jasa',
-                child: Column(
-                  children: detail.jobs
-                      .map(
-                        (job) => _line(
-                          context,
-                          '${job.deskripsi} × ${job.jumlah}'
-                          '${job.diskonAlokasiCents > 0 ? ' · diskon ${formatRupiah(job.diskonAlokasiCents)}' : ''}',
-                          formatRupiah(job.lineTotalCents),
-                        ),
-                      )
-                      .toList(),
-                ),
+            SectionCard(
+              title: 'Jasa',
+              child: Column(
+                children: detail.jobs
+                    .map(
+                      (job) => _line(
+                        context,
+                        '${job.deskripsi} × ${job.jumlah}'
+                        '${job.diskonAlokasiCents > 0 ? ' · diskon ${formatRupiah(job.diskonAlokasiCents)}' : ''}',
+                        formatRupiah(job.lineTotalCents),
+                      ),
+                    )
+                    .toList(),
               ),
+            ),
             if (detail.parts.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
@@ -1008,17 +993,12 @@ class _RecordDetailSheet extends StatelessWidget {
             ],
             if (record.keluhan.trim().isNotEmpty) ...[
               const SizedBox(height: 12),
-              SectionCard(
-                title: 'Keluhan',
-                child: Text(record.keluhan),
-              ),
+              SectionCard(title: 'Keluhan', child: Text(record.keluhan)),
             ],
-            if (detail.catatan != null && detail.catatan!.trim().isNotEmpty) ...[
+            if (detail.catatan != null &&
+                detail.catatan!.trim().isNotEmpty) ...[
               const SizedBox(height: 12),
-              SectionCard(
-                title: 'Catatan',
-                child: Text(detail.catatan!),
-              ),
+              SectionCard(title: 'Catatan', child: Text(detail.catatan!)),
             ],
             if (detail.voidReason != null) ...[
               const SizedBox(height: 12),
@@ -1194,9 +1174,7 @@ class _CommissionDialogState extends State<_CommissionDialog> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   _error!,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ),
           ],
@@ -1207,10 +1185,7 @@ class _CommissionDialogState extends State<_CommissionDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(
-          onPressed: _save,
-          child: const Text('Simpan'),
-        ),
+        FilledButton(onPressed: _save, child: const Text('Simpan')),
       ],
     );
   }
@@ -1296,8 +1271,9 @@ class _ReturnDialogState extends State<_ReturnDialog> {
           lineSyncId: syncId,
           label: job.deskripsi,
           remainingMilli: sisa,
-          unitNetCents:
-              totalMilli == 0 ? 0 : (job.lineTotalCents * 1000 / totalMilli).round(),
+          unitNetCents: totalMilli == 0
+              ? 0
+              : (job.lineTotalCents * 1000 / totalMilli).round(),
         ),
       );
     }
@@ -1340,7 +1316,8 @@ class _ReturnDialogState extends State<_ReturnDialog> {
       }
       if (qtyMilli > line.remainingMilli) {
         setState(
-          () => _error = 'Jumlah retur ${line.label} melebihi sisa '
+          () => _error =
+              'Jumlah retur ${line.label} melebihi sisa '
               '${line.remainingLabel}.',
         );
         return;
@@ -1411,9 +1388,9 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                           child: TextField(
                             controller: line.qty,
                             enabled: line.selected,
-                            keyboardType:
-                                const TextInputType.numberWithOptions(
-                                    decimal: true),
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
                             textAlign: TextAlign.center,
                             decoration: const InputDecoration(
                               labelText: 'Qty',
@@ -1437,9 +1414,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                 const SizedBox(height: 8),
                 Text(
                   _error!,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ],
             ],
@@ -1459,4 +1434,3 @@ class _ReturnDialogState extends State<_ReturnDialog> {
     );
   }
 }
-

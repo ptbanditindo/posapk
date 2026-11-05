@@ -79,8 +79,7 @@ class ReceiptService {
     final customerPhone = phoneRows.isEmpty
         ? ''
         : (phoneRows.first['nomor_hp'] as String? ?? '');
-    final karyawanAktif =
-        (await db.getSetting('fitur.karyawan') ?? '1') == '1';
+    final karyawanAktif = (await db.getSetting('fitur.karyawan') ?? '1') == '1';
     return _render(
       template,
       detail,
@@ -101,8 +100,8 @@ class ReceiptService {
     final store = _StoreInfo(
       nama: await db.getSetting('bengkel.nama') ?? 'PUSATKU POS',
       alamat: await db.getSetting('bengkel.alamat') ?? '',
-      tagline: await db.getSetting('bengkel.tagline'),
-      telepon: await db.getSetting('bengkel.telepon'),
+      tagline: await db.getSetting('bengkel.tagline') ?? '',
+      telepon: await db.getSetting('bengkel.telepon') ?? '',
     );
     return _render(
       resolved,
@@ -131,8 +130,9 @@ class ReceiptService {
       'nama_toko': store.nama,
       'tagline': store.tagline,
       'alamat': store.alamat,
-      'kontak':
-          store.telepon.trim().isEmpty ? '' : 'Telp/WA ${store.telepon.trim()}',
+      'kontak': store.telepon.trim().isEmpty
+          ? ''
+          : 'Telp/WA ${store.telepon.trim()}',
       'no_nota': record.noNota,
       'tanggal': dateTimeId.format(record.waktu),
       'pelanggan': record.customerNama,
@@ -146,9 +146,9 @@ class ReceiptService {
       'mekanik': detail.mechanic ?? '',
     };
     String resolve(String text) => text.replaceAllMapped(
-          RegExp(r'\{\{(\w+)\}\}'),
-          (match) => values[match.group(1)] ?? match.group(0)!,
-        );
+      RegExp(r'\{\{(\w+)\}\}'),
+      (match) => values[match.group(1)] ?? match.group(0)!,
+    );
 
     void header() {
       final name = store.nama.trim();
@@ -180,7 +180,8 @@ class ReceiptService {
 
     void meta() {
       bool on(String key) => template.metaFields[key] ?? true;
-      if (on('no_nota')) builder.field(template.label('no_nota'), record.noNota);
+      if (on('no_nota'))
+        builder.field(template.label('no_nota'), record.noNota);
       if (on('tanggal')) {
         builder.field(
           template.label('tanggal'),
@@ -272,10 +273,7 @@ class ReceiptService {
     void totals() {
       bool on(String key) => template.totalFields[key] ?? true;
       if (on('total_jasa')) {
-        builder.amount(
-          template.label('total_jasa'),
-          record.biayaJasaCents,
-        );
+        builder.amount(template.label('total_jasa'), record.biayaJasaCents);
       }
       if (on('total_part')) {
         builder.amount(template.label('total_part'), record.totalPartCents);
@@ -300,7 +298,8 @@ class ReceiptService {
         builder.amount(template.label('bayar'), detail.totalDibayarCents);
       }
       if (on('kembalian')) {
-        final change = record.bayarCents > record.totalCents &&
+        final change =
+            record.bayarCents > record.totalCents &&
                 record.metodeBayar == 'CASH'
             ? record.bayarCents - record.totalCents
             : 0;
@@ -315,8 +314,10 @@ class ReceiptService {
     void payment() {
       final status = record.statusBayar.toUpperCase();
       final jenis = detail.jenisBayar.toUpperCase();
-      final kredit = status != 'LUNAS' || jenis != 'LUNAS' || detail.sisaCents > 0;
-      final history = template.paymentShowHistory &&
+      final kredit =
+          status != 'LUNAS' || jenis != 'LUNAS' || detail.sisaCents > 0;
+      final history =
+          template.paymentShowHistory &&
           detail.payments.isNotEmpty &&
           (detail.payments.length > 1 || kredit);
       if (history) {
@@ -375,7 +376,7 @@ class ReceiptService {
       }
       builder.divider();
       builder.add(template.label('rekening'), bold: true);
-      final account = [$nama, nomor].where((part) => part.isNotEmpty).join(' ');
+      final account = [nama, nomor].where((part) => part.isNotEmpty).join(' ');
       if (account.isNotEmpty) builder.add(account);
       if (atas.isNotEmpty) builder.add('a.n. $atas');
       for (final line in wrapText(catatan, width)) {
@@ -402,7 +403,8 @@ class ReceiptService {
     }
 
     final sudahLunas = detail.sisaCents == 0 && detail.totalDibayarCents > 0;
-    final isPelunasan = template.pelunasanBanner &&
+    final isPelunasan =
+        template.pelunasanBanner &&
         !record.isVoid &&
         sudahLunas &&
         (record.jenisTransaksi == transactionPelunasanOrder ||

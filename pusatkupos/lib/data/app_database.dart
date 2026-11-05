@@ -312,10 +312,7 @@ class AppDatabase {
     if (password == null) {
       throw StateError('Ekspor database polos hanya untuk SQLCipher.');
     }
-    final source = await sqlcipher.openDatabase(
-      sourcePath,
-      password: password,
-    );
+    final source = await sqlcipher.openDatabase(sourcePath, password: password);
     try {
       await source.rawQuery('PRAGMA wal_checkpoint(FULL)');
       final escaped = targetPath.replaceAll("'", "''");
@@ -375,8 +372,10 @@ class AppDatabase {
     List<String> requiredTables = const [],
   }) async {
     if (_usesSqlCipher) {
-      throw StateError('Validasi salinan polos tidak tersedia di perangkat '
-          'terenkripsi.');
+      throw StateError(
+        'Validasi salinan polos tidak tersedia di perangkat '
+        'terenkripsi.',
+      );
     }
     final probe = await databaseFactory.openDatabase(
       path,
@@ -394,8 +393,7 @@ class AppDatabase {
     List<String> requiredTables,
   ) async {
     final integrity = await probe.rawQuery('PRAGMA integrity_check');
-    final result =
-        integrity.isEmpty ? '' : '${integrity.first.values.first}';
+    final result = integrity.isEmpty ? '' : '${integrity.first.values.first}';
     if (result.toLowerCase() != 'ok') {
       throw StateError('Integritas database gagal: $result');
     }
@@ -1024,7 +1022,10 @@ class AppDatabase {
       final delta = jumlahFisikMilli - before.jumlahMilli;
       await txn.update(
         'stock_items',
-        {'jumlah': wholeQuantity(jumlahFisikMilli), 'jumlah_milli': jumlahFisikMilli},
+        {
+          'jumlah': wholeQuantity(jumlahFisikMilli),
+          'jumlah_milli': jumlahFisikMilli,
+        },
         where: 'id = ?',
         whereArgs: [item.id],
       );
@@ -1215,7 +1216,7 @@ class AppDatabase {
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
-        enqueueCommission,
+    enqueueCommission,
   }) async {
     final jenis = sparepartOnly ? transactionJualSparepart : jenisTransaksi;
     if (jenis == transactionEstimasiSaja) {
@@ -1321,16 +1322,14 @@ class AppDatabase {
               'Jasa ${job.deskripsi} tidak ditemukan di daftar tarif.',
             );
           }
-          final hargaJual =
-              (catalog.first['harga_jual'] as num?)?.toInt() ?? 0;
+          final hargaJual = (catalog.first['harga_jual'] as num?)?.toInt() ?? 0;
           if (job.hargaCents != hargaJual) {
             throw StateError(
               'Harga jasa ${job.deskripsi} berubah menjadi '
               '${formatRupiah(hargaJual)}. Muat ulang kasir lalu ulangi.',
             );
           }
-          job.modalCents =
-              (catalog.first['harga_modal'] as num?)?.toInt() ?? 0;
+          job.modalCents = (catalog.first['harga_modal'] as num?)?.toInt() ?? 0;
         }
         lines.add(
           PriceLine(
@@ -1694,7 +1693,6 @@ class AppDatabase {
           txn,
           recordId,
           mechanicRows,
-          biayaJasa: biayaJasa,
           jobs: jobs,
           parts: parts,
           enqueueCommission: enqueueCommission,
@@ -1733,9 +1731,7 @@ class AppDatabase {
           whereArgs: [estimateSyncId!.trim()],
         );
         if (converted != 1) {
-          throw StateError(
-            'Estimasi sudah dikonversi atau tidak lagi aktif.',
-          );
+          throw StateError('Estimasi sudah dikonversi atau tidak lagi aktif.');
         }
         if (enqueueEstimate != null) {
           await enqueueEstimate(txn, estimateSyncId.trim());
@@ -1762,16 +1758,18 @@ class AppDatabase {
     DatabaseExecutor txn,
     int recordId,
     List<Map<String, Object?>> mechanics, {
-    required int biayaJasa,
     required List<JobDraft> jobs,
     required List<PartDraft> parts,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
-        enqueueCommission,
+    enqueueCommission,
   }) async {
+    final netJasa = jobs.fold<int>(0, (sum, job) => sum + job.lineTotalCents);
     final margin = parts.fold<int>(
       0,
       (sum, part) =>
-          sum + (part.hargaCents - part.modalCents) * part.qtyMilli ~/ 1000,
+          sum +
+          (part.hargaCents - part.modalCents) * part.qtyMilli ~/ 1000 -
+          part.diskonAlokasiCents,
     );
     final count = mechanics.length;
     var index = 0;
@@ -1789,7 +1787,7 @@ class AppDatabase {
       final barangNilai =
           (mechanic['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
       final jasaNilai = (mechanic['komisi_jasa_nilai'] as num?)?.toInt() ?? 0;
-      final shareJasa = _splitShare(biayaJasa, index, count);
+      final shareJasa = _splitShare(netJasa, index, count);
       final shareMargin = _splitShare(margin, index, count);
       final nominal = mode == 'NOMINAL'
           ? (parts.isNotEmpty ? barangNilai : 0) +
@@ -1823,13 +1821,13 @@ class AppDatabase {
 
   /// Menghitung ulang komisi nota dengan nilai neto setelah retur.
   ///
-  /// Basisnya sama dengan saat nota dibuat: jasa sebelum diskon dan margin
-  /// part sebelum diskon, dikurangi porsi baris yang sudah diretur.
+  /// Basisnya sama dengan saat nota dibuat: jasa dan margin part setelah
+  /// diskon, dikurangi porsi baris yang sudah diretur.
   Future<void> recalculateRecordCommissions(
     DatabaseExecutor txn,
     int recordId, {
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
-        enqueueCommission,
+    enqueueCommission,
   }) async {
     final commissionRows = await txn.query(
       'service_record_commissions',
@@ -1849,6 +1847,7 @@ class AppDatabase {
     final jobRows = await txn.rawQuery(
       '''
       SELECT j.jumlah, j.subtotal,
+        COALESCE(j.diskon_alokasi, 0) AS diskon_alokasi,
         COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
           FROM sale_return_items ri
           JOIN sale_returns sr ON sr.id = ri.return_id
@@ -1864,15 +1863,18 @@ class AppDatabase {
       final sisaMilli =
           qtyMilli - ((row['returned_milli'] as num?)?.toInt() ?? 0);
       if (qtyMilli <= 0 || sisaMilli <= 0) continue;
-      final subtotal = (row['subtotal'] as num?)?.toInt() ?? 0;
+      final lineTotal =
+          ((row['subtotal'] as num?)?.toInt() ?? 0) -
+          ((row['diskon_alokasi'] as num?)?.toInt() ?? 0);
       netJasa += sisaMilli >= qtyMilli
-          ? subtotal
-          : subtotal * sisaMilli ~/ qtyMilli;
+          ? lineTotal
+          : lineTotal * sisaMilli ~/ qtyMilli;
     }
     final partRows = await txn.rawQuery(
       '''
       SELECT COALESCE(p.jumlah_milli, p.jumlah * 1000) AS qty_milli,
         p.harga_satuan, p.harga_batas_saat_transaksi AS modal,
+        COALESCE(p.diskon_alokasi, 0) AS diskon_alokasi,
         COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
           FROM sale_return_items ri
           JOIN sale_returns sr ON sr.id = ri.return_id
@@ -1890,10 +1892,12 @@ class AppDatabase {
           qtyMilli - ((row['returned_milli'] as num?)?.toInt() ?? 0);
       if (qtyMilli <= 0 || sisaMilli <= 0) continue;
       hasPart = true;
-      final margin = ((row['harga_satuan'] as num?)?.toInt() ?? 0) -
+      final margin =
+          ((row['harga_satuan'] as num?)?.toInt() ?? 0) -
           ((row['modal'] as num?)?.toInt() ?? 0);
+      final diskon = (row['diskon_alokasi'] as num?)?.toInt() ?? 0;
       // Margin negatif tetap dihitung, sama seperti saat nota dibuat.
-      netMargin += margin * sisaMilli ~/ 1000;
+      netMargin += margin * sisaMilli ~/ 1000 - diskon * sisaMilli ~/ qtyMilli;
     }
     for (final commission in commissionRows) {
       final employeeSyncId = '${commission['employee_sync_id']}';
@@ -2002,10 +2006,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     // bersamaan.
     final adjustmentRows = await txn.rawQuery(
       '''
-      SELECT ${latestAdjustmentTotalSql(
-        notaSyncIdExpr: 'r.sync_id',
-        fallbackExpr: 'r.total_servis',
-      )} - r.total_servis AS total
+      SELECT ${latestAdjustmentTotalSql(notaSyncIdExpr: 'r.sync_id', fallbackExpr: 'r.total_servis')} - r.total_servis AS total
       FROM service_records r WHERE r.id = ?
       ''',
       [recordId],
@@ -2256,12 +2257,23 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     return fallback.isEmpty ? null : fallback;
   }
 
+  Future<void> _requireStatusChange(Operator? actor) async {
+    if (actor == null || actor.isOwner) return;
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!settings.roleAllows(actor.role, 'ubah_status')) {
+      throw StateError(
+        'Peran ${actor.role} tidak berhak mengubah status nota.',
+      );
+    }
+  }
+
   /// Klaim garansi hanya sekali; update bersyarat menjaga dua klaim paralel.
   Future<void> claimWarranty(
     int recordId, {
     Operator? actor,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
   }) async {
+    await _requireStatusChange(actor);
     await db.transaction((txn) async {
       final rows = await txn.query(
         'service_records',
@@ -2322,6 +2334,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     Operator? actor,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
   }) async {
+    await _requireStatusChange(actor);
     await db.transaction((txn) async {
       final rows = await txn.query(
         'service_records',
@@ -2508,12 +2521,14 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
               jumlah: item['jumlah'] as int,
               qtyMilli: (item['jumlah_milli'] as num?)?.toInt(),
               hargaCents: item['harga_satuan'] as int,
-              modalCents: item['harga_batas_saat_transaksi'] as int? ??
+              modalCents:
+                  item['harga_batas_saat_transaksi'] as int? ??
                   item['harga_modal'] as int? ??
                   0,
               intervalBulan: item['interval_servis_bulan'] as int? ?? 0,
               syncId: item['sync_id'] as String?,
-              hargaTerdaftarCents: item['harga_jual_terdaftar'] as int? ??
+              hargaTerdaftarCents:
+                  item['harga_jual_terdaftar'] as int? ??
                   item['harga_satuan'] as int,
               hargaFinalCents: item['harga_final'] as int? ?? 0,
               diskonAlokasiCents: item['diskon_alokasi'] as int? ?? 0,
@@ -2615,7 +2630,8 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
       for (final part in parts) {
         final stockId = part['stock_item_id'] as int?;
         if (stockId == null) continue;
-        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+        final qtyMilli =
+            (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         if (qtyMilli <= 0) continue;
         final stockRows = await txn.query(
@@ -2902,11 +2918,11 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     );
     final typeRows = await db.rawQuery(
       '''
-      SELECT jenis_transaksi, COUNT(*) AS jumlah,
-        COALESCE(SUM(total_servis), 0) AS total
-      FROM service_records
-      WHERE waktu_service BETWEEN ? AND ? AND status != 'VOID'
-      GROUP BY jenis_transaksi
+      SELECT r.jenis_transaksi, COUNT(*) AS jumlah,
+        COALESCE(SUM(${latestAdjustmentTotalSql(notaSyncIdExpr: 'r.sync_id', fallbackExpr: 'r.total_servis')}), 0) AS total
+      FROM service_records r
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+      GROUP BY r.jenis_transaksi
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
@@ -2935,10 +2951,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final returRow = returnRows.first;
     final adjustmentRows = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(${latestAdjustmentTotalSql(
-        notaSyncIdExpr: 'r.sync_id',
-        fallbackExpr: 'r.total_servis',
-      )} - r.total_servis), 0) AS total
+      SELECT COALESCE(SUM(${latestAdjustmentTotalSql(notaSyncIdExpr: 'r.sync_id', fallbackExpr: 'r.total_servis')} - r.total_servis), 0) AS total
       FROM service_records r
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
       ''',

@@ -15,6 +15,20 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
+
+// Sebagian plugin masih menulis compileSdk lama (mis. flutter_blue_plus 33),
+// padahal dependensi AndroidX-nya butuh SDK 34+. Paksa semua modul plugin
+// memakai SDK yang sama dengan aplikasi. Harus didaftarkan sebelum
+// evaluationDependsOn(":app") agar subproject belum dievaluasi.
+subprojects {
+    afterEvaluate {
+        val androidExtension = extensions.findByName("android")
+        if (androidExtension is com.android.build.gradle.BaseExtension) {
+            androidExtension.compileSdkVersion(36)
+        }
+    }
+}
+
 subprojects {
     project.evaluationDependsOn(":app")
 }

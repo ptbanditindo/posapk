@@ -19,6 +19,9 @@ class MemoryPrinterStorage implements PrinterStorage {
   Future<String?> read() async => _data;
 
   @override
+  Future<String?> readBackup() async => null;
+
+  @override
   Future<void> write(String data) async {
     _data = data;
   }
