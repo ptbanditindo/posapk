@@ -1943,6 +1943,29 @@ class AppDatabase {
     }
   }
 
+  /// Ekspresi SQL total efektif nota: `nilai_baru` koreksi terakhir menurut
+  /// HLC, atau nilai cadangan bila belum ada koreksi.
+  static String latestAdjustmentTotalSql({
+    required String notaSyncIdExpr,
+    required String fallbackExpr,
+  }) =>
+      '''
+COALESCE(
+  (SELECT a.nilai_baru FROM nota_adjustments a
+    WHERE a.nota_sync_id = $notaSyncIdExpr AND a.deleted_at IS NULL
+    ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+    LIMIT 1),
+  $fallbackExpr)''';
+
+  /// Ekspresi SQL modal nota: jasa memakai qty bulat, part memakai milli.
+  /// Urutan parameter: `recordId` untuk jasa, lalu `recordId` untuk part.
+  static const String recordModalSql = '''
+COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah)
+  FROM service_jobs WHERE service_record_id = ?), 0) +
+COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
+  COALESCE(jumlah_milli, jumlah * 1000) / 1000.0))
+  FROM service_parts WHERE service_record_id = ?), 0)''';
+
   /// Menghitung sisa tagihan dari pembayaran, retur, dan koreksi tersimpan.
   ///
   /// Nilai retur dianggap pertama-tama menghapus piutang; bila sudah lunas,
@@ -1979,12 +2002,10 @@ class AppDatabase {
     // bersamaan.
     final adjustmentRows = await txn.rawQuery(
       '''
-      SELECT COALESCE(
-        (SELECT a.nilai_baru FROM nota_adjustments a
-          WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
-          ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
-          LIMIT 1) - r.total_servis,
-        0) AS total
+      SELECT ${latestAdjustmentTotalSql(
+        notaSyncIdExpr: 'r.sync_id',
+        fallbackExpr: 'r.total_servis',
+      )} - r.total_servis AS total
       FROM service_records r WHERE r.id = ?
       ''',
       [recordId],
@@ -2914,14 +2935,11 @@ class AppDatabase {
     final returRow = returnRows.first;
     final adjustmentRows = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(latest.nilai_baru - r.total_servis), 0) AS total
+      SELECT COALESCE(SUM(${latestAdjustmentTotalSql(
+        notaSyncIdExpr: 'r.sync_id',
+        fallbackExpr: 'r.total_servis',
+      )} - r.total_servis), 0) AS total
       FROM service_records r
-      JOIN nota_adjustments latest ON latest.id = (
-        SELECT a.id FROM nota_adjustments a
-        WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
-        ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
-        LIMIT 1
-      )
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],

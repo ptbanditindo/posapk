@@ -417,6 +417,12 @@ class BackupService {
       );
     }
     final secret = passphrase?.trim() ?? '';
+    if (secret.isNotEmpty && secret.length < 8) {
+      return const BackupResult(
+        ok: false,
+        message: 'Passphrase backup minimal 8 karakter.',
+      );
+    }
     final portable = secret.isNotEmpty;
     try {
       final zip = await _buildArchive(

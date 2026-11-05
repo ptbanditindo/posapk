@@ -4,6 +4,8 @@ Dibuat: 5 November 2026
 Repo: `D:\Downloads\posapk-main\posapk-main`
 Cakupan: 185 file teks — 132 file Dart (`pusatkupos/lib`, `relay/lib|bin|tool`), Kotlin/Gradle/manifest Android, Windows C++/CMake, web, pubspec, env, README, dan dokumen audit. Dua belas aset biner (10 PNG, 1 ICO, 1 WASM) dan satu service worker hasil build (`web/sqflite_sw.js`) tidak dipetakan isinya.
 Catatan: seluruh folder `test/` sudah dihapus; dokumen ini tidak memuat test.
+Penyempurnaan tanpa fitur baru C-01–C-06 (refund retur, passphrase, duplikasi SQL,
+batas relay, portabilitas skrip) tercatat pada §8 butir 2, 8, 15, dan 16.
 
 ---
 
@@ -111,7 +113,7 @@ Dua paket Dart terpisah:
 
 | File | LOC | Tanggung jawab | Bergantung pada | Dipakai oleh |
 |---|---:|---|---|---|
-| `data/app_database.dart` | 3055 | Gateway tunggal SQLite: lifecycle/enkripsi, setting, master data, stok, transaksi, pembayaran, void, retur/koreksi (hitung ulang), laporan, nomor dokumen, HLC | `operator`, `permissions`, `dates`, `ids`, `money`, `phone`, `sync/crypto`, `approval_service`, `models`, `price_rules`, `schema`, `secure_store`, `store_settings`, `store_registry` | 25+ service data, `main`, `sync/*`, `app_state`, `printer_config`, `dummy_seed`, hampir semua layar |
+| `data/app_database.dart` | 3055 | Gateway tunggal SQLite: lifecycle/enkripsi, setting, master data, stok, transaksi, pembayaran, void, retur/koreksi (hitung ulang), laporan, nomor dokumen, HLC, helper SQL `latestAdjustmentTotalSql`/`recordModalSql` | `operator`, `permissions`, `dates`, `ids`, `money`, `phone`, `sync/crypto`, `approval_service`, `models`, `price_rules`, `schema`, `secure_store`, `store_settings`, `store_registry` | 25+ service data, `main`, `sync/*`, `app_state`, `printer_config`, `dummy_seed`, hampir semua layar |
 | `data/schema.dart` | 1017 | DDL skema bersih, tabel retur, migrasi aditif v2/v3 | `sqflite` | `app_database` |
 | `data/models.dart` | 644 | DTO baris SQL: `Customer`, `VehicleUnit`, `StockItem`, `ServiceCatalog`, `ServiceRecordSummary`, `JobDraft`, `PartDraft`, `SaleReturn*`, `CommissionRow`, `RecordDetail`, `ReportSummary`, `EstimateAgingRow`, `DashboardData` | `dates`, `quantity` | `app_database`, `note_sync`, `order_service`, `receipt_service`, `sale_return_service`, `sync_service`, UI |
 | `data/price_rules.dart` | 253 | Satu sumber matematika harga: `PriceLine`, alokasi diskon proporsional, batas modal, validasi koreksi | `core/money.dart` | `app_database`, `nota_adjustment_service`, `order_service`, layar riwayat |
@@ -120,7 +122,7 @@ Dua paket Dart terpisah:
 
 | File | LOC | Tanggung jawab | Bergantung pada | Dipakai oleh |
 |---|---:|---|---|---|
-| `data/sale_return_service.dart` | 373 | Retur per baris: validasi sisa qty, refund proporsional, restock, refund kas, hitung ulang total/komisi, audit | `operator`, `permissions`, `dates`, `ids`, `quantity`, `app_database`, `models`, `store_settings` | layar riwayat |
+| `data/sale_return_service.dart` | 373 | Retur per baris: validasi sisa qty, refund proporsional, restock, refund kas dibatasi kas diterima (`max(0, dibayar - max(0, total_efektif - retur))`), hitung ulang total/komisi, audit | `operator`, `permissions`, `dates`, `ids`, `quantity`, `app_database`, `models`, `store_settings` | layar riwayat |
 | `data/nota_adjustment_service.dart` | 303 | Koreksi nilai append-only; `selisih = nilaiBaru - total saat ini`; validasi modal; approval; `applyRemote` idempoten | `operator`, `dates`, `ids`, `app_database`, `approval_service`, `price_rules`, `store_settings` | `sync_service`, layar riwayat |
 | `data/note_sync.dart` | 1022 | Payload nota lengkap (pelanggan, unit, jasa, part, bayar, retur, snapshot stok) + penerapan remote idempoten | `app_database`, `models`, `dates`, `ids`, `sync/sync_conflict_rules` | `sync_service` |
 
@@ -266,11 +268,11 @@ Dua paket Dart terpisah:
 
 | File | LOC | Tanggung jawab | Bergantung pada |
 |---|---:|---|---|
-| `relay/lib/server.dart` | 2453 | HTTP Shelf: enroll/pairing, envelope log, feed/ack, bootstrap, sync round, snapshot, akun/undangan, login Google/karyawan, admin | `auth_rules`, `canonical`, `config`, `db`, `google`, `license`, `sync_round`, shelf |
+| `relay/lib/server.dart` | 2559 | HTTP Shelf: enroll/pairing, envelope log, feed/ack, bootstrap, sync round, snapshot, akun/undangan, login Google/karyawan, admin; body dibatasi 16 MB (snapshot: batas penyimpanan + 8 MB), penyimpanan toko penuh ditolak `413 storage_full` | `auth_rules`, `canonical`, `config`, `db`, `google`, `license`, `sync_round`, shelf |
 | `relay/lib/db.dart` | 347 | Lapisan PostgreSQL + migrasi idempoten + decoder JSONB | `postgres`, `config` |
 | `relay/lib/license.dart` | 97 | Kunci Ed25519 server, terbitkan token lisensi, verifikasi payload/tanda tangan | `canonical`, `db`, `cryptography` |
 | `relay/lib/google.dart` | 360 | Verifikasi ID token Google (JWKS/RS256) + rate limiter | `dart:io`, `crypto` |
-| `relay/lib/auth_rules.dart` | 78 | Aturan entity/aksi per peran + field hints amplop | — |
+| `relay/lib/auth_rules.dart` | 78 | Aturan entity/aksi per peran + field hints amplop; `stock`/`stock_movement` wajib `ubah_stok`, `harga_jasa` hanya pemilik | — |
 | `relay/lib/canonical.dart` | 13 | JSON kanonik (urut kunci rekursif) untuk semua tanda tangan | `dart:convert` |
 | `relay/lib/config.dart` | 109 | Baca env/.env, parse URL PostgreSQL | `dart:io` |
 | `relay/lib/sync_round.dart` | 57 | Evaluasi kelengkapan sync round (ack semua perangkat, tidak stale) | — |
@@ -278,8 +280,8 @@ Dua paket Dart terpisah:
 | `relay/tool/gen_demo_summary.dart` | 48 | Tool pembuat ringkasan owner demo | paket relay |
 | `relay/pubspec.yaml` | 18 | Manifest paket relay | pub.dev |
 | `relay/.env.example` | 9 | Template `RELAY_HOST/PORT/DATABASE_URL/ADMIN_TOKEN/GOOGLE_CLIENT_ID` | — |
-| `relay/start-relay.ps1` | 14 | Launcher Windows: cek `.env`, `dart pub get`, `serve` | — |
-| `relay/README.md` | 247 | Dokumentasi setup, endpoint, model auth, batas relay | — |
+| `relay/start-relay.ps1` | 28 | Launcher Windows: resolusi Dart (`DART` → `FLUTTER_ROOT` → `PATH`), cek `.env`, `dart pub get`, `serve` | — |
+| `relay/README.md` | 262 | Dokumentasi setup, endpoint, model auth, batas body/penyimpanan | — |
 
 Endpoint utama `server.dart`:
 
@@ -763,19 +765,21 @@ Tiga preset: `layanan_langsung`, `order_lengkap`, `manual`.
 ## 8. Catatan teknis hasil pembacaan kode
 
 1. **Restock void dan validasi stok.** `AppDatabase.voidRecord` mengembalikan stok memakai `jumlah_milli` (fallback `jumlah × 1000`) dikurangi qty yang sudah diretur, dan `createTransaction` memvalidasi total qty per `stock_item_id` sehingga dua baris barang yang sama tidak dapat membuat stok negatif. Void juga membuka kembali estimasi (`status = aktif`, `converted_nota_sync_id = NULL`) dan melepas `work_orders.nota_sync_id` bila nota berasal dari keduanya, lalu meng-enqueue amplop `note_payment` untuk REFUND.
-2. **Total koreksi bersifat absolut.** `NotaAdjustmentService._currentTotal`, `AppDatabase.recalculateRecordTotals`, `reportSummary`, dan perhitungan refund retur memakai `nilai_baru` terakhir menurut HLC, bukan `SUM(nilai_selisih)`, agar dua koreksi bersamaan tidak terhitung ganda. Verifikasi approval berjalan di luar transaksi supaya hitungan PIN gagal tidak ikut rollback.
+2. **Total koreksi bersifat absolut.** `NotaAdjustmentService._currentTotal`, `AppDatabase.recalculateRecordTotals`, `reportSummary`, dan perhitungan refund retur memakai `nilai_baru` terakhir menurut HLC, bukan `SUM(nilai_selisih)`, agar dua koreksi bersamaan tidak terhitung ganda. Rumusnya kini satu sumber, `AppDatabase.latestAdjustmentTotalSql`; modal nota memakai `AppDatabase.recordModalSql`. Verifikasi approval berjalan di luar transaksi supaya hitungan PIN gagal tidak ikut rollback.
 3. **Pembulatan kolom `jumlah` lama.** `wholeQuantity(milli)` membulatkan ke bawah untuk nilai negatif dan dipakai di semua penulisan stok (tambah, edit, opname), retur, void, dan jalur sinkronisasi.
 4. **`sqflite_sw.js` adalah artefak build**, bukan kode aplikasi; isinya minified dan hanya dipakai backend SQLite web.
 5. **Folder test sudah dihapus total** (25 file Flutter + 3 relay + 2 skrip uji) beserta hook test di `AppDatabase`, `SecureStore`, dan `SyncService`. `pubspec.lock` masih menyebut paket test sampai `pub get` berikutnya.
 6. **`summary_file_stub.dart` diimpor langsung oleh `owner_viewer`** ketika platform tidak mendukung file picker; di web/native implementasi yang dipakai ditentukan conditional import.
 7. **`analysis_options.yaml` mengecualikan folder platform** (`android/`, `web/`, `windows/`), sehingga lint Flutter tidak memeriksa kode native.
-8. **`start-relay.ps1` memuat path Dart hardcoded** (`C:\Users\sukron\flutter\bin\dart.bat`); di mesin lain perlu disesuaikan.
+8. **`start-relay.ps1` portabel.** Skrip mencari `DART`, lalu `FLUTTER_ROOT\bin\dart.bat`, lalu `PATH`, dan berhenti dengan pesan jelas bila Dart tidak ditemukan.
 9. **Mode viewer memakai database terpisah** `viewer_<owner_id>.db`; `openViewerDatabase` tidak menulis ke DB utama.
 10. **`app_settings` menyimpan penanda lokal** (mis. `sync.last_*`, `device.*`) yang dikecualikan saat snapshot/impor agar tidak menimpa identitas perangkat tujuan.
 11. **Persetujuan diskon diverifikasi sebelum `db.transaction`** di `createTransaction` (sama seperti `createEstimate`), supaya penghitung gagal PIN di `login_guards` tidak ikut ter-rollback saat PIN salah.
 12. **Konversi estimasi idempoten.** `convertEstimateToNote` mengirim `requestId = estimasi:<sync_id>` dan `createTransaction` hanya mengubah estimasi dengan syarat `status = 'aktif'`; klik ganda atau konversi ulang ditolak tanpa mengurangi stok dua kali.
 13. **Konflik final tidak memblokir.** `SyncConflictRules.isFinal` menandai penolakan izin/harga sebagai `rejected`; `_applyOnce` menganggapnya selesai sehingga kursor maju, sedangkan `blockingConflictCount` mengabaikan `review` dan final sehingga snapshot/backup tetap bisa dibuat.
 14. **Kuota follow-up diautentikasi.** `FollowupService` mengirim token perangkat hasil pairing ke `/relay/followup/quota`; tanpa token, kuota hanya dihitung lokal.
+15. **Refund retur dibatasi kas diterima.** `SaleReturnService` menghitung `max(0, dibayar - max(0, total_efektif - retur))` lalu membatasinya dengan nilai retur, sehingga retur pada nota yang dikoreksi menjadi 0 dan belum dibayar tidak mengeluarkan uang.
+16. **Batas relay ditegakkan.** `_body` membaca body secara bertahap dengan batas 16 MB (snapshot: `RELAY_STORAGE_LIMIT_BYTES` + 8 MB); amplop yang membuat pemakaian toko melewati batas ditolak `413 storage_full` setelah amplop yang sudah diakui dipangkas lebih dulu.
 
 ---
 

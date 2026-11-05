@@ -200,10 +200,10 @@ class SaleReturnService {
             WHERE service_record_id = ?), 0) AS paid,
           COALESCE((SELECT SUM(total) FROM sale_returns
             WHERE service_record_id = ? AND deleted_at IS NULL), 0) AS returns,
-          COALESCE((SELECT a.nilai_baru FROM nota_adjustments a
-            WHERE a.nota_sync_id = ? AND a.deleted_at IS NULL
-            ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
-            LIMIT 1), ?) AS adjusted_total
+          ${AppDatabase.latestAdjustmentTotalSql(
+            notaSyncIdExpr: '?',
+            fallbackExpr: '?',
+          )} AS adjusted_total
         ''',
         [recordId, recordId, notaSyncId, totalServis],
       );
@@ -211,14 +211,12 @@ class SaleReturnService {
       final returnsSoFar = (totals.first['returns'] as num?)?.toInt() ?? 0;
       final adjustedTotal =
           (totals.first['adjusted_total'] as num?)?.toInt() ?? totalServis;
-      final ceiling = adjustedTotal > 0 ? adjustedTotal : totalServis;
-      final outstandingBefore = (adjustedTotal -
-              (returnsSoFar - total) -
-              paidSoFar)
-          .clamp(0, ceiling)
-          .toInt();
-      final cashRefund =
-          total > outstandingBefore ? total - outstandingBefore : 0;
+      // Refund tunai hanya boleh sebesar kas yang benar-benar diterima.
+      // Setelah koreksi ke 0, tagihan yang belum dibayar tidak boleh berubah
+      // menjadi REFUND tunai saat barang diretur.
+      final owedAfter = adjustedTotal - returnsSoFar;
+      final refundable = paidSoFar - (owedAfter < 0 ? 0 : owedAfter);
+      final cashRefund = refundable.clamp(0, total).toInt();
       if (cashRefund > 0) {
         await txn.insert('service_payments', {
           'sync_id': newSyncId(),

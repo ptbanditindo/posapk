@@ -4,7 +4,7 @@
 **Pembanding:** POS bengkel Python di `D:/Downloads/aplikasiposbengkel`
 **Tanggal audit:** 5 November 2026
 **Sifat audit:** Baca kode menyeluruh. Tidak ada dependency yang dipasang. Tidak ada test otomatis yang dijalankan (pengujian dilakukan manual oleh pemilik).
-**Status implementasi:** seluruh temuan P1–P3 pada dokumen ini sudah diperbaiki; Kelompok 6 (B-01–B-10) mencatat audit lanjutan yang juga sudah selesai.
+**Status implementasi:** seluruh temuan P1–P3 pada dokumen ini sudah diperbaiki; Kelompok 6 (B-01–B-10) dan Kelompok 7 (C-01–C-06) mencatat audit lanjutan yang juga sudah selesai.
 
 ---
 
@@ -473,3 +473,14 @@ Catatan yang sengaja belum diubah (butuh keputusan pemilik): basis komisi tetap 
 | B-10 | Sudah diperbaiki | Kolom lama `jumlah` memakai `wholeQuantity(milli)` yang membulatkan ke bawah untuk nilai negatif, dipakai di stok, retur, void, dan jalur sinkronisasi. | `core/quantity.dart`, `data/app_database.dart`, `data/note_sync.dart`, `data/sale_return_service.dart`, `sync/sync_service.dart` |
 
 Catatan: payload stok memang sudah membawa `jumlah_milli`; kecurigaan soal kuantitas stok yang hilang tidak terbukti. Masalah sebenarnya adalah entitas `stock` diperlakukan sebagai entitas harga sehingga seluruh delta ditolak (B-02).
+
+### Kelompok 7 — penyempurnaan tanpa fitur baru: refund retur, passphrase, duplikasi SQL, batas relay (selesai 5 November 2026)
+
+| ID | Status | Perubahan | File |
+|---|---|---|---|
+| C-01 | Sudah diperbaiki | Refund tunai retur dibatasi kas yang benar-benar diterima: `max(0, dibayar - max(0, total_efektif - retur))`, lalu dibatasi nilai retur. Setelah koreksi nota menjadi 0, retur barang yang belum dibayar tidak lagi menghasilkan REFUND tunai. | `data/sale_return_service.dart` (`createReturn`) |
+| C-02 | Sudah diperbaiki | Passphrase backup memakai batas yang sama di semua jalur: manual, simpan pengaturan, dan `createBackup` menolak kurang dari 8 karakter dengan pesan `BackupResult`/snackbar, bukan `ArgumentError` mentah. Teks bantuan dialog ikut disamakan. | `data/backup_service.dart` (`createBackup`, `setAutoPassphrase`), `ui/screens/settings_screen.dart` (`_saveBackup`, `_promptPassphrase`) |
+| C-03 | Sudah diperbaiki | `_backupPassphrase` di-dispose bersama controller lain di `SettingsScreen`. | `ui/screens/settings_screen.dart` (`dispose`) |
+| C-04 | Sudah diperbaiki | Rumus total koreksi terakhir dan modal nota disatukan sebagai `AppDatabase.latestAdjustmentTotalSql` dan `recordModalSql`, lalu dipakai oleh hitung ulang total, laporan, koreksi nota, refund retur, dan penerimaan koreksi remote. Fallback mati di `_currentTotal` dan `actor?.label ?? 'Pemilik'` yang tidak terjangkau dihapus. | `data/app_database.dart`, `data/nota_adjustment_service.dart`, `data/sale_return_service.dart`, `sync/sync_service.dart` |
+| C-05 | Sudah diperbaiki | Relay membatasi body: 16 MB untuk permintaan biasa dan `RELAY_STORAGE_LIMIT_BYTES` + 8 MB untuk snapshot; kelebihan ditolak `413 body_too_large`, JSON tidak valid `400 invalid_body`. Batas penyimpanan toko kini menolak (`413 storage_full`), bukan hanya memberi peringatan, setelah amplop yang sudah diakui dipangkas lebih dulu. Entity `stock_movement` mewajibkan izin `ubah_stok`, sama dengan klien. | `relay/lib/server.dart` (`_body`, `_BodyTooLarge`, `_storeBytes`, `_ingestEnvelope`, pemangkasan pra-transaksi), `relay/lib/auth_rules.dart` |
+| C-06 | Sudah diperbaiki | Skrip relay tidak lagi menunjuk path Dart pengembang. `start-relay.ps1` mencari `DART` lalu `FLUTTER_ROOT\bin\dart.bat` lalu `PATH`, dan memberi pesan jelas bila tidak ditemukan. README memuat batas body/penyimpanan serta izin entity karyawan yang baru. | `relay/start-relay.ps1`, `relay/README.md` |

@@ -126,6 +126,18 @@ class RelayServer {
         return (request) async {
           try {
             return await inner(request);
+          } on _BodyTooLarge {
+            return _error(
+              413,
+              'Body permintaan terlalu besar.',
+              code: 'body_too_large',
+            );
+          } on FormatException catch (error) {
+            return _error(
+              400,
+              'Body tidak valid: ${error.message}',
+              code: 'invalid_body',
+            );
           } catch (error, stack) {
             print('relay error: $error\n$stack');
             return _json(500, {'detail': '$error'});
@@ -142,8 +154,25 @@ class RelayServer {
   Response _error(int status, String detail, {String code = ''}) =>
       _json(status, {'detail': detail, 'code': code});
 
-  Future<Map<String, Object?>> _body(Request request) async {
-    final raw = await request.readAsString();
+  static const int _defaultMaxBodyBytes = 16 * 1024 * 1024;
+  static const int _bodyOverheadBytes = 8 * 1024 * 1024;
+
+  Future<Map<String, Object?>> _body(
+    Request request, {
+    int maxBytes = _defaultMaxBodyBytes,
+  }) async {
+    final declared = request.contentLength;
+    if (declared != null && declared > maxBytes) {
+      throw const _BodyTooLarge();
+    }
+    final bytes = <int>[];
+    await for (final chunk in request.read()) {
+      if (bytes.length + chunk.length > maxBytes) {
+        throw const _BodyTooLarge();
+      }
+      bytes.addAll(chunk);
+    }
+    final raw = utf8.decode(bytes);
     if (raw.trim().isEmpty) return {};
     final decoded = jsonDecode(raw);
     if (decoded is! Map) throw FormatException('Body harus objek JSON.');
@@ -268,7 +297,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     String action,
   ) async {
     if (entity.isEmpty || action.isEmpty) return false;
-    const direct = {'customer', 'unit', 'stock_movement'};
+    const direct = {'customer', 'unit'};
     if (direct.contains(entity)) return true;
     final accountId = device['employee_account_id'] as String? ?? '';
     final account = accountId.isEmpty
@@ -553,11 +582,13 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     final store = '${body['store_id'] ?? ''}';
     try {
       _guardOverload();
+      // Pangkas amplop yang sudah diakui semua perangkat sebelum memeriksa
+      // batas penyimpanan agar toko tidak terkunci oleh data lama.
+      await _pruneAcknowledged(device['owner_id'] as String, store);
       final saved = await db.tx((tx) async {
         await _lockStore(tx, device['owner_id'] as String, store);
         return _ingestEnvelope(tx, device, body);
       });
-      await _pruneAcknowledged(device['owner_id'] as String, store);
       return _json(200, {
         ...saved,
         ..._batchLimits(),
@@ -582,6 +613,7 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     try {
       _guardOverload();
       _writeQueue++;
+      await _pruneAcknowledged(device['owner_id'] as String, store);
       final results = await db.tx((tx) async {
         final stores = <String>{store};
         for (final item in raw) {
@@ -607,7 +639,6 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
         }
         return output;
       });
-      await _pruneAcknowledged(device['owner_id'] as String, store);
       return _json(200, {
         'results': results,
         'accepted': results.length,
@@ -755,6 +786,21 @@ WHERE owner_id = @owner
         'duplicate': true,
       };
     }
+    final usedBytes = await _storeBytes(
+      tx,
+      device['owner_id'] as String,
+      store,
+    );
+    final incomingBytes =
+        '${fields['ciphertext']}'.length + '${fields['nonce']}'.length;
+    if (usedBytes + incomingBytes > config.storageLimitBytes) {
+      throw _EnvelopeRejection(
+        413,
+        'Penyimpanan relay toko ini penuh. Tunggu perangkat lain mengakui '
+        'data lama sebelum mengirim data baru.',
+        code: 'storage_full',
+      );
+    }
     final id = _id('env');
     await tx.execute(
       '''
@@ -853,15 +899,29 @@ ON CONFLICT DO NOTHING
     };
   }
 
+  static const String _storeBytesSql = '''
+SELECT COALESCE(SUM(octet_length(ciphertext) + octet_length(nonce)), 0) AS bytes
+FROM envelopes WHERE owner_id = @owner AND store_id = @store
+''';
+
+  Future<int> _storeBytes(
+    DatabaseSession tx,
+    String ownerId,
+    String store,
+  ) async {
+    final row = await tx.one(
+      _storeBytesSql,
+      {'owner': ownerId, 'store': store},
+    );
+    return (row?['bytes'] as num?)?.toInt() ?? 0;
+  }
+
   Future<Map<String, Object?>> _storageStatus(
     String ownerId,
     String store,
   ) async {
     final row = await db.one(
-      '''
-SELECT COALESCE(SUM(octet_length(ciphertext) + octet_length(nonce)), 0) AS bytes
-FROM envelopes WHERE owner_id = @owner AND store_id = @store
-''',
+      _storeBytesSql,
       {'owner': ownerId, 'store': store},
     );
     final used = (row?['bytes'] as num?)?.toInt() ?? 0;
@@ -1392,7 +1452,10 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
   Future<Response> _createSnapshot(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
-    final body = await _body(request);
+    final body = await _body(
+      request,
+      maxBytes: config.storageLimitBytes + _bodyOverheadBytes,
+    );
     final store = '${body['store_id'] ?? ''}';
     if (!stringList(device['store_ids']).contains(store)) {
       return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
@@ -2475,6 +2538,10 @@ ON CONFLICT (email) DO UPDATE SET
     );
     return _json(200, _identityJson(row!));
   }
+}
+
+class _BodyTooLarge implements Exception {
+  const _BodyTooLarge();
 }
 
 class _EnvelopeRejection implements Exception {

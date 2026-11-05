@@ -3795,12 +3795,7 @@ class SyncService {
         counter: counter,
       );
       final modal = await txn.rawQuery(
-        'SELECT '
-        'COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah) '
-        'FROM service_jobs WHERE service_record_id = ?), 0) + '
-        'COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi * '
-        'COALESCE(jumlah_milli, jumlah * 1000) / 1000.0)) '
-        'FROM service_parts WHERE service_record_id = ?), 0) AS modal',
+        'SELECT ${AppDatabase.recordModalSql} AS modal',
         [record.first['id'], record.first['id']],
       );
       final modalTotal = (modal.first['modal'] as num?)?.toInt() ?? 0;

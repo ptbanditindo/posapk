@@ -156,7 +156,7 @@ class NotaAdjustmentService {
         'nilai_selisih': delta,
         'nilai_baru': target,
         'alasan': cleanReason,
-        'dibuat_oleh': actor?.label ?? 'Pemilik',
+        'dibuat_oleh': actor.label,
         'disetujui_oleh': ownerApproved ? approver : null,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
@@ -165,7 +165,7 @@ class NotaAdjustmentService {
       });
       await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
       await txn.insert('permission_audits', {
-        'actor': actor?.label ?? 'Pemilik',
+        'actor': actor.label,
         'target_account_id': actor?.employeeId,
         'action': 'koreksi_nota',
         'detail_json': jsonEncode({
@@ -184,14 +184,7 @@ class NotaAdjustmentService {
 
   Future<int> _modalTotal(DatabaseExecutor executor, int recordId) async {
     final rows = await executor.rawQuery(
-      '''
-      SELECT
-        COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah)
-          FROM service_jobs WHERE service_record_id = ?), 0) +
-        COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
-          COALESCE(jumlah_milli, jumlah * 1000) / 1000.0))
-          FROM service_parts WHERE service_record_id = ?), 0) AS modal
-      ''',
+      'SELECT ${AppDatabase.recordModalSql} AS modal',
       [recordId, recordId],
     );
     return (rows.first['modal'] as num?)?.toInt() ?? 0;
@@ -278,19 +271,16 @@ class NotaAdjustmentService {
     // menghitung ganda koreksi yang dibuat bersamaan di dua perangkat.
     final rows = await txn.rawQuery(
       '''
-      SELECT COALESCE(
-        (SELECT a.nilai_baru FROM nota_adjustments a
-          WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
-          ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
-          LIMIT 1),
-        r.total_servis) AS total
+      SELECT ${AppDatabase.latestAdjustmentTotalSql(
+        notaSyncIdExpr: 'r.sync_id',
+        fallbackExpr: 'r.total_servis',
+      )} AS total
       FROM service_records r WHERE r.id = ? LIMIT 1
       ''',
       [recordId],
     );
-    return (rows.first['total'] as num?)?.toInt() ??
-        (rows.first['total_servis'] as num?)?.toInt() ??
-        0;
+    if (rows.isEmpty) return 0;
+    return (rows.first['total'] as num?)?.toInt() ?? 0;
   }
 
   Future<void> applyRemote(

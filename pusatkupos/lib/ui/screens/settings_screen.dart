@@ -95,6 +95,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _saveBackup() async {
+    final passphrase = _backupPassphrase.text.trim();
+    if (passphrase.isNotEmpty && passphrase.length < 8) {
+      showSnack(context, 'Passphrase backup minimal 8 karakter.', error: true);
+      return;
+    }
     setState(() => _backupBusy = true);
     try {
       await BackupService.instance.saveSettings(
@@ -177,6 +182,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _garansiSyarat.dispose();
     _backupChat.dispose();
     _backupToken.dispose();
+    _backupPassphrase.dispose();
     super.dispose();
   }
 
@@ -216,7 +222,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   labelText: 'Passphrase',
                   errorText: error,
                   helperText: requiredPass
-                      ? 'Wajib, minimal 6 karakter.'
+                      ? 'Wajib, minimal 8 karakter.'
                       : 'Kosongkan untuk backup khusus perangkat ini.',
                 ),
               ),
@@ -230,8 +236,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton(
               onPressed: () {
                 final value = controller.text.trim();
-                if (requiredPass && value.length < 6) {
-                  setLocal(() => error = 'Passphrase minimal 6 karakter.');
+                if (requiredPass && value.length < 8) {
+                  setLocal(() => error = 'Passphrase minimal 8 karakter.');
                   return;
                 }
                 Navigator.pop(context, value);

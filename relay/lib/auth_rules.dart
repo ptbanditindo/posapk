@@ -69,15 +69,17 @@ bool employeeEntityAllowed({
   const direct = {
     'customer',
     'unit',
-    'stock_movement',
     'day_digest',
     'data_response',
   };
   if (direct.contains(entity)) return true;
-  // Harga jasa hanya dari pemilik. Data barang boleh diubah karyawan yang
-  // punya izin stok; penerima tetap menolak bila harga ikut berubah.
+  // Harga jasa hanya dari pemilik. Data barang dan mutasinya boleh diubah
+  // karyawan yang punya izin stok; penerima tetap menolak bila harga ikut
+  // berubah.
   if (entity == 'harga_jasa') return false;
-  if (entity == 'stock') return allowed('ubah_stok');
+  if (entity == 'stock' || entity == 'stock_movement') {
+    return allowed('ubah_stok');
+  }
   if (entity == 'estimate') return allowed('buat_estimasi');
   if (entity == 'work_order') return allowed('buat_order');
   if (entity == 'work_order_status') return allowed('ubah_status');

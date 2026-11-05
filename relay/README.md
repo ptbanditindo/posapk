@@ -6,8 +6,11 @@ rate, atau rotasi kunci otomatis.
 
 ## Prasyarat
 
-- PostgreSQL 17 (sudah terpasang di `C:\PostgreSQL\17` pada mesin ini).
-- Dart dari Flutter (`C:\Users\sukron\flutter\bin\dart.exe`).
+- PostgreSQL 17 (contoh di dokumen ini memakai `C:\PostgreSQL\17`; sesuaikan
+  dengan lokasi instalasi Anda).
+- Dart dari Flutter/Dart SDK. `start-relay.ps1` mencari `dart` lewat variabel
+  lingkungan `DART`, lalu `FLUTTER_ROOT\bin\dart.bat`, lalu `PATH`. Jika ingin
+  menunjuk langsung: `$env:DART = "C:\path\ke\flutter\bin\dart.bat"`.
 
 ## 1. Siapkan database
 
@@ -200,11 +203,12 @@ kunci identitas owner (`409 owner_signer_required`).
   `owner`/`viewer` atau `Authorization: Bearer <RELAY_ADMIN_TOKEN>`. Token
   karyawan ditolak `401`.
 - `POST /relay/envelopes` menolak perangkat `viewer` (`403`) dan membatasi
-  perangkat `employee` pada entity `nota`, `customer`, `unit`,
-  `stock_movement`, dan `supplier_followup` (sesuai izin `followup`); entity
-  `harga_jasa`/`stock` hanya bila akun punya izin tambahan terkait. Karena isi
-  amplop terenkripsi, relay memakai petunjuk `entity`/`action` di luar amplop;
-  aturan konflik tetap ditegakkan saat apply di perangkat.
+  perangkat `employee` sesuai izin akun: `customer` dan `unit` selalu boleh;
+  `nota`, `estimate`, `work_order`, `supplier_followup` mengikuti izin
+  terkait; `stock` dan `stock_movement` mewajibkan `ubah_stok`;
+  `harga_jasa` hanya dari pemilik. Karena isi amplop terenkripsi, relay
+  memakai petunjuk `entity`/`action` di luar amplop; aturan konflik tetap
+  ditegakkan saat apply di perangkat.
 - `POST /relay/feed/ack` memvalidasi perangkat terdaftar pada `store_id`.
 
 ### Gate unggah cadangan
@@ -233,6 +237,17 @@ sinkron, bukan pertahanan terhadap perangkat yang sudah dikuasai penyerang.
 Perangkat yang sah tetap memegang kunci toko dan dapat menulis data. Perangkat
 hilang harus dicabut lewat `POST /relay/manage/devices/<id>/revoke`; setelah
 dicabut, data yang belum terkirim dari perangkat itu tidak akan masuk.
+
+## Batas ukuran body dan penyimpanan
+
+- Body permintaan biasa dibatasi 16 MB; body snapshot dibatasi
+  `RELAY_STORAGE_LIMIT_BYTES` + 8 MB kelonggaran. Permintaan yang melewati
+  batas ditolak `413 body_too_large` tanpa dibaca sampai habis.
+- Unggahan amplop yang membuat pemakaian toko melewati
+  `RELAY_STORAGE_LIMIT_BYTES` (default 256 MB) ditolak `413 storage_full`.
+  Relay memangkas amplop yang sudah diakui semua perangkat sebelum menilai
+  batas, jadi pesan ini berarti perangkat lain masih menahan data lama.
+- Body yang bukan JSON valid ditolak `400 invalid_body`.
 
 ## Batasan yang masih tersisa
 

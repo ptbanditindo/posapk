@@ -4,10 +4,10 @@ Tanggal: 5 November 2026
 Cakupan: `pusatkupos/` (Flutter + SQLite/SQLCipher) dan `relay/` (Dart Shelf + PostgreSQL)
 Referensi fitur struk: `github.com/ptbanditindo/aplikasiposbengkel` (Python/FastAPI)
 
-Status: seluruh temuan P0, P1, P2, dan kelompok audit lanjutan B-01–B-10 sudah
-diperbaiki, editor struk v2 sudah dibangun, dan sembilan fitur lanjutan sudah
-ditulis ke kode. Tidak ada dependency baru yang dipasang. Dokumen ini hanya
-memuat keadaan kode saat ini.
+Status: seluruh temuan P0, P1, P2, kelompok audit lanjutan B-01–B-10, dan
+penyempurnaan C-01–C-06 sudah diperbaiki, editor struk v2 sudah dibangun, dan
+sembilan fitur lanjutan sudah ditulis ke kode. Tidak ada dependency baru yang
+dipasang. Dokumen ini hanya memuat keadaan kode saat ini.
 
 ---
 
@@ -25,6 +25,10 @@ memuat keadaan kode saat ini.
   konflik izin/harga bersifat final tanpa memblokir kursor, koreksi nota
   memakai nilai absolut terakhir, void menyinkronkan REFUND, passphrase backup
   dapat dipulihkan, dan pembulatan kuantitas negatif konsisten.
+- **Penyempurnaan selesai (C-01–C-06):** refund retur dibatasi kas diterima,
+  passphrase backup seragam 8 karakter, duplikasi rumus koreksi/modal
+  disatukan, relay membatasi body dan menolak penyimpanan penuh, dan skrip
+  relay tidak lagi memakai path Dart pengembang.
 - **Skema naik ke versi 2 secara aditif.** Migrasi menambah kolom dan tabel
   retur tanpa menghapus data; database versi 1 tetap dapat dibuka.
 - **Relay tetap buta isi.** Relay hanya menyimpan amplop terenkripsi dan tidak
@@ -290,6 +294,20 @@ Catatan: payload stok memang sudah membawa `jumlah_milli`; kecurigaan kuantitas
 stok hilang tidak terbukti. Akar masalahnya adalah `stock` diperlakukan sebagai
 entitas harga pada aturan konflik (B-02).
 
+### 4.6 Penyempurnaan C-01–C-06 (sudah diperbaiki)
+
+Kelompok ini tidak menambah fitur; isinya memperbaiki perilaku yang sudah ada
+dan membersihkan duplikasi.
+
+| ID | Severity | Masalah | Perbaikan |
+|---|---|---|---|
+| C-01 | P1 | Retur setelah nota dikoreksi menjadi 0 memberikan REFUND tunai sebesar nilai barang walaupun pelanggan belum membayar | Refund dibatasi kas yang diterima: `max(0, dibayar - max(0, total_efektif - retur))`, lalu dibatasi nilai retur. Koreksi ke 0 pada nota yang belum dibayar menghasilkan refund 0 |
+| C-02 | P2 | Backup manual menerima passphrase 6 karakter, backup otomatis mewajibkan 8, dan simpan passphrase pendek memunculkan `ArgumentError` mentah | Semua jalur memakai minimal 8 karakter dengan pesan `BackupResult`/snackbar; teks bantuan dialog disamakan |
+| C-03 | P3 | `_backupPassphrase` tidak di-dispose | Dispose ditambahkan bersama controller lain |
+| C-04 | P2 | Rumus total koreksi terakhir dan modal nota ditulis ulang di empat berkas; `_currentTotal` punya fallback mati dan ada `actor?.label ?? 'Pemilik'` yang tidak terjangkau | `AppDatabase.latestAdjustmentTotalSql` dan `recordModalSql` dipakai bersama; fallback mati dan null-coalescing berlebih dihapus |
+| C-05 | P1 | Relay membaca body tanpa batas; batas penyimpanan hanya memberi peringatan; `stock_movement` diterima dari karyawan tanpa `ubah_stok` | Body dibatasi 16 MB (snapshot: batas penyimpanan + 8 MB) dengan `413 body_too_large`/`400 invalid_body`; penyimpanan penuh ditolak `413 storage_full` setelah pemangkasan amplop yang sudah diakui; `stock_movement` wajib `ubah_stok` |
+| C-06 | P2 | `relay/start-relay.ps1` menunjuk path Dart milik satu pengembang | Skrip mencari `DART`, lalu `FLUTTER_ROOT\bin\dart.bat`, lalu `PATH`, dengan pesan jelas bila tidak ditemukan; README diperbarui |
+
 ---
 
 ## 5. Pekerjaan yang Sudah Selesai
@@ -402,9 +420,13 @@ entitas harga pada aturan konflik (B-02).
    Jumlah dan alasan divalidasi; minimal satu baris harus dipilih.
 3. `SaleReturnService.createReturn` menulis header + item, mengembalikan stok
    part, menambah `stock_movements` bertipe MASUK, dan menulis audit.
-4. Nota asli tidak berubah. Laporan mengurangi omzet dan laba dengan nilai
+4. REFUND tunai hanya sebesar kas yang benar-benar diterima
+   (`max(0, dibayar - max(0, total_efektif - retur))`, dibatasi nilai retur),
+   sehingga retur pada nota yang dikoreksi menjadi 0 dan belum dibayar tidak
+   menghasilkan uang keluar.
+5. Nota asli tidak berubah. Laporan mengurangi omzet dan laba dengan nilai
    retur neto.
-5. Retur ikut payload sinkronisasi nota sehingga perangkat lain menerima
+6. Retur ikut payload sinkronisasi nota sehingga perangkat lain menerima
    header, item, penyesuaian stok, dan pergerakan stok yang sama.
 
 ### 7.3 Estimasi dan work order
@@ -432,6 +454,11 @@ entitas harga pada aturan konflik (B-02).
 7. Konflik izin/harga dicatat final (`rejected`) dan tidak diputar ulang;
    kursor tetap maju dan hanya delta yang belum diterapkan yang menahan
    snapshot/backup.
+8. Relay menolak body di atas 16 MB (snapshot: batas penyimpanan + 8 MB) dan
+   menolak unggahan yang membuat toko melewati `RELAY_STORAGE_LIMIT_BYTES`
+   dengan `413 storage_full` setelah amplop yang sudah diakui dipangkas.
+9. Karyawan hanya boleh mengirim `stock`/`stock_movement` bila akun punya
+   `ubah_stok`; `harga_jasa` tetap hanya dari pemilik.
 
 ### 7.5 Backup multi-toko
 
@@ -550,6 +577,23 @@ Untuk kelompok B-01–B-10, verifikasi statis tambahan yang dilakukan:
   `recalculateRecordTotals`, laporan, refund retur, penerimaan remote).
 - Tidak ada test yang dibuat atau dijalankan.
 
+Untuk kelompok C-01–C-06, verifikasi statis tambahan:
+
+- Refund retur diuji dengan tabel kasus manual: nota lunas, DP sebagian, koreksi
+  ke 0 tanpa pembayaran, koreksi ke 0 dengan pembayaran, dan dua retur
+  berurutan. Hasilnya refund tidak pernah melebihi kas diterima maupun nilai
+  retur.
+- Semua pemakaian minimal passphrase diperiksa: `setAutoPassphrase`,
+  `createBackup`, `_saveBackup`, dan dialog passphrase memakai angka 8.
+- Pencarian ulang seluruh `lib/` memastikan `nilai_baru` terakhir dan rumus
+  modal hanya didefinisikan di `app_database.dart`; fallback `_currentTotal`
+  dan `actor?.label ?? 'Pemilik'` tidak tersisa.
+- Relay: alur `_body` (batas deklarasi + hitung per chunk), pemangkasan sebelum
+  transaksi, `_storeBytes` yang dipakai bersama status penyimpanan, dan
+  kesesuaian entity `stock_movement` antara `server.dart` dan `auth_rules.dart`.
+- `start-relay.ps1` dibaca ulang: tidak ada path pengguna yang tersisa;
+  resolusi mengikuti `DART` → `FLUTTER_ROOT` → `PATH`.
+
 Pemeriksaan perilaku tetap dilakukan pemilik melalui APK atau localhost.
 
 ### 10.2 Build yang disarankan setelah SDK tersedia
@@ -651,3 +695,6 @@ dart analyze
   dependency tidak boleh dipasang.
 - Kelompok audit lanjutan B-01–B-10 (Bagian 4.5) sudah diterapkan pada kode dan
   tercatat juga di `AUDIT_LOGIKA_BISNIS_DAN_ALUR_OPERASIONAL.md` (Kelompok 6).
+- Penyempurnaan C-01–C-06 (Bagian 4.6) sudah diterapkan dan tercatat di
+  `AUDIT_LOGIKA_BISNIS_DAN_ALUR_OPERASIONAL.md` (Kelompok 7). Tidak ada fitur
+  baru pada kelompok ini.
