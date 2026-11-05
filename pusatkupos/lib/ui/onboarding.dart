@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/app_config.dart';
+import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/employee_auth_service.dart';
 import '../data/google_auth_service.dart';
 import '../data/license_service.dart';
+import '../data/pairing_service.dart';
 import '../data/pin_service.dart';
 import '../data/secure_store.dart';
 import '../data/session_service.dart';
@@ -806,6 +809,82 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
     }
   }
 
+  Future<void> _submitInvite() async {
+    if (!serviceConfigured) {
+      setState(() => _error = 'Layanan akun belum siap. Hubungi penjual.');
+      return;
+    }
+    final draft = await showDialog<_InviteDraft>(
+      context: context,
+      builder: (_) => const _InviteDialog(),
+    );
+    if (draft == null || !mounted) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final result = await PairingService.instance.claim(
+        relayUrl: normalizedServiceUrl,
+        code: draft.code,
+        deviceName: draft.deviceName,
+      );
+      final accountId = (result['account_id'] as num?)?.toInt() ?? 0;
+      final rows = await AppDatabase.instance.db.query(
+        'employee_accounts',
+        where: 'id = ?',
+        whereArgs: [accountId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Akun hasil pairing tidak ditemukan.');
+      }
+      final account = rows.first;
+      final role = '${account['role_base'] ?? 'KASIR'}';
+      final extras = _stringList(account['extra_permissions_json']);
+      final stores = _stringList(account['store_ids_json']);
+      final profile = SessionProfile(
+        mode: 'employee',
+        ownerId: '${result['owner_id'] ?? ''}',
+        nama: '${account['nama'] ?? account['username'] ?? 'Karyawan'}',
+        role: role,
+        employeeSyncId: account['sync_id'] as String?,
+        username: '${account['username'] ?? ''}',
+        permissions: [...(rolePermissions[role] ?? const <String>{}), ...extras],
+        storeIds: stores.isEmpty
+            ? ['${result['store_id'] ?? 'utama'}']
+            : stores,
+        plan: 'premium',
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(
+        EmployeeLoginResult(
+          profile: profile,
+          password: '',
+          deviceToken: null,
+          deviceId: result['relay_device_id'] as String?,
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = '$error';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  List<String> _stringList(Object? raw) {
+    try {
+      final decoded = jsonDecode('${raw ?? '[]'}');
+      if (decoded is List) return decoded.map((item) => '$item').toList();
+    } catch (_) {
+      // Nilai lama atau rusak diabaikan; profil tetap bisa dibuka.
+    }
+    return const [];
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -881,6 +960,19 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
                           : const Icon(Icons.login),
                       label: const Text('Masuk'),
                     ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _submitInvite,
+                      icon: const Icon(Icons.pin_outlined),
+                      label: const Text('Punya kode pairing'),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Kode pairing dibuat pemilik, berlaku singkat, dan '
+                      'hanya dapat dipakai satu perangkat.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ],
                 ),
               ),
@@ -888,6 +980,91 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _InviteDraft {
+  const _InviteDraft({required this.code, required this.deviceName});
+
+  final String code;
+  final String deviceName;
+}
+
+class _InviteDialog extends StatefulWidget {
+  const _InviteDialog();
+
+  @override
+  State<_InviteDialog> createState() => _InviteDialogState();
+}
+
+class _InviteDialogState extends State<_InviteDialog> {
+  final _code = TextEditingController();
+  final _deviceName = TextEditingController(text: 'Perangkat karyawan');
+  String? _error;
+
+  @override
+  void dispose() {
+    _code.dispose();
+    _deviceName.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _code.text.trim().toUpperCase();
+    if (code.length < 4) {
+      setState(() => _error = 'Masukkan kode dari pemilik.');
+      return;
+    }
+    final name = _deviceName.text.trim();
+    Navigator.pop(
+      context,
+      _InviteDraft(
+        code: code,
+        deviceName: name.isEmpty ? 'Perangkat karyawan' : name,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Kode pairing'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Minta kode kepada pemilik. Kode hanya berlaku sebentar dan '
+            'hangus setelah dipakai.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _code,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            maxLength: 8,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp('[a-zA-Z0-9]')),
+            ],
+            decoration: InputDecoration(
+              labelText: 'Kode dari pemilik',
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          TextField(
+            controller: _deviceName,
+            decoration: const InputDecoration(labelText: 'Nama perangkat'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Pasangkan')),
+      ],
     );
   }
 }

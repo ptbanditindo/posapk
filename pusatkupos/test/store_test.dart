@@ -13,7 +13,7 @@ import 'package:pusatkupos/data/store_service.dart';
 import 'test_support.dart';
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
   late Directory dir;
   late AppDatabase db;
 
@@ -84,6 +84,7 @@ void main() {
       'nama': 'Pelanggan Toko Dua',
       'nomor_hp': '081200000002',
       'created_at': nowIso(),
+      'updated_at': nowIso(),
     });
     await db.saveStockItem(
       kode: 'T2-FILTER',

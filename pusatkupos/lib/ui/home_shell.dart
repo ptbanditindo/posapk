@@ -16,6 +16,7 @@ import 'screens/employees_screen.dart';
 import 'screens/followup_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/jasa_screen.dart';
+import 'screens/orders_screen.dart';
 import 'screens/pos_screen.dart';
 import 'screens/premium_screen.dart';
 import 'screens/reports_screen.dart';
@@ -172,6 +173,7 @@ class _HomeShellState extends State<HomeShell>
     'Riwayat',
     'Pelanggan',
     'Stok',
+    'Order',
     'Jasa',
     'Laporan',
     'Supplier',
@@ -186,6 +188,7 @@ class _HomeShellState extends State<HomeShell>
     Icons.history,
     Icons.people_outline,
     Icons.inventory_2_outlined,
+    Icons.assignment_outlined,
     Icons.build_outlined,
     Icons.bar_chart_outlined,
     Icons.local_shipping_outlined,
@@ -202,11 +205,11 @@ class _HomeShellState extends State<HomeShell>
     if (operator.isOwner) {
       return List.generate(_allLabels.length, (index) => index);
     }
-    final screens = <int>[0, 2, 3, 4];
+    final screens = <int>[0, 2, 3, 4, 5];
     if (operator.canWriteMoney) screens.add(1);
-    if (operator.can('lihat_laporan')) screens.add(6);
-    if (operator.can('ubah_stok')) screens.add(7);
-    if (operator.can('followup')) screens.add(8);
+    if (operator.can('lihat_laporan')) screens.add(7);
+    if (operator.can('ubah_stok')) screens.add(8);
+    if (operator.can('followup')) screens.add(9);
     screens.sort();
     return screens;
   }
@@ -217,13 +220,14 @@ class _HomeShellState extends State<HomeShell>
         2 => const HistoryScreen(),
         3 => const CustomersScreen(),
         4 => const StockScreen(),
-        5 => const JasaScreen(),
-        6 => const ReportsScreen(),
-        7 => const SupplierScreen(),
-        8 => FollowupScreen(onOpenPremium: () => _goScreen(11)),
-        9 => const EmployeesScreen(),
-        10 => const SettingsScreen(),
-        11 => const PremiumScreen(),
+        5 => const OrdersScreen(),
+        6 => const JasaScreen(),
+        7 => const ReportsScreen(),
+        8 => const SupplierScreen(),
+        9 => FollowupScreen(onOpenPremium: () => _goScreen(12)),
+        10 => const EmployeesScreen(),
+        11 => const SettingsScreen(),
+        12 => const PremiumScreen(),
         _ => const SizedBox.shrink(),
       };
 

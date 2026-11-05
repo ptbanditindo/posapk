@@ -133,12 +133,28 @@ CREATE TABLE IF NOT EXISTS envelopes (
   ciphertext TEXT NOT NULL,
   nonce TEXT NOT NULL,
   signature TEXT NOT NULL,
+  entity TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  entity_id TEXT NOT NULL DEFAULT '',
+  hints_signature TEXT NOT NULL DEFAULT '',
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (owner_id, store_id, sender_device_id, seq),
   UNIQUE (owner_id, idempotency_key)
 )
 ''',
       'CREATE INDEX IF NOT EXISTS ix_envelopes_store_seq ON envelopes(owner_id, store_id, relay_seq)',
+      '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS entity TEXT NOT NULL DEFAULT ''
+''',
+      '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT ''
+''',
+      '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS entity_id TEXT NOT NULL DEFAULT ''
+''',
+      '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS hints_signature TEXT NOT NULL DEFAULT ''
+''',
       '''
 CREATE TABLE IF NOT EXISTS snapshots (
   owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,

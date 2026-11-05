@@ -52,6 +52,8 @@ class _JasaScreenState extends State<JasaScreen> {
         id: item?.id,
         nama: input.nama,
         hargaCents: input.hargaCents,
+        hargaModalCents: input.hargaModalCents,
+        intervalBulan: input.intervalBulan,
         actor: AppState.instance.operator,
         enqueue: (txn, id) =>
             SyncService.instance.enqueueCatalog(id, txn: txn),
@@ -124,6 +126,14 @@ class _JasaScreenState extends State<JasaScreen> {
                           child: Icon(Icons.build_outlined),
                         ),
                         title: Text(item.nama),
+                        subtitle: AppState.instance.isOwner
+                            ? Text(
+                                'Modal ${formatRupiah(item.hargaModalCents)}'
+                                '${item.intervalBulan > 0 ? ' · ${item.intervalBulan} bln' : ''}',
+                              )
+                            : item.intervalBulan > 0
+                                ? Text('${item.intervalBulan} bulan')
+                                : null,
                         trailing: Text(
                           formatRupiah(item.hargaCents),
                           style: const TextStyle(fontWeight: FontWeight.w700),
@@ -142,10 +152,17 @@ class _JasaScreenState extends State<JasaScreen> {
 }
 
 class CatalogInput {
-  const CatalogInput(this.nama, this.hargaCents);
+  const CatalogInput(
+    this.nama,
+    this.hargaCents, {
+    this.hargaModalCents = 0,
+    this.intervalBulan = 0,
+  });
 
   final String nama;
   final int hargaCents;
+  final int hargaModalCents;
+  final int intervalBulan;
 }
 
 class _CatalogDialog extends StatefulWidget {
@@ -160,7 +177,11 @@ class _CatalogDialog extends StatefulWidget {
 class _CatalogDialogState extends State<_CatalogDialog> {
   late final TextEditingController _nama;
   late final TextEditingController _harga;
+  late final TextEditingController _modal;
+  late final TextEditingController _interval;
   String? _error;
+
+  bool get _isOwner => AppState.instance.isOwner;
 
   @override
   void initState() {
@@ -171,12 +192,24 @@ class _CatalogDialogState extends State<_CatalogDialog> {
           ? ''
           : formatRupiahPlain(widget.item!.hargaCents),
     );
+    _modal = TextEditingController(
+      text: widget.item == null || widget.item!.hargaModalCents == 0
+          ? ''
+          : formatRupiahPlain(widget.item!.hargaModalCents),
+    );
+    _interval = TextEditingController(
+      text: widget.item == null || widget.item!.intervalBulan == 0
+          ? ''
+          : '${widget.item!.intervalBulan}',
+    );
   }
 
   @override
   void dispose() {
     _nama.dispose();
     _harga.dispose();
+    _modal.dispose();
+    _interval.dispose();
     super.dispose();
   }
 
@@ -197,6 +230,26 @@ class _CatalogDialogState extends State<_CatalogDialog> {
             controller: _harga,
             keyboardType: TextInputType.number,
             decoration: const InputDecoration(labelText: 'Tarif'),
+          ),
+          if (_isOwner) ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _modal,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Modal (opsional)',
+                helperText: 'Batas bawah harga saat kasir menjual.',
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          TextField(
+            controller: _interval,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Interval servis (bulan)',
+              helperText: 'Kosongkan bila tidak berkala.',
+            ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 10),
@@ -223,6 +276,10 @@ class _CatalogDialogState extends State<_CatalogDialog> {
               CatalogInput(
                 _nama.text.trim(),
                 tryParseRupiahToCents(_harga.text) ?? 0,
+                hargaModalCents: _isOwner
+                    ? (tryParseRupiahToCents(_modal.text) ?? 0)
+                    : (widget.item?.hargaModalCents ?? 0),
+                intervalBulan: int.tryParse(_interval.text.trim()) ?? 0,
               ),
             );
           },

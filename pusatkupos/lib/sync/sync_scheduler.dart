@@ -1,35 +1,40 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/widgets.dart';
 
 import '../core/app_config.dart';
 import '../data/license_service.dart';
+import '../data/reconciliation_service.dart';
 import 'sync_service.dart';
 
 /// Sinkronisasi otomatis selama aplikasi berjalan.
 ///
 /// Tanpa paket konektivitas tambahan, penggantinya adalah pemeriksaan berkala
 /// yang juga berfungsi sebagai percobaan ulang saat koneksi kembali, ditambah
-/// percobaan langsung ketika aplikasi kembali ke depan. `SyncService.syncNow`
-/// sudah memegang kunci tunggal, jadi pemanggilan bersamaan aman.
+/// percobaan langsung ketika aplikasi kembali ke depan atau ditutup.
+/// `SyncService.syncNow` memegang kunci tunggal, jadi pemanggilan bersamaan
+/// aman.
 class SyncScheduler with WidgetsBindingObserver {
   SyncScheduler._();
 
   static final SyncScheduler instance = SyncScheduler._();
 
-  static const interval = Duration(minutes: 2);
+  static const defaultIntervalMinutes = 15;
+  static const minIntervalMinutes = 10;
+  static const maxIntervalMinutes = 20;
 
   Timer? _timer;
   bool _started = false;
   bool _running = false;
   DateTime? _lastAttempt;
+  Duration _interval = const Duration(minutes: defaultIntervalMinutes);
 
   void start() {
     if (_started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
-    _timer?.cancel();
-    _timer = Timer.periodic(interval, (_) => tick());
+    _scheduleNext(initial: true);
     tick();
   }
 
@@ -41,9 +46,45 @@ class SyncScheduler with WidgetsBindingObserver {
     _timer = null;
   }
 
+  /// Selang 10-20 menit yang ditentukan pemilik, ditambah jitter ±1-2 menit.
+  Future<Duration> configuredInterval() async {
+    final raw = await SyncService.instance.setting('sync.interval_minutes');
+    final minutes =
+        (int.tryParse(raw ?? '') ?? defaultIntervalMinutes).clamp(
+      minIntervalMinutes,
+      maxIntervalMinutes,
+    );
+    return Duration(minutes: minutes);
+  }
+
+  void _scheduleNext({bool initial = false}) {
+    _timer?.cancel();
+    final random = Random();
+    final jitterSeconds = (random.nextBool() ? 1 : -1) *
+        (60 + random.nextInt(61));
+    final jitter = Duration(seconds: jitterSeconds);
+    _timer = Timer(_interval + jitter, () async {
+      await tick(force: true);
+      if (!_started) return;
+      _interval = await configuredInterval();
+      _scheduleNext();
+    });
+    if (initial) {
+      configuredInterval().then((value) {
+        _interval = value;
+      });
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) tick(force: true);
+    if (state == AppLifecycleState.resumed) {
+      tick(force: true);
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Satu sinkronisasi terakhir saat aplikasi ditutup atau shift berakhir.
+      tick(force: true);
+    }
   }
 
   Future<void> tick({bool force = false}) async {
@@ -51,7 +92,7 @@ class SyncScheduler with WidgetsBindingObserver {
     final now = DateTime.now();
     if (!force &&
         _lastAttempt != null &&
-        now.difference(_lastAttempt!) < interval) {
+        now.difference(_lastAttempt!) < _interval) {
       return;
     }
     _running = true;
@@ -69,6 +110,10 @@ class SyncScheduler with WidgetsBindingObserver {
           token.isEmpty) {
         return;
       }
+      await ReconciliationService.instance.publishRecent(
+        enqueue: (txn, syncId) =>
+            SyncService.instance.enqueueDayDigest(syncId, txn: txn),
+      );
       await SyncService.instance.syncNow();
     } catch (_) {
       // Pesan tersimpan di `sync.last_error`; periode berikutnya mencoba lagi.

@@ -43,7 +43,7 @@ Future<int> _seedStock(
 }
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
 
   test('piutang dapat dibuat dan dilunasi, dashboard sama dengan laporan',
       () async {
@@ -396,7 +396,10 @@ void main() {
       );
       expect(rows.single['no_nota'], isNot(noNota));
       expect(rows.single['no_nota'], detail['no_nota_baru']);
-      expect(rows.single['no_nota'], matches(RegExp(r'^\d+$')));
+      expect(
+        rows.single['no_nota'],
+        matches(RegExp(r'^[A-Z0-9]+-N\d{8}-\d{4}$')),
+      );
     } finally {
       await a.close();
       await b.close();

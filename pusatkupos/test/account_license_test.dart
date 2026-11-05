@@ -13,7 +13,7 @@ import 'package:pusatkupos/data/store_service.dart';
 import 'test_support.dart';
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
   test('akun karyawan, lisensi, dan kuota toko', () async {
     final dir = await Directory.systemTemp.createTemp('pusatkupos_auth_');
     final db = AppDatabase.instance;

@@ -113,6 +113,7 @@ class SupplierService {
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': now,
+        'updated_at': now,
       });
       if (enqueue != null) await enqueue(txn, newId);
       return newId;
@@ -190,6 +191,8 @@ class SupplierService {
             'sync_id': newSyncId(),
             'supplier_id': supplierId,
             'stock_item_id': stockItemId,
+            'created_at': nowIso(),
+            'updated_at': nowIso(),
           },
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
@@ -272,6 +275,7 @@ class SupplierService {
           'catatan': _clean(catatan),
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
+          'created_at': now,
           'updated_at': now,
         });
       } else {

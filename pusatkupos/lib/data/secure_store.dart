@@ -1,6 +1,13 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import 'app_database.dart';
+/// Pengganti penyimpanan untuk harness E2E yang berjalan sebagai beberapa
+/// proses. Hanya diisi oleh test; `null` di produksi sehingga rahasia selalu
+/// memakai secure storage platform.
+abstract class SecureStoreBackend {
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
+  Future<void> delete(String key);
+}
 
 class SecureStoreException implements Exception {
   SecureStoreException(this.message);
@@ -16,33 +23,42 @@ class SecureStore {
 
   static final SecureStore instance = SecureStore._();
 
-  /// Fallback database hanya untuk tes/desktop eksplisit.
-  static const bool forceDatabase = bool.fromEnvironment('PUSATKU_SECURE_DB');
+  /// Hanya untuk unit test tanpa plugin platform. Nilai disimpan di memori
+  /// proses, bukan di database, sehingga rahasia tetap tidak pernah tertulis
+  /// sebagai teks biasa ke `app_settings`.
+  static bool useMemoryForTests = false;
 
-  /// Dipakai oleh unit test (tanpa plugin platform). Jangan dipakai di UI.
-  static bool useDatabaseForTests = false;
+  /// Backend pengganti untuk test; hanya diisi oleh kode test.
+  static SecureStoreBackend? testBackend;
+
+  static final Map<String, String> _memory = {};
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  bool get _databaseMode => forceDatabase || useDatabaseForTests;
+  bool get _memoryMode => useMemoryForTests;
 
   Future<String?> read(String key) async {
-    if (_databaseMode) {
-      return AppDatabase.instance.getSetting('secure.$key');
-    }
+    if (_memoryMode) return _memory[key];
+    final backend = testBackend;
+    if (backend != null) return backend.read(key);
     try {
       return await _storage.read(key: key);
     } catch (error) {
       throw SecureStoreException(
-        'Penyimpanan aman gagal dibaca ($key). Periksa kunci perangkat '
-        'atau setel PUSATKU_SECURE_DB=true untuk mode desktop/tes. ($error)',
+        'Penyimpanan aman gagal dibaca ($key). Periksa kunci perangkat atau '
+        'dukungan keystore. ($error)',
       );
     }
   }
 
   Future<void> write(String key, String value) async {
-    if (_databaseMode) {
-      await AppDatabase.instance.setSetting('secure.$key', value);
+    if (_memoryMode) {
+      _memory[key] = value;
+      return;
+    }
+    final backend = testBackend;
+    if (backend != null) {
+      await backend.write(key, value);
       return;
     }
     try {
@@ -56,8 +72,13 @@ class SecureStore {
   }
 
   Future<void> delete(String key) async {
-    if (_databaseMode) {
-      await AppDatabase.instance.deleteSetting('secure.$key');
+    if (_memoryMode) {
+      _memory.remove(key);
+      return;
+    }
+    final backend = testBackend;
+    if (backend != null) {
+      await backend.delete(key);
       return;
     }
     try {
@@ -68,4 +89,7 @@ class SecureStore {
       );
     }
   }
+
+  /// Membersihkan penyimpanan memori antar-tes.
+  static void clearMemory() => _memory.clear();
 }

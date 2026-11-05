@@ -7,6 +7,7 @@ class RelayConfig {
     required this.databaseUrl,
     required this.adminToken,
     this.googleClientId = '',
+    this.storageLimitBytes = 256 * 1024 * 1024,
   });
 
   final String host;
@@ -14,6 +15,7 @@ class RelayConfig {
   final String databaseUrl;
   final String adminToken;
   final String googleClientId;
+  final int storageLimitBytes;
 
   factory RelayConfig.fromEnv() {
     final fileEnv = _readDotEnv();
@@ -43,6 +45,9 @@ class RelayConfig {
       databaseUrl: databaseUrl,
       adminToken: adminToken,
       googleClientId: read('RELAY_GOOGLE_CLIENT_ID') ?? '',
+      storageLimitBytes:
+          int.tryParse(read('RELAY_STORAGE_LIMIT_BYTES') ?? '') ??
+              256 * 1024 * 1024,
     );
   }
 }

@@ -9,7 +9,7 @@ import 'package:pusatkupos/data/secure_store.dart';
 import 'test_support.dart';
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
 
   late Directory dir;
 

@@ -10,7 +10,7 @@ import 'package:pusatkupos/sync/sync_service.dart';
 import 'test_support.dart';
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
   late Directory dir;
   final db = AppDatabase.instance;
 
@@ -63,7 +63,7 @@ void main() {
     final pending = rows.firstWhere((row) => row['device_id'] == 'dev_b');
     expect(pending['state'], 'pending');
     expect(pending['pending'], 2);
-    expect(AppDatabase.schemaVersion, 11);
+    expect(AppDatabase.schemaVersion, 1);
   });
 
   test('upload tidak bisa dimulai tanpa perangkat terdaftar', () async {

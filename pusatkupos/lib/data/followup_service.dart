@@ -805,6 +805,7 @@ class FollowupService {
           'status': 'DIBUKA',
           'nomor_masked': maskPhone(phone),
           'created_at': _isoMoment(moment),
+          'updated_at': _isoMoment(moment),
         });
         final autoArchive = count >= settings.maksTidakMerespons &&
             row['jenis'] != 'piutang' &&
@@ -1552,6 +1553,7 @@ class FollowupService {
       'status': status,
       'catatan': catatan,
       'created_at': _isoMoment(moment),
+      'updated_at': _isoMoment(moment),
     });
   }
 

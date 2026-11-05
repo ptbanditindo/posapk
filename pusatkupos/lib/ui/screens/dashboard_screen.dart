@@ -167,7 +167,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ActionChip(
                       avatar: const Icon(Icons.bar_chart_outlined, size: 18),
                       label: const Text('Laporan'),
-                      onPressed: () => widget.onNavigate(6),
+                      onPressed: () => widget.onNavigate(7),
                     ),
                   ],
                 ),

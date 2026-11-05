@@ -23,8 +23,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
   Future<ReportSummary>? _future;
   ReportSummary? _summary;
   List<ServiceRecordSummary> _rows = [];
+  List<BelowPriceSale> _below = [];
+  List<CorrectionEntry> _corrections = [];
+  List<EstimateAgingRow> _estimates = [];
   bool _hasMore = false;
   bool _loadingMore = false;
+
+  static const _typeLabels = {
+    'jual_sparepart': 'Jual sparepart',
+    'servis_langsung': 'Servis langsung',
+    'order_kerja': 'Order kerja',
+    'pelunasan_order': 'Pelunasan order',
+  };
 
   @override
   void initState() {
@@ -61,16 +71,30 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<ReportSummary> _loadFirst(DateTime from, DateTime to) async {
-    final summary = await AppDatabase.instance.reportSummary(from, to);
-    final rows = await AppDatabase.instance.listRecords(
-      from: from,
-      to: to,
-      limit: _pageSize,
-    );
+    final db = AppDatabase.instance;
+    final results = await Future.wait<Object>([
+      db.reportSummary(from, to),
+      db.listRecords(from: from, to: to, limit: _pageSize),
+      if (AppState.instance.isOwner) db.belowPriceSales(from, to),
+      if (AppState.instance.isOwner) db.correctionsInRange(from, to),
+      if (AppState.instance.isOwner) db.estimateAging(from, to),
+    ]);
+    final summary = results[0] as ReportSummary;
+    final rows = results[1] as List<ServiceRecordSummary>;
+    final owner = AppState.instance.isOwner;
     if (mounted) {
       setState(() {
         _summary = summary;
         _rows = rows;
+        _below = owner
+            ? results[2] as List<BelowPriceSale>
+            : const <BelowPriceSale>[];
+        _corrections = owner
+            ? results[3] as List<CorrectionEntry>
+            : const <CorrectionEntry>[];
+        _estimates = owner
+            ? results[4] as List<EstimateAgingRow>
+            : const <EstimateAgingRow>[];
         _hasMore = rows.length == _pageSize;
       });
     }
@@ -230,6 +254,107 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ),
                 const SizedBox(height: 16),
                 SectionCard(
+                  title: 'Per jenis transaksi',
+                  child: summary.countByType.isEmpty
+                      ? const Text('Belum ada transaksi pada periode ini.')
+                      : Column(
+                          children: summary.countByType.entries
+                              .map(
+                                (entry) => _line(
+                                  '${_typeLabels[entry.key] ?? entry.key} '
+                                  '(${entry.value}x)',
+                                  formatRupiah(
+                                    summary.totalByType[entry.key] ?? 0,
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                ),
+                if (AppState.instance.isOwner) ...[
+                  const SizedBox(height: 16),
+                  SectionCard(
+                    title: 'Penjualan di bawah harga terdaftar',
+                    subtitle: _below.isEmpty
+                        ? 'Tidak ada selisih harga pada periode ini.'
+                        : '${_below.length} baris perlu ditinjau',
+                    child: _below.isEmpty
+                        ? const SizedBox.shrink()
+                        : Column(
+                            children: _below
+                                .map(
+                                  (row) => ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    dense: true,
+                                    title: Text(
+                                      '${row.noNota} · ${row.deskripsi}',
+                                    ),
+                                    subtitle: Text(
+                                      '${dateId.format(row.waktu)} · '
+                                      'Kasir: ${row.kasir ?? '-'}'
+                                      '${row.disetujuiOleh == null ? '' : ' · '
+                                          'Disetujui: ${row.disetujuiOleh}'}',
+                                    ),
+                                    trailing: Text(
+                                      formatRupiah(row.selisihCents),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                  ),
+                  const SizedBox(height: 16),
+                  SectionCard(
+                    title: 'Koreksi nota',
+                    subtitle: _corrections.isEmpty
+                        ? 'Belum ada koreksi pada periode ini.'
+                        : '${_corrections.length} koreksi',
+                    child: _corrections.isEmpty
+                        ? const SizedBox.shrink()
+                        : Column(
+                            children: _corrections
+                                .map(
+                                  (row) => ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    dense: true,
+                                    title: Text(row.noNota),
+                                    subtitle: Text(
+                                      '${row.alasan} · '
+                                      '${row.dibuatOleh ?? '-'}'
+                                      '${row.disetujuiOleh == null ? '' : ' · '
+                                          'Disetujui: ${row.disetujuiOleh}'}',
+                                    ),
+                                    trailing: Text(
+                                      formatRupiah(row.nilaiSelisihCents),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: row.nilaiSelisihCents < 0
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .error
+                                            : Colors.green,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                  ),
+                  const SizedBox(height: 16),
+                  SectionCard(
+                    title: 'Estimasi',
+                    subtitle: 'Tidak dihitung sebagai penjualan.',
+                    child: _estimateSummary(context),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                SectionCard(
                   title: 'Kas per metode',
                   subtitle: 'Berdasarkan tanggal pembayaran, termasuk refund',
                   child: summary.cashByMethod.isEmpty
@@ -292,6 +417,40 @@ class _ReportsScreenState extends State<ReportsScreen> {
             );
           },
         ),
+      ],
+    );
+  }
+
+  Widget _estimateSummary(BuildContext context) {
+    if (_estimates.isEmpty) {
+      return const Text('Belum ada estimasi pada periode ini.');
+    }
+    final unconverted = _estimates
+        .where((row) => !row.converted && row.status == 'aktif')
+        .toList();
+    final expired = _estimates.where((row) => row.kedaluwarsa).length;
+    final variance = _estimates
+        .where((row) => row.converted)
+        .fold<int>(0, (sum, row) => sum + row.varianceCents);
+    final perCashier = <String, int>{};
+    for (final row in unconverted) {
+      final name = row.dibuatOleh ?? 'Tanpa nama';
+      perCashier.update(name, (value) => value + 1, ifAbsent: () => 1);
+    }
+    return Column(
+      children: [
+        _line('Belum dikonversi', '${unconverted.length}'),
+        _line('Sudah kedaluwarsa', '$expired'),
+        _line('Selisih estimasi vs nota', formatRupiah(variance)),
+        if (perCashier.isNotEmpty) ...[
+          const Divider(),
+          ...perCashier.entries.map(
+            (entry) => _line(
+              'Belum konversi · ${entry.key}',
+              '${entry.value}',
+            ),
+          ),
+        ],
       ],
     );
   }

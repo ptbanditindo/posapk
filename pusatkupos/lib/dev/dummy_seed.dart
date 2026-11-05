@@ -12,11 +12,7 @@ import '../data/app_database.dart';
 const bool dummySeedEnabled = bool.fromEnvironment('PUSATKU_DUMMY_SEED');
 const String dummyRole = String.fromEnvironment('PUSATKU_DUMMY_ROLE');
 
-const dummyKasir = (
-  username: 'kasir',
-  password: 'kasir123456',
-  pin: '111111',
-);
+const dummyKasir = (username: 'kasir', password: 'kasir123456', pin: '111111');
 const dummyMekanik = (
   username: 'mekanik',
   password: 'mekanik123456',
@@ -96,9 +92,7 @@ Future<void> _insertAccount({
 
 Future<void> _seedBusinessData() async {
   final db = AppDatabase.instance.db;
-  final rows = await db.rawQuery(
-    'SELECT COUNT(*) AS total FROM customers',
-  );
+  final rows = await db.rawQuery('SELECT COUNT(*) AS total FROM customers');
   if (((rows.first['total'] as int?) ?? 0) > 0) return;
   final now = nowIso();
 
@@ -110,6 +104,7 @@ Future<void> _seedBusinessData() async {
     'wa_consent': 1,
     'do_not_contact': 0,
     'created_at': now,
+    'updated_at': now,
   });
   final siti = await db.insert('customers', {
     'sync_id': newSyncId(),
@@ -119,6 +114,7 @@ Future<void> _seedBusinessData() async {
     'wa_consent': 1,
     'do_not_contact': 0,
     'created_at': now,
+    'updated_at': now,
   });
   final andi = await db.insert('customers', {
     'sync_id': newSyncId(),
@@ -128,6 +124,7 @@ Future<void> _seedBusinessData() async {
     'wa_consent': 0,
     'do_not_contact': 1,
     'created_at': now,
+    'updated_at': now,
   });
 
   final avanza = await db.insert('vehicle_or_units', {
@@ -140,6 +137,7 @@ Future<void> _seedBusinessData() async {
     'tipe_radiator': 'AIR',
     'label_radiator': 'Radiator standar',
     'created_at': now,
+    'updated_at': now,
   });
   final beat = await db.insert('vehicle_or_units', {
     'sync_id': newSyncId(),
@@ -151,6 +149,7 @@ Future<void> _seedBusinessData() async {
     'tipe_radiator': 'UDARA',
     'label_radiator': 'Pendingin udara',
     'created_at': now,
+    'updated_at': now,
   });
   await db.insert('vehicle_or_units', {
     'sync_id': newSyncId(),
@@ -162,6 +161,7 @@ Future<void> _seedBusinessData() async {
     'tipe_radiator': 'AIR',
     'label_radiator': 'Radiator besar',
     'created_at': now,
+    'updated_at': now,
   });
 
   final oli = await _stock(
@@ -283,6 +283,7 @@ Future<int> _stock({
     'satuan': 'pcs',
     'desimal': 0,
     'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
   await db.insert('stock_movements', {
     'sync_id': newSyncId(),
@@ -293,6 +294,7 @@ Future<int> _stock({
     'jumlah_milli': jumlah * 1000,
     'alasan': 'Stok awal data uji',
     'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
   return id;
 }
@@ -301,8 +303,10 @@ Future<int> _service(String nama, int harga) {
   return AppDatabase.instance.db.insert('harga_jasa', {
     'sync_id': newSyncId(),
     'nama': nama,
-    'harga_standar': _rp(harga),
+    'harga_jual': _rp(harga),
+    'harga_modal': _rp(harga ~/ 2),
     'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
 }
 
@@ -315,6 +319,8 @@ Future<void> _job(int recordId, int jasaId, String deskripsi, int harga) {
     'jumlah': 1,
     'harga': _rp(harga),
     'subtotal': _rp(harga),
+    'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
 }
 
@@ -336,6 +342,8 @@ Future<void> _part(
     'harga_satuan': _rp(harga),
     'subtotal': _rp(harga),
     'harga_modal': _rp(modal),
+    'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
   await db.rawUpdate(
     'UPDATE stock_items SET jumlah = jumlah - 1, '
@@ -352,6 +360,7 @@ Future<void> _part(
     'alasan': 'Penjualan $noNota',
     'service_record_id': recordId,
     'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
 }
 
@@ -369,6 +378,8 @@ Future<void> _payment(
     'nominal': _rp(nominal),
     'waktu': nowIso(),
     'operator': operator,
+    'created_at': nowIso(),
+    'updated_at': nowIso(),
   });
 }
 
@@ -380,9 +391,6 @@ Future<(String, String)> _hash(String value) async {
     macAlgorithm: Hmac.sha256(),
     iterations: _seedIterations,
     bits: 256,
-  ).deriveKey(
-    secretKey: SecretKey(utf8.encode(value)),
-    nonce: saltBytes,
-  );
+  ).deriveKey(secretKey: SecretKey(utf8.encode(value)), nonce: saltBytes);
   return (base64UrlEncode(await key.extractBytes()), salt);
 }

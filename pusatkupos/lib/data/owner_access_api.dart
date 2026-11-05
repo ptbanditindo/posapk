@@ -109,16 +109,19 @@ class OwnerApi {
     required List<String> permissions,
     required List<String> stores,
     String? password,
+    String? passwordHash,
+    String? passwordSalt,
+    int passwordIterations = 600000,
     bool aktif = true,
     int permissionVersion = 0,
   }) async {
     final id = syncId == null || syncId.isEmpty ? newSyncId() : syncId;
     final version = permissionVersion <= 0 ? 1 : permissionVersion + 1;
-    String hash = '';
-    String salt = '';
-    if (password != null && password.isNotEmpty) {
+    var hash = passwordHash ?? '';
+    var salt = passwordSalt ?? '';
+    if ((password ?? '').isNotEmpty) {
       salt = _newSalt();
-      hash = await _derive(password, salt, 600000);
+      hash = await _derive(password!, salt, 600000);
     }
     final keys = await _accessKeys();
     final payload = {
@@ -150,7 +153,7 @@ class OwnerApi {
         'store_ids': stores,
         'password_hash': hash,
         'password_salt': salt,
-        'password_iterations': 600000,
+        'password_iterations': passwordIterations,
         'aktif': aktif,
         'permission_version': version,
         'permission_payload': payload,

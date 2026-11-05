@@ -102,8 +102,9 @@ Future<Map<String, Object?>> buildEnvelope({
     ),
   );
   // Petunjuk terang dipakai relay untuk membatasi perangkat karyawan. Tanda
-  // tangan terpisah membuat petunjuk itu tidak dapat diubah di perjalanan;
-  // perangkat lama yang tidak mengirim `hints_signature` tetap diterima.
+  // tangan terpisah membuat petunjuk itu tidak dapat diubah di perjalanan.
+  // Sejak skema bersih v1 tanda tangan ini wajib; tidak ada toleransi amplop
+  // lama.
   return {
     ...fields,
     'entity': entity,
@@ -140,26 +141,27 @@ Future<Map<String, Object?>> verifyEnvelope({
   final outerAction = envelope['action'] as String? ?? '';
   final outerEntityId = envelope['entity_id'] as String? ?? '';
   final hintsSignature = envelope['hints_signature'] as String? ?? '';
-  if (hintsSignature.isNotEmpty) {
-    final hintsValid = await verifyPayload(
-      senderPublicKey,
-      utf8.encode(
-        canonicalJson(
-          envelopeHints(
-            storeId: envelope['store_id'] as String? ?? '',
-            senderDeviceId: envelope['sender_device_id'] as String? ?? '',
-            entity: outerEntity,
-            action: outerAction,
-            entityId: outerEntityId,
-            idempotencyKey: envelope['idempotency_key'] as String? ?? '',
-          ),
+  if (hintsSignature.isEmpty) {
+    throw StateError('Amplop tanpa tanda tangan petunjuk delta.');
+  }
+  final hintsValid = await verifyPayload(
+    senderPublicKey,
+    utf8.encode(
+      canonicalJson(
+        envelopeHints(
+          storeId: envelope['store_id'] as String? ?? '',
+          senderDeviceId: envelope['sender_device_id'] as String? ?? '',
+          entity: outerEntity,
+          action: outerAction,
+          entityId: outerEntityId,
+          idempotencyKey: envelope['idempotency_key'] as String? ?? '',
         ),
       ),
-      hintsSignature,
-    );
-    if (!hintsValid) {
-      throw StateError('Tanda tangan petunjuk delta tidak valid.');
-    }
+    ),
+    hintsSignature,
+  );
+  if (!hintsValid) {
+    throw StateError('Tanda tangan petunjuk delta tidak valid.');
   }
   final clear = await decryptPayload(
     storeKey,

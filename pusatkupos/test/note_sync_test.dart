@@ -100,7 +100,8 @@ void main() {
     }
   });
 
-  test('nomor nota numerik dan tidak pernah dipakai ulang', () async {
+  test('nomor nota berprefix perangkat dan tidak pernah dipakai ulang',
+      () async {
     final dir = await Directory.systemTemp.createTemp('pusatkupos_nota_no_');
     final db = AppDatabase();
     await db.initForTest(p.join(dir.path, 'nota.db'));
@@ -131,13 +132,21 @@ void main() {
       final pertama = await buatNota('Andi', '081200000002');
       final kedua = await buatNota('Beni', '081200000003');
       final ketiga = await buatNota('Cici', '081200000004');
-      expect((await db.recordDetail(pertama))!.record.noNota, '1');
-      expect((await db.recordDetail(kedua))!.record.noNota, '2');
-      expect((await db.recordDetail(ketiga))!.record.noNota, '3');
+      Future<String> noNota(int id) async =>
+          (await db.recordDetail(id))!.record.noNota;
+      String urutan(String nomor) =>
+          RegExp(r'-(\d{4})$').firstMatch(nomor)!.group(1)!;
+
+      final nomorPertama = await noNota(pertama);
+      final nomorKedua = await noNota(kedua);
+      expect(nomorPertama, matches(RegExp(r'^[A-Z0-9]+-N\d{8}-0001$')));
+      expect(urutan(nomorKedua), '0002');
+      expect(urutan(await noNota(ketiga)), '0003');
+      expect(nomorKedua.split('-').first, nomorPertama.split('-').first);
 
       await db.voidRecord(kedua, 'Salah input');
       final keempat = await buatNota('Dedi', '081200000005');
-      expect((await db.recordDetail(keempat))!.record.noNota, '4');
+      expect(urutan(await noNota(keempat)), '0004');
       final semua = await db.db.query('service_records', columns: ['no_nota']);
       expect(semua.map((row) => row['no_nota']).toSet().length, semua.length);
     } finally {
@@ -146,7 +155,7 @@ void main() {
     }
   });
 
-  test('nomor nota melanjutkan nomor tertinggi yang sudah ada', () async {
+  test('nomor nota lama tidak memengaruhi urutan perangkat', () async {
     final dir = await Directory.systemTemp.createTemp('pusatkupos_nota_seq_');
     final db = AppDatabase();
     await db.initForTest(p.join(dir.path, 'nota.db'));
@@ -192,7 +201,32 @@ void main() {
         metodeBayar: 'CASH',
         bayarCents: 1000000,
       );
-      expect((await db.recordDetail(recordId))!.record.noNota, '42');
+      final nomor = (await db.recordDetail(recordId))!.record.noNota;
+      expect(nomor, matches(RegExp(r'^[A-Z0-9]+-N\d{8}-0001$')));
+      expect(nomor, isNot('42'));
+
+      final customer2 = await db.addCustomer(
+        nama: 'Fajar',
+        nomorHp: '081200000006',
+      );
+      final unit2 = await db.addUnit(
+        customerId: customer2,
+        unitType: 'MOBIL',
+        nopol: 'B 3 FJR',
+      );
+      final berikut = await db.createTransaction(
+        unitId: unit2,
+        keluhan: 'Servis kedua',
+        jobs: [
+          JobDraft(deskripsi: 'Servis', jumlah: 1, hargaCents: 1000000),
+        ],
+        parts: const [],
+        diskonCents: 0,
+        metodeBayar: 'CASH',
+        bayarCents: 1000000,
+      );
+      final nomorBerikut = (await db.recordDetail(berikut))!.record.noNota;
+      expect(nomorBerikut, matches(RegExp(r'^[A-Z0-9]+-N\d{8}-0002$')));
     } finally {
       await db.close();
       await dir.delete(recursive: true);

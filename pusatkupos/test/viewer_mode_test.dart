@@ -7,7 +7,7 @@ import 'package:pusatkupos/data/secure_store.dart';
 import 'package:pusatkupos/data/session_service.dart';
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
   late Directory dir;
   final db = AppDatabase.instance;
 

@@ -77,11 +77,19 @@ void main() {
 
     final legacy = Map<String, Object?>.from(envelope)
       ..remove('hints_signature');
-    final data = await verifyEnvelope(
-      envelope: legacy,
-      senderPublicKey: signing.publicKey,
-      storeKey: storeKey,
+    await expectLater(
+      verifyEnvelope(
+        envelope: legacy,
+        senderPublicKey: signing.publicKey,
+        storeKey: storeKey,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'pesan',
+          contains('tanda tangan petunjuk'),
+        ),
+      ),
     );
-    expect(data['entity'], 'customer');
   });
 }

@@ -9,6 +9,11 @@ import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
+import '../../data/order_service.dart';
+import '../../data/price_rules.dart';
+import '../../data/store_settings.dart';
+import '../../printer/printer_config.dart';
+import '../../printer/printer_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../receipt_dialog.dart';
@@ -41,11 +46,13 @@ class _PosScreenState extends State<PosScreen> {
   final Set<int> _mechanicIds = {};
   String _metode = 'CASH';
   String _requestId = newSyncId();
+  String _jenis = transactionServisLangsung;
+  StoreSettings? _settings;
   double _maxDiscountPercent = 10;
   bool _loading = true;
   bool _saving = false;
   bool _bergaransi = true;
-  bool _sparepartOnly = false;
+  bool get _sparepartOnly => _jenis == transactionJualSparepart;
   bool _garansiBarang = false;
   String _garansiBarangSatuan = 'HARI';
   bool _unitDitinggal = false;
@@ -102,8 +109,23 @@ class _PosScreenState extends State<PosScreen> {
       _bayar.text.trim().isNotEmpty &&
       tryParseRupiahToCents(_bayar.text) == null;
 
+  List<String> get _availableTypes {
+    final settings = _settings;
+    final role = _actor?.role ?? 'owner';
+    if (settings == null) return const [transactionServisLangsung];
+    return [
+      transactionJualSparepart,
+      transactionServisLangsung,
+      transactionEstimasiSaja,
+    ].where((type) {
+      return settings.typeEnabled(type) &&
+          settings.roleCanSelect(role, type);
+    }).toList();
+  }
+
   Future<void> _load() async {
     final db = AppDatabase.instance;
+    final settings = await StoreSettingsService.instance.ensure();
     final customers = await db.listCustomers();
     final stock = await db.listStock();
     final catalog = await db.listCatalog();
@@ -121,6 +143,11 @@ class _PosScreenState extends State<PosScreen> {
     }
     if (!mounted) return;
     setState(() {
+      _settings = settings;
+      final allowed = _availableTypes;
+      if (allowed.isNotEmpty && !allowed.contains(_jenis)) {
+        _jenis = allowed.first;
+      }
       _customers = customers;
       _stock = stock;
       _catalog = catalog;
@@ -241,8 +268,14 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _save() async {
-    if (_customerId == null || _unitId == null) {
-      showSnack(context, 'Pilih pelanggan dan unit.', error: true);
+    if (_customerId == null) {
+      showSnack(context, 'Pilih pelanggan.', error: true);
+      return;
+    }
+    final unitRequired = (_settings?.vehicleRequired ?? true) &&
+        _jenis != transactionJualSparepart;
+    if (unitRequired && _unitId == null) {
+      showSnack(context, 'Pilih unit kendaraan.', error: true);
       return;
     }
     if (_jobs.isEmpty && _parts.isEmpty) {
@@ -296,58 +329,23 @@ class _PosScreenState extends State<PosScreen> {
       );
       return;
     }
-    final actor = _actor;
-    final isOwner = actor?.isOwner ?? true;
-    if (!isOwner && _diskonCents > 0 && _bruto > 0) {
-      final percent = _diskonCents / _bruto * 100;
-      if (percent > _maxDiscountPercent) {
-        showSnack(
-          context,
-          'Diskon ${percent.toStringAsFixed(1)}% melebihi batas '
-          '${_maxDiscountPercent.toStringAsFixed(0)}%. Hanya pemilik yang '
-          'dapat menyetujui diskon ini dari perangkat pemilik.',
-          error: true,
-        );
-        return;
-      }
+    if (_jenis == transactionEstimasiSaja) {
+      await _saveEstimate();
+      return;
     }
+    final actor = _actor;
     final mechanics = _mechanics
         .where((row) => _mechanicIds.contains(row['id']))
         .toList();
     setState(() => _saving = true);
     try {
-      final id = await AppDatabase.instance.createTransaction(
-        unitId: _unitId!,
-        keluhan: _keluhan.text.trim().isEmpty
-            ? 'Servis di kasir'
-            : _keluhan.text.trim(),
-        jobs: List.of(_jobs),
-        parts: List.of(_parts),
-        diskonCents: _diskonCents,
-        metodeBayar: _metode,
-        bayarCents: _bayarCents,
-        requestId: _requestId,
+      final id = await _createWithApproval(
         actor: actor,
-        mechanic: mechanics.isEmpty
-            ? null
-            : mechanics.map((row) => '${row['nama']}').join(', '),
-        mechanicEmployeeSyncId: mechanics.isEmpty
-            ? null
-            : mechanics.first['sync_id'] as String?,
-        mechanicEmployeeSyncIds: mechanics
-            .map((row) => '${row['sync_id']}')
-            .toList(),
-        sparepartOnly: _sparepartOnly,
-        bergaransi: _bergaransi,
+        mechanics: mechanics,
         garansiBulan: garansiBulan,
-        catatanGaransi: _garansiCatatan.text.trim(),
-        garansiBarangAktif: _sparepartOnly && _garansiBarang,
         garansiBarangNilai: garansiBarangNilai,
-        garansiBarangSatuan: _garansiBarangSatuan,
-        unitDitinggal: _unitDitinggal,
-        enqueue: (txn, recordId) =>
-            SyncService.instance.enqueueNote(recordId, txn: txn),
       );
+      if (id == null) return;
       final detail = await AppDatabase.instance.recordDetail(id);
       AppState.instance.touch();
       FollowupService.instance.scheduleSync();
@@ -365,7 +363,6 @@ class _PosScreenState extends State<PosScreen> {
         _bergaransi = true;
         _garansiBulan.text = '$_garansiDefaultBulan';
         _garansiCatatan.clear();
-        _sparepartOnly = false;
         _garansiBarang = false;
         _unitDitinggal = false;
       });
@@ -377,6 +374,239 @@ class _PosScreenState extends State<PosScreen> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  List<EstimateItemInput> _estimateItems() => [
+        for (final job in _jobs)
+          EstimateItemInput(
+            jenis: 'jasa',
+            deskripsi: job.deskripsi,
+            jumlah: job.jumlah,
+            hargaCents: job.hargaCents,
+            modalCents: job.modalCents,
+            jasaId: job.jasaId,
+            intervalBulan: job.intervalBulan,
+          ),
+        for (final part in _parts)
+          EstimateItemInput(
+            jenis: 'part',
+            deskripsi: part.nama,
+            jumlah: part.jumlah,
+            hargaCents: part.hargaCents,
+            modalCents: part.modalCents,
+            stockItemId: part.stockItemId,
+            intervalBulan: part.intervalBulan,
+          ),
+      ];
+
+  Future<EstimateRecord?> _createEstimateWithApproval() async {
+    final settings = _settings;
+    String? ownerPin;
+    String? approverSecret;
+    var asked = false;
+    while (true) {
+      try {
+        return await OrderService.instance.createEstimate(
+          customerId: _customerId,
+          unitId: _unitId,
+          items: _estimateItems(),
+          diskonCents: _diskonCents,
+          alasanDiskon: _diskonCents > 0 ? 'Diskon estimasi' : null,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+          actor: _actor,
+          enqueue: (txn, syncId) => SyncService.instance.enqueueEstimate(
+            syncId,
+            txn: txn,
+          ),
+        );
+      } on PriceRuleViolation catch (error) {
+        if (asked || error.code != 'di_bawah_batas_minimal') rethrow;
+        final secret = await _askApproval(settings);
+        if (secret == null) return null;
+        asked = true;
+        if (settings?.approverMode == approverEmployee) {
+          approverSecret = secret;
+        } else {
+          ownerPin = secret;
+        }
+      }
+    }
+  }
+
+  Future<void> _saveEstimate() async {
+    setState(() => _saving = true);
+    try {
+      final record = await _createEstimateWithApproval();
+      if (!mounted) return;
+      if (record == null) {
+        await _printEstimateText(null);
+        if (!mounted) return;
+        showSnack(
+          context,
+          'Estimasi hanya dicetak karena penyimpanan estimasi dimatikan.',
+        );
+      } else {
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Estimasi tersimpan'),
+            content: Text(
+              '${record.nomorEstimasi}\n'
+              'Total ${formatRupiah(record.totalCents)}',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Tutup'),
+              ),
+              FilledButton.icon(
+                onPressed: () async {
+                  Navigator.pop(dialogContext);
+                  await _printEstimateText(record);
+                },
+                icon: const Icon(Icons.print_outlined),
+                label: const Text('Cetak'),
+              ),
+            ],
+          ),
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _jobs.clear();
+        _parts.clear();
+        _keluhan.clear();
+        _diskon.clear();
+        _bayar.clear();
+        _unitId = null;
+        _mechanicIds.clear();
+        _requestId = newSyncId();
+        _garansiBarang = false;
+        _unitDitinggal = false;
+      });
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _printEstimateText(EstimateRecord? record) async {
+    final printer = await PrinterStore.instance.primary();
+    if (printer == null) {
+      if (mounted) {
+        showSnack(
+          context,
+          'Belum ada printer. Tambahkan printer di Pengaturan.',
+          error: true,
+        );
+      }
+      return;
+    }
+    final store = await AppDatabase.instance.getSetting('bengkel.nama') ??
+        'PUSATKU POS';
+    final lines = <String>[
+      store,
+      'ESTIMASI - bukan bukti pembayaran',
+      List.filled(printer.width, '-').join(),
+      if (record != null) 'No: ${record.nomorEstimasi}',
+      dateTimeId.format(DateTime.now()),
+      List.filled(printer.width, '-').join(),
+      for (final job in _jobs)
+        '${job.deskripsi} ${job.jumlah}x = ${formatRupiah(job.subtotalCents)}',
+      for (final part in _parts)
+        '${part.nama} ${part.jumlah}x = ${formatRupiah(part.subtotalCents)}',
+      List.filled(printer.width, '-').join(),
+      'Total: ${formatRupiah(record?.totalCents ?? _total)}',
+      '',
+      'Harga dapat berubah sebelum pekerjaan disetujui.',
+    ];
+    final result = await PrinterService.instance.printText(
+      lines.join('\n'),
+      printer: printer,
+    );
+    if (mounted) showSnack(context, result.message, error: !result.ok);
+  }
+
+  Future<int?> _createWithApproval({
+    required Operator? actor,
+    required List<Map<String, Object?>> mechanics,
+    required int garansiBulan,
+    required int garansiBarangNilai,
+  }) async {
+    final settings = _settings;
+    String? ownerPin;
+    String? approverSecret;
+    var asked = false;
+    while (true) {
+      try {
+        return await AppDatabase.instance.createTransaction(
+          unitId: _unitId,
+          customerId: _customerId,
+          jenisTransaksi: _jenis,
+          keluhan: _keluhan.text.trim().isEmpty
+              ? 'Servis di kasir'
+              : _keluhan.text.trim(),
+          jobs: List.of(_jobs),
+          parts: List.of(_parts),
+          diskonCents: _diskonCents,
+          metodeBayar: _metode,
+          bayarCents: _bayarCents,
+          requestId: _requestId,
+          actor: actor,
+          mechanic: mechanics.isEmpty
+              ? null
+              : mechanics.map((row) => '${row['nama']}').join(', '),
+          mechanicEmployeeSyncId: mechanics.isEmpty
+              ? null
+              : mechanics.first['sync_id'] as String?,
+          mechanicEmployeeSyncIds: mechanics
+              .map((row) => '${row['sync_id']}')
+              .toList(),
+          sparepartOnly: _sparepartOnly,
+          bergaransi: _bergaransi,
+          garansiBulan: garansiBulan,
+          catatanGaransi: _garansiCatatan.text.trim(),
+          garansiBarangAktif: _sparepartOnly && _garansiBarang,
+          garansiBarangNilai: garansiBarangNilai,
+          garansiBarangSatuan: _garansiBarangSatuan,
+          unitDitinggal: _unitDitinggal,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+          enqueue: (txn, recordId) =>
+              SyncService.instance.enqueueNote(recordId, txn: txn),
+        );
+      } on PriceRuleViolation catch (error) {
+        if (asked || error.code != 'di_bawah_batas_minimal') rethrow;
+        final secret = await _askApproval(settings);
+        if (secret == null) return null;
+        asked = true;
+        if (settings?.approverMode == approverEmployee) {
+          approverSecret = secret;
+        } else {
+          ownerPin = secret;
+        }
+      } on StateError catch (error) {
+        if (asked || !error.message.contains('persetujuan')) rethrow;
+        final secret = await _askApproval(settings);
+        if (secret == null) return null;
+        asked = true;
+        if (settings?.approverMode == approverEmployee) {
+          approverSecret = secret;
+        } else {
+          ownerPin = secret;
+        }
+      }
+    }
+  }
+
+  Future<String?> _askApproval(StoreSettings? settings) {
+    final delegated = settings?.approverMode == approverEmployee;
+    return showDialog<String>(
+      context: context,
+      builder: (_) => _ApprovalDialog(delegated: delegated),
+    );
   }
 
   Future<void> _showReceipt(RecordDetail detail) async {
@@ -476,6 +706,33 @@ class _PosScreenState extends State<PosScreen> {
           ],
         ),
         const SizedBox(height: 12),
+        if (_availableTypes.length > 1) ...[
+          SectionCard(
+            title: 'Jenis transaksi',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final type in _availableTypes)
+                  ChoiceChip(
+                    label: Text(
+                      type == transactionJualSparepart
+                          ? 'Jual sparepart'
+                          : type == transactionEstimasiSaja
+                              ? 'Estimasi saja'
+                              : 'Servis langsung',
+                    ),
+                    selected: _jenis == type,
+                    onSelected: (_) => setState(() {
+                      _jenis = type;
+                      if (_sparepartOnly) _bergaransi = false;
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         SectionCard(
           title: 'Pelanggan dan unit',
           child: Column(
@@ -527,7 +784,12 @@ class _PosScreenState extends State<PosScreen> {
                     child: DropdownButtonFormField<int>(
                       initialValue: _unitId,
                       isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Unit'),
+                      decoration: InputDecoration(
+                        labelText: (_settings?.vehicleRequired ?? true) &&
+                                !_sparepartOnly
+                            ? 'Unit'
+                            : 'Unit (opsional)',
+                      ),
                       items: _units
                           .map(
                             (unit) => DropdownMenuItem(
@@ -684,16 +946,6 @@ class _PosScreenState extends State<PosScreen> {
                 ),
                 value: _unitDitinggal,
                 onChanged: (value) => setState(() => _unitDitinggal = value),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Mode sparepart saja'),
-                subtitle: const Text('Nota hanya berisi part, tanpa jasa.'),
-                value: _sparepartOnly,
-                onChanged: (value) => setState(() {
-                  _sparepartOnly = value;
-                  if (value) _bergaransi = false;
-                }),
               ),
               if (!_sparepartOnly) ...[
                 SwitchListTile(
@@ -1302,6 +1554,73 @@ class _PartDialogState extends State<_PartDialog> {
         ),
       ],
     );
+  }
+}
+
+class _ApprovalDialog extends StatefulWidget {
+  const _ApprovalDialog({required this.delegated});
+
+  final bool delegated;
+
+  @override
+  State<_ApprovalDialog> createState() => _ApprovalDialogState();
+}
+
+class _ApprovalDialogState extends State<_ApprovalDialog> {
+  final _secret = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _secret.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label =
+        widget.delegated ? 'PIN penanggung jawab' : 'PIN pemilik';
+    return AlertDialog(
+      title: const Text('Persetujuan diperlukan'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            widget.delegated
+                ? 'Transaksi ini memerlukan persetujuan penanggung jawab.'
+                : 'Transaksi ini memerlukan persetujuan pemilik.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _secret,
+            autofocus: true,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: label,
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Setujui')),
+      ],
+    );
+  }
+
+  void _submit() {
+    final value = _secret.text.trim();
+    if (value.isEmpty) {
+      setState(() => _error = 'Masukkan PIN.');
+      return;
+    }
+    Navigator.pop(context, value);
   }
 }
 

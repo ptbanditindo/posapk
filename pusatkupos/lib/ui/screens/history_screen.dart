@@ -11,6 +11,13 @@ import '../../sync/sync_service.dart';
 import '../receipt_dialog.dart';
 import '../widgets.dart';
 
+const _jenisLabels = {
+  'jual_sparepart': 'Jual sparepart',
+  'servis_langsung': 'Servis langsung',
+  'order_kerja': 'Order kerja',
+  'pelunasan_order': 'Pelunasan order',
+};
+
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -154,7 +161,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               : row.customerNama,
                         ),
                         subtitle: Text(
-                          '${row.noNota} · ${row.unitLabel}\n'
+                          '${row.noNota} · '
+                          '${_jenisLabels[row.jenisTransaksi] ?? row.jenisTransaksi}'
+                          '${row.unitLabel.isEmpty ? '' : ' · ${row.unitLabel}'}\n'
                           '${dateTimeId.format(row.waktu)}'
                           '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}',
                         ),
@@ -526,7 +535,10 @@ class _RecordDetailSheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            Text(dateTimeId.format(record.waktu)),
+            Text(
+              '${_jenisLabels[record.jenisTransaksi] ?? record.jenisTransaksi}'
+              ' · ${dateTimeId.format(record.waktu)}',
+            ),
             const SizedBox(height: 16),
             SectionCard(
               title: 'Ringkasan',
@@ -552,6 +564,41 @@ class _RecordDetailSheet extends StatelessWidget {
                 ],
               ),
             ),
+            if (detail.corrections.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SectionCard(
+                title: 'Koreksi',
+                subtitle: 'Nota asli tidak diubah; koreksi tercatat terpisah.',
+                child: Column(
+                  children: [
+                    _row(
+                      context,
+                      'Total nota asli',
+                      formatRupiah(record.totalCents),
+                    ),
+                    const Divider(),
+                    ...detail.corrections.map(
+                      (correction) => _row(
+                        context,
+                        '${dateId.format(correction.waktu)} · '
+                        '${correction.alasan}',
+                        '${correction.nilaiSelisihCents >= 0 ? '+' : ''}'
+                        '${formatRupiah(correction.nilaiSelisihCents)}',
+                      ),
+                    ),
+                    const Divider(),
+                    _row(
+                      context,
+                      'Total setelah koreksi',
+                      formatRupiah(
+                        detail.corrections.last.nilaiBaruCents,
+                      ),
+                      bold: true,
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             SectionCard(
               title: 'Garansi',

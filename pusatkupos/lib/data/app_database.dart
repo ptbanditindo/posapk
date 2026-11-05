@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
+import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
 
 import '../auth/operator.dart';
 import '../auth/permissions.dart';
@@ -13,7 +15,12 @@ import '../core/ids.dart';
 import '../core/money.dart';
 import '../core/phone.dart';
 import '../sync/crypto.dart';
+import 'approval_service.dart';
 import 'models.dart';
+import 'price_rules.dart';
+import 'schema.dart';
+import 'secure_store.dart';
+import 'store_settings.dart';
 import 'store_registry.dart';
 
 class AppDatabase {
@@ -21,7 +28,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 11;
+  static const int schemaVersion = 1;
 
   Database? _db;
   String? _path;
@@ -29,6 +36,7 @@ class AppDatabase {
   String? _mainPath;
   String? _mainStoreId;
   bool _viewerMode = false;
+  bool _testMode = false;
 
   Database get db {
     final value = _db;
@@ -85,6 +93,7 @@ class AppDatabase {
     await StoreRegistry.instance.close();
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+    _testMode = true;
     _path = path;
     _activeStoreId = 'utama';
     _mainPath = path;
@@ -175,16 +184,14 @@ class AppDatabase {
           await db.execute('PRAGMA foreign_keys = ON');
         },
         onCreate: _createSchema,
-        onUpgrade: _upgrade,
       ),
     );
     try {
       for (final entry in settings.entries) {
-        await fresh.insert(
-          'app_settings',
-          {'key': entry.key, 'value': entry.value},
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+        await fresh.insert('app_settings', {
+          'key': entry.key,
+          'value': entry.value,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
       if (ownerRow != null) {
         await fresh.insert('owner_identity', ownerRow);
@@ -197,16 +204,77 @@ class AppDatabase {
     }
   }
 
+  /// SQLCipher hanya tersedia untuk Android, iOS, dan macOS. Windows, Linux,
+  /// dan web tetap memakai SQLite biasa karena paket tidak mendukung
+  /// enkripsi di sana; batas ini dilaporkan ke pengguna lewat [encryptionNote].
+  /// Pengujian selalu memakai SQLite FFI biasa karena plugin SQLCipher tidak
+  /// tersedia di lingkungan `flutter test`.
+  bool get _usesSqlCipher =>
+      !_testMode &&
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
+  bool get databaseEncrypted => _usesSqlCipher;
+
+  String get encryptionNote => _usesSqlCipher
+      ? 'Database lokal terenkripsi SQLCipher.'
+      : 'Database lokal belum terenkripsi di platform ini. Gunakan '
+            'perangkat Android/iOS untuk data produksi.';
+
+  static const _databaseKeyName = 'database.encryption_key';
+
+  /// Kunci 256-bit dibuat acak saat pertama kali dan disimpan di SecureStore.
+  Future<String?> _databasePassword() async {
+    if (!_usesSqlCipher) return null;
+    final existing = await SecureStore.instance.read(_databaseKeyName);
+    if (existing != null && existing.isNotEmpty) return existing;
+    final random = Random.secure();
+    final key = base64Encode(
+      List<int>.generate(32, (_) => random.nextInt(256)),
+    );
+    await SecureStore.instance.write(_databaseKeyName, key);
+    return key;
+  }
+
+  Future<void> _configure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
+
+  /// Skema bersih v1 tidak punya jalur migrasi; versi lain ditolak agar
+  /// aplikasi tidak berjalan di atas tabel yang tidak lengkap.
+  Future<void> _rejectIncompatibleVersion(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    throw StateError(
+      'Versi skema $oldVersion tidak didukung. '
+      'Aplikasi ini memakai skema bersih v$newVersion.',
+    );
+  }
+
   Future<void> _open() async {
+    final password = await _databasePassword();
+    if (_usesSqlCipher) {
+      _db = await sqlcipher.openDatabase(
+        _path!,
+        password: password,
+        version: schemaVersion,
+        onConfigure: _configure,
+        onCreate: _createSchema,
+        onDowngrade: _rejectIncompatibleVersion,
+      );
+      return;
+    }
     _db = await databaseFactory.openDatabase(
       _path!,
       options: OpenDatabaseOptions(
         version: schemaVersion,
-        onConfigure: (db) async {
-          await db.execute('PRAGMA foreign_keys = ON');
-        },
+        onConfigure: _configure,
         onCreate: _createSchema,
-        onUpgrade: _upgrade,
+        onDowngrade: _rejectIncompatibleVersion,
       ),
     );
   }
@@ -226,827 +294,14 @@ class AppDatabase {
   }
 
   Future<void> _createSchema(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE app_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE customers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        nama TEXT NOT NULL,
-        nomor_hp TEXT NOT NULL,
-        alamat TEXT,
-        wa_consent INTEGER NOT NULL DEFAULT 1,
-        do_not_contact INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute(
-      'CREATE INDEX ix_customers_nama ON customers(nama)',
-    );
-    await db.execute('''
-      CREATE TABLE vehicle_or_units (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        customer_id INTEGER NOT NULL,
-        unit_type TEXT NOT NULL,
-        nopol TEXT,
-        jenis_mobil TEXT,
-        tahun_mobil INTEGER,
-        tipe_radiator TEXT,
-        label_radiator TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE stock_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        kode TEXT NOT NULL UNIQUE,
-        nama TEXT NOT NULL,
-        harga_modal INTEGER NOT NULL DEFAULT 0,
-        harga_jual INTEGER NOT NULL DEFAULT 0,
-        jumlah INTEGER NOT NULL DEFAULT 0,
-        stok_minimum INTEGER NOT NULL DEFAULT 0,
-        satuan TEXT NOT NULL DEFAULT 'pcs',
-        desimal INTEGER NOT NULL DEFAULT 0,
-        jumlah_milli INTEGER,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute(
-      'CREATE INDEX ix_stock_items_nama ON stock_items(nama)',
-    );
-    await db.execute('''
-      CREATE TABLE harga_jasa (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        nama TEXT NOT NULL,
-        harga_standar INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE service_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        unit_id INTEGER NOT NULL,
-        no_nota TEXT NOT NULL UNIQUE,
-        request_id TEXT UNIQUE,
-        waktu_service TEXT NOT NULL,
-        keluhan_awal TEXT NOT NULL,
-        catatan_pengerjaan TEXT,
-        biaya_jasa INTEGER NOT NULL DEFAULT 0,
-        total_part INTEGER NOT NULL DEFAULT 0,
-        diskon INTEGER NOT NULL DEFAULT 0,
-        total_servis INTEGER NOT NULL DEFAULT 0,
-        metode_bayar TEXT NOT NULL DEFAULT 'CASH',
-        bayar INTEGER NOT NULL DEFAULT 0,
-        kembalian INTEGER NOT NULL DEFAULT 0,
-        status_bayar TEXT NOT NULL DEFAULT 'LUNAS',
-        jenis_bayar TEXT NOT NULL DEFAULT 'LUNAS',
-        total_dibayar INTEGER NOT NULL DEFAULT 0,
-        sisa_bayar INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'AKTIF',
-        void_reason TEXT,
-        voided_at TEXT,
-        created_by TEXT,
-        created_by_employee_id TEXT,
-        mechanic TEXT,
-        mechanic_employee_id TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (unit_id) REFERENCES vehicle_or_units(id)
-      )
-    ''');
-    await db.execute(
-      'CREATE INDEX ix_service_records_waktu ON service_records(waktu_service)',
-    );
-    await db.execute('''
-      CREATE TABLE service_jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT,
-        service_record_id INTEGER NOT NULL,
-        harga_jasa_id INTEGER,
-        deskripsi TEXT NOT NULL,
-        jumlah INTEGER NOT NULL,
-        harga INTEGER NOT NULL,
-        subtotal INTEGER NOT NULL,
-        FOREIGN KEY (service_record_id) REFERENCES service_records(id)
-          ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE service_parts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT,
-        service_record_id INTEGER NOT NULL,
-        stock_item_id INTEGER,
-        nama_part TEXT NOT NULL,
-        jumlah INTEGER NOT NULL,
-        harga_satuan INTEGER NOT NULL,
-        subtotal INTEGER NOT NULL,
-        harga_modal INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (service_record_id) REFERENCES service_records(id)
-          ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE service_payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT,
-        service_record_id INTEGER NOT NULL,
-        jenis TEXT NOT NULL DEFAULT 'PELUNASAN',
-        metode TEXT NOT NULL DEFAULT 'CASH',
-        nominal INTEGER NOT NULL,
-        waktu TEXT NOT NULL,
-        operator TEXT NOT NULL DEFAULT 'Pemilik',
-        request_id TEXT UNIQUE,
-        catatan TEXT,
-        FOREIGN KEY (service_record_id) REFERENCES service_records(id)
-          ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE stock_movements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT,
-        stock_item_id INTEGER,
-        nama_item TEXT,
-        jenis TEXT NOT NULL,
-        jumlah INTEGER NOT NULL,
-        jumlah_milli INTEGER,
-        alasan TEXT,
-        service_record_id INTEGER,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE nota_counters (
-        tanggal TEXT PRIMARY KEY,
-        terakhir INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
+    await createCleanSchema(db);
     final now = nowIso();
     await db.insert('app_settings', {
       'key': 'bengkel.nama',
       'value': 'PUSATKU POS',
     });
-    await db.insert('app_settings', {
-      'key': 'bengkel.alamat',
-      'value': '',
-    });
+    await db.insert('app_settings', {'key': 'bengkel.alamat', 'value': ''});
     await db.insert('app_settings', {'key': 'app.created_at', 'value': now});
-    await _upgradeV7(db);
-    await _createSyncSchema(db);
-    await _upgradeV8(db);
-    await _upgradeV9(db);
-    await _addSyncIds(db);
-    await _upgradeV11(db);
-  }
-
-  Future<void> _addSyncIds(Database db) async {
-    for (final table in const [
-      'service_jobs',
-      'service_parts',
-      'service_payments',
-      'stock_movements',
-    ]) {
-      final columns = await db.rawQuery('PRAGMA table_info($table)');
-      if (!columns.any((column) => column['name'] == 'sync_id')) {
-        await db.execute('ALTER TABLE $table ADD COLUMN sync_id TEXT');
-      }
-      await db.execute(
-        'CREATE UNIQUE INDEX IF NOT EXISTS ux_${table}_sync_id ON $table(sync_id)',
-      );
-    }
-  }
-
-  Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await _createSyncSchema(db);
-    }
-    if (oldVersion < 3) {
-      await _addSyncIds(db);
-    }
-    if (oldVersion < 4) {
-      await _upgradeV4(db);
-    }
-    if (oldVersion < 5) {
-      await _upgradeV5(db);
-    }
-    if (oldVersion < 6) {
-      await _upgradeV6(db);
-    }
-    if (oldVersion < 7) {
-      await _upgradeV7(db);
-    }
-    if (oldVersion < 8) {
-      await _upgradeV8(db);
-    }
-    if (oldVersion < 9) {
-      await _upgradeV9(db);
-    }
-    if (oldVersion < 10) {
-      await _upgradeV10(db);
-    }
-    if (oldVersion < 11) {
-      await _upgradeV11(db);
-    }
-  }
-
-  /// v11: antrean penerapan delta yang gagal, metadata HLC untuk aturan
-  /// konflik, dan tombstone agar penghapusan tetap tersinkron.
-  Future<void> _upgradeV11(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        store_id TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        relay_seq INTEGER NOT NULL DEFAULT 0,
-        envelope_id TEXT NOT NULL DEFAULT '',
-        idempotency_key TEXT NOT NULL DEFAULT '',
-        entity TEXT NOT NULL DEFAULT '',
-        entity_id TEXT NOT NULL DEFAULT '',
-        envelope_json TEXT NOT NULL DEFAULT '{}',
-        last_error TEXT NOT NULL DEFAULT '',
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        next_retry_at TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE (envelope_id),
-        UNIQUE (idempotency_key)
-      )
-    ''');
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS ix_sync_inbox_due '
-      'ON sync_inbox(status, next_retry_at)',
-    );
-    await _addColumn(db, 'sync_outbox', 'next_retry_at', 'TEXT');
-    await _addColumn(
-      db,
-      'sync_conflicts',
-      'status',
-      "TEXT NOT NULL DEFAULT 'open'",
-    );
-    await _addColumn(
-      db,
-      'sync_conflicts',
-      'retry_count',
-      'INTEGER NOT NULL DEFAULT 0',
-    );
-    await _addColumn(
-      db,
-      'sync_conflicts',
-      'last_error',
-      "TEXT NOT NULL DEFAULT ''",
-    );
-    await _addColumn(db, 'sync_conflicts', 'inbox_id', 'INTEGER');
-    for (final table in const [
-      'customers',
-      'vehicle_or_units',
-      'stock_items',
-      'harga_jasa',
-      'service_records',
-      'suppliers',
-      'supplier_followups',
-      'service_record_commissions',
-      'employee_debts',
-      'salary_payments',
-    ]) {
-      await _addColumn(
-        db,
-        table,
-        'sync_hlc_wall',
-        'INTEGER NOT NULL DEFAULT 0',
-      );
-      await _addColumn(
-        db,
-        table,
-        'sync_hlc_counter',
-        'INTEGER NOT NULL DEFAULT 0',
-      );
-      if (table != 'service_records' &&
-          table != 'service_record_commissions' &&
-          table != 'employee_debts' &&
-          table != 'salary_payments' &&
-          table != 'supplier_followups') {
-        await _addColumn(db, table, 'deleted_at', 'TEXT');
-      }
-    }
-  }
-
-  Future<void> _upgradeV10(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS device_sync_status (
-        device_id TEXT PRIMARY KEY,
-        nama TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'owner',
-        state TEXT NOT NULL,
-        last_seq INTEGER NOT NULL DEFAULT 0,
-        pending INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      )
-    ''');
-  }
-
-  Future<void> _upgradeV9(Database db) async {
-    await _addColumn(db, 'license', 'store_limit', 'INTEGER NOT NULL DEFAULT 1');
-  }
-
-  Future<void> _addColumn(
-    Database db,
-    String table,
-    String column,
-    String definition,
-  ) async {
-    final columns = await db.rawQuery('PRAGMA table_info($table)');
-    if (columns.any((entry) => entry['name'] == column)) return;
-    await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
-  }
-
-  Future<void> _upgradeV7(Database db) async {
-    await _addColumn(db, 'service_records', 'bergaransi',
-        'INTEGER NOT NULL DEFAULT 1');
-    await _addColumn(db, 'service_records', 'garansi_bulan',
-        'INTEGER NOT NULL DEFAULT 1');
-    await _addColumn(db, 'service_records', 'garansi_sampai', 'TEXT');
-    await _addColumn(db, 'service_records', 'catatan_garansi', 'TEXT');
-    await _addColumn(db, 'service_records', 'status_klaim',
-        "TEXT NOT NULL DEFAULT 'Belum claim'");
-    await _addColumn(db, 'service_records', 'tanggal_klaim', 'TEXT');
-    await _addColumn(db, 'service_records', 'sparepart_only',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'service_records', 'garansi_barang_aktif',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'service_records', 'garansi_barang_nilai',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'service_records', 'garansi_barang_satuan',
-        "TEXT NOT NULL DEFAULT 'HARI'");
-    await _addColumn(db, 'service_records', 'garansi_barang_sampai', 'TEXT');
-    await _addColumn(db, 'service_records', 'unit_ditinggal',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'service_records', 'diambil_at', 'TEXT');
-    await _addColumn(db, 'service_jobs', 'interval_servis_bulan',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'service_parts', 'interval_servis_bulan',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'stock_items', 'interval_servis_bulan',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _addColumn(db, 'harga_jasa', 'interval_servis_bulan',
-        'INTEGER NOT NULL DEFAULT 0');
-    await _createFeatureSchemaV7(db);
-  }
-
-  Future<void> _createFeatureSchemaV7(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS followup_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        jenis TEXT NOT NULL,
-        item_key TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'AKTIF',
-        stage INTEGER NOT NULL DEFAULT 0,
-        interval_bulan INTEGER NOT NULL DEFAULT 0,
-        reference_date TEXT,
-        jatuh_tempo TEXT,
-        customer_id INTEGER,
-        unit_id INTEGER,
-        service_record_id INTEGER,
-        followup_terakhir TEXT,
-        janji_bayar TEXT,
-        tanggal_service TEXT,
-        tunda_sampai TEXT,
-        no_response_count INTEGER NOT NULL DEFAULT 0,
-        perlu_telepon INTEGER NOT NULL DEFAULT 0,
-        alasan_arsip TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute(
-      'CREATE UNIQUE INDEX IF NOT EXISTS ux_followup_item_aktif '
-      "ON followup_items(item_key) WHERE status <> 'ARSIP'",
-    );
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS followup_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        item_id INTEGER NOT NULL,
-        jenis TEXT NOT NULL,
-        status TEXT,
-        catatan TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (item_id) REFERENCES followup_items(id) ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS wa_message_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        customer_id INTEGER,
-        jenis TEXT NOT NULL,
-        status TEXT NOT NULL,
-        nomor_masked TEXT,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS suppliers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        nama TEXT NOT NULL,
-        nomor_hp TEXT,
-        alamat TEXT,
-        catatan TEXT,
-        aktif INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS supplier_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        supplier_id INTEGER NOT NULL,
-        stock_item_id INTEGER NOT NULL,
-        UNIQUE(supplier_id, stock_item_id),
-        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
-        FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS supplier_followups (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        supplier_id INTEGER NOT NULL,
-        stock_item_id INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'BELUM',
-        catatan TEXT,
-        updated_at TEXT NOT NULL,
-        UNIQUE(supplier_id, stock_item_id),
-        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
-        FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE
-      )
-    ''');
-  }
-
-  Future<void> _upgradeV8(Database db) async {
-    const compensation = <(String, String)>[
-      ('jenis_imbalan', "TEXT NOT NULL DEFAULT 'KOMISI'"),
-      ('gaji_bulanan', 'INTEGER NOT NULL DEFAULT 0'),
-      ('komisi_mode', "TEXT NOT NULL DEFAULT 'PERSEN'"),
-      ('komisi_barang_nilai', 'INTEGER NOT NULL DEFAULT 0'),
-      ('komisi_jasa_nilai', 'INTEGER NOT NULL DEFAULT 0'),
-      ('payroll_period', "TEXT NOT NULL DEFAULT 'BULANAN'"),
-      ('payroll_tanggal', 'INTEGER NOT NULL DEFAULT 1'),
-      ('payroll_hari', 'INTEGER NOT NULL DEFAULT 1'),
-      ('bank_nama', 'TEXT'),
-      ('bank_nomor', 'TEXT'),
-      ('bank_pemilik', 'TEXT'),
-      ('tanggal_masuk', 'TEXT'),
-    ];
-    for (final (name, definition) in compensation) {
-      await _addColumn(db, 'employee_accounts', name, definition);
-    }
-    await _addColumn(db, 'service_records', 'cashier_employee_id', 'TEXT');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS service_record_mechanics (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        service_record_id INTEGER NOT NULL,
-        employee_sync_id TEXT NOT NULL,
-        urutan INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(service_record_id, employee_sync_id),
-        FOREIGN KEY (service_record_id) REFERENCES service_records(id)
-          ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS service_record_commissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        service_record_id INTEGER NOT NULL,
-        employee_sync_id TEXT NOT NULL,
-        nominal INTEGER NOT NULL DEFAULT 0,
-        nominal_override INTEGER,
-        UNIQUE(service_record_id, employee_sync_id),
-        FOREIGN KEY (service_record_id) REFERENCES service_records(id)
-          ON DELETE CASCADE
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS employee_debts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        employee_sync_id TEXT NOT NULL,
-        nominal INTEGER NOT NULL,
-        terbayar INTEGER NOT NULL DEFAULT 0,
-        catatan TEXT,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS salary_payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        employee_sync_id TEXT NOT NULL,
-        periode TEXT NOT NULL,
-        cycle_start TEXT NOT NULL,
-        cycle_end TEXT NOT NULL,
-        tanggal TEXT NOT NULL,
-        nominal INTEGER NOT NULL,
-        potongan_hutang INTEGER NOT NULL DEFAULT 0,
-        cicilan_hutang INTEGER NOT NULL DEFAULT 0,
-        bonus INTEGER NOT NULL DEFAULT 0,
-        metode TEXT NOT NULL DEFAULT 'CASH',
-        catatan TEXT,
-        created_at TEXT NOT NULL,
-        UNIQUE(employee_sync_id, cycle_start)
-      )
-    ''');
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS ix_commissions_employee '
-      'ON service_record_commissions(employee_sync_id)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS ix_debts_employee '
-      'ON employee_debts(employee_sync_id)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS ix_salary_employee '
-      'ON salary_payments(employee_sync_id)',
-    );
-  }
-
-  Future<void> _upgradeV6(Database db) async {
-    await db.delete(
-      'nota_counters',
-      where: 'tanggal <> ?',
-      whereArgs: [_numericNotaKey],
-    );
-    await _seedNumericNotaCounter(db);
-  }
-
-  Future<void> _seedNumericNotaCounter(DatabaseExecutor db) async {
-    final rows = await db.rawQuery(
-      '''
-      SELECT MAX(CAST(no_nota AS INTEGER)) AS terakhir
-      FROM service_records
-      WHERE no_nota <> '' AND no_nota NOT GLOB '*[^0-9]*'
-      ''',
-    );
-    final terakhir = (rows.first['terakhir'] as int?) ?? 0;
-    await db.rawInsert(
-      'INSERT INTO nota_counters(tanggal, terakhir) VALUES(?, ?) '
-      'ON CONFLICT(tanggal) DO UPDATE SET terakhir = MAX(terakhir, excluded.terakhir)',
-      [_numericNotaKey, terakhir],
-    );
-  }
-
-  // Sebelum v5 kolom ini menyimpan id lokal perangkat. Id lokal berbeda di
-  // tiap perangkat, jadi audit lintas perangkat hanya benar dengan sync_id.
-  Future<void> _upgradeV5(Database db) async {
-    for (final column in const ['created_by_employee_id', 'mechanic_employee_id']) {
-      await db.execute('''
-UPDATE service_records
-SET $column = (
-  SELECT sync_id FROM employee_accounts
-  WHERE employee_accounts.id = CAST(service_records.$column AS INTEGER)
-)
-WHERE $column IS NOT NULL
-  AND $column <> ''
-  AND $column NOT GLOB '*[^0-9]*'
-  AND EXISTS (
-    SELECT 1 FROM employee_accounts
-    WHERE employee_accounts.id = CAST(service_records.$column AS INTEGER)
-  )
-''');
-    }
-  }
-
-  Future<void> _upgradeV4(Database db) async {
-    final columns = <String, List<(String, String)>>{
-      'stock_items': [
-        ('satuan', "TEXT NOT NULL DEFAULT 'pcs'"),
-        ('desimal', 'INTEGER NOT NULL DEFAULT 0'),
-        ('jumlah_milli', 'INTEGER'),
-      ],
-      'stock_movements': [
-        ('jumlah_milli', 'INTEGER'),
-      ],
-      'service_records': [
-        ('created_by', 'TEXT'),
-        ('created_by_employee_id', 'TEXT'),
-        ('mechanic', 'TEXT'),
-        ('mechanic_employee_id', 'TEXT'),
-      ],
-    };
-    for (final entry in columns.entries) {
-      final tableColumns = await db.rawQuery('PRAGMA table_info(${entry.key})');
-      final existing = tableColumns.map((row) => row['name']).toSet();
-      for (final (name, definition) in entry.value) {
-        if (!existing.contains(name)) {
-          await db.execute('ALTER TABLE ${entry.key} ADD COLUMN $name $definition');
-        }
-      }
-    }
-    await db.execute(
-      'UPDATE stock_items SET jumlah_milli = jumlah * 1000 '
-      'WHERE jumlah_milli IS NULL',
-    );
-    await db.execute(
-      'UPDATE stock_movements SET jumlah_milli = jumlah * 1000 '
-      'WHERE jumlah_milli IS NULL',
-    );
-    await _migrateTimestampsToUtc(db);
-  }
-
-  Future<void> _migrateTimestampsToUtc(Database db) async {
-    final targets = <String, List<String>>{
-      'customers': ['created_at'],
-      'vehicle_or_units': ['created_at'],
-      'stock_items': ['created_at'],
-      'harga_jasa': ['created_at'],
-      'service_records': [
-        'waktu_service',
-        'voided_at',
-        'created_at',
-        'updated_at',
-      ],
-      'service_payments': ['waktu'],
-      'stock_movements': ['created_at'],
-      'permission_audits': ['created_at'],
-      'sync_outbox': ['created_at', 'sent_at'],
-    };
-    for (final entry in targets.entries) {
-      for (final column in entry.value) {
-        final rows = await db.query(
-          entry.key,
-          columns: ['id', column],
-          where: "$column IS NOT NULL AND $column != ''",
-        );
-        for (final row in rows) {
-          final raw = row[column] as String? ?? '';
-          if (raw.endsWith('Z') || RegExp(r'[+-]\d\d:\d\d$').hasMatch(raw)) {
-            continue;
-          }
-          final parsed = DateTime.tryParse(raw);
-          if (parsed == null) continue;
-          await db.update(
-            entry.key,
-            {column: parsed.toUtc().toIso8601String()},
-            where: 'id = ?',
-            whereArgs: [row['id']],
-          );
-        }
-      }
-    }
-  }
-
-  Future<void> _createSyncSchema(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS owner_identity (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        owner_id TEXT NOT NULL,
-        public_key TEXT NOT NULL,
-        recovery_hash TEXT,
-        recovery_salt TEXT,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS license (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        plan TEXT NOT NULL DEFAULT 'free',
-        period_end TEXT,
-        device_limit INTEGER NOT NULL DEFAULT 1,
-        store_limit INTEGER NOT NULL DEFAULT 1,
-        provider TEXT NOT NULL DEFAULT 'manual',
-        token TEXT,
-        activated_at TEXT
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS employee_accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_id TEXT NOT NULL UNIQUE,
-        username TEXT NOT NULL UNIQUE,
-        nama TEXT NOT NULL,
-        role_base TEXT NOT NULL DEFAULT 'KASIR',
-        extra_permissions_json TEXT NOT NULL DEFAULT '[]',
-        store_ids_json TEXT NOT NULL DEFAULT '[]',
-        password_hash TEXT NOT NULL,
-        password_salt TEXT NOT NULL,
-        password_iterations INTEGER NOT NULL DEFAULT 120000,
-        pin_hash TEXT,
-        pin_salt TEXT,
-        pin_iterations INTEGER NOT NULL DEFAULT 120000,
-        must_change_password INTEGER NOT NULL DEFAULT 1,
-        aktif INTEGER NOT NULL DEFAULT 1,
-        permission_version INTEGER NOT NULL DEFAULT 1,
-        last_login_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS permission_audits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        actor TEXT NOT NULL,
-        target_account_id INTEGER,
-        action TEXT NOT NULL,
-        detail_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS devices (
-        id TEXT PRIMARY KEY,
-        owner_id TEXT NOT NULL,
-        nama TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'owner',
-        employee_account_id INTEGER,
-        public_key TEXT NOT NULL,
-        encryption_key TEXT NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        last_seen_at TEXT,
-        revoked_at TEXT,
-        revoked_reason TEXT NOT NULL DEFAULT ''
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS login_guards (
-        scope TEXT PRIMARY KEY,
-        failures INTEGER NOT NULL DEFAULT 0,
-        lock_until TEXT
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_outbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        device_id TEXT NOT NULL,
-        seq INTEGER NOT NULL,
-        hlc_wall INTEGER NOT NULL,
-        hlc_counter INTEGER NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        entity TEXT NOT NULL,
-        entity_id TEXT NOT NULL DEFAULT '',
-        action TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        status TEXT NOT NULL DEFAULT 'pending',
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        error TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        sent_at TEXT
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_cursor (
-        store_id TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        last_seq INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (store_id, device_id)
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS applied_deltas (
-        idempotency_key TEXT PRIMARY KEY,
-        envelope_id TEXT NOT NULL DEFAULT '',
-        entity TEXT NOT NULL DEFAULT '',
-        entity_id TEXT NOT NULL DEFAULT '',
-        applied_at TEXT NOT NULL
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_conflicts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity TEXT NOT NULL,
-        entity_id TEXT NOT NULL DEFAULT '',
-        reason TEXT NOT NULL,
-        detail_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL,
-        resolved_at TEXT
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS device_sync_status (
-        device_id TEXT PRIMARY KEY,
-        nama TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'owner',
-        state TEXT NOT NULL,
-        last_seq INTEGER NOT NULL DEFAULT 0,
-        pending INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      )
-    ''');
   }
 
   Future<String?> getSetting(String key) async {
@@ -1061,11 +316,10 @@ WHERE $column IS NOT NULL
   }
 
   Future<void> setSetting(String key, String value) async {
-    await db.insert(
-      'app_settings',
-      {'key': key, 'value': value},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('app_settings', {
+      'key': key,
+      'value': value,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> deleteSetting(String key) async {
@@ -1104,15 +358,13 @@ WHERE $column IS NOT NULL
       );
       final localWall = (local.first['wall'] as int?) ?? 0;
       final localCounter = (local.first['counter'] as int?) ?? 0;
-      if (localWall > wall ||
-          (localWall == wall && localCounter > counter)) {
+      if (localWall > wall || (localWall == wall && localCounter > counter)) {
         wall = localWall;
         counter = localCounter;
       }
     }
     final floor = await _hlcFloor(txn);
-    if (floor.wall > wall ||
-        (floor.wall == wall && floor.counter > counter)) {
+    if (floor.wall > wall || (floor.wall == wall && floor.counter > counter)) {
       wall = floor.wall;
       counter = floor.counter;
     }
@@ -1128,20 +380,16 @@ WHERE $column IS NOT NULL
   ) async {
     if (wall <= 0) return;
     final floor = await _hlcFloor(txn);
-    if (wall < floor.wall ||
-        (wall == floor.wall && counter <= floor.counter)) {
+    if (wall < floor.wall || (wall == floor.wall && counter <= floor.counter)) {
       return;
     }
-    await txn.insert(
-      'app_settings',
-      {'key': 'sync.hlc_floor', 'value': '$wall:$counter'},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await txn.insert('app_settings', {
+      'key': 'sync.hlc_floor',
+      'value': '$wall:$counter',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<({int wall, int counter})> _hlcFloor(
-    DatabaseExecutor txn,
-  ) async {
+  Future<({int wall, int counter})> _hlcFloor(DatabaseExecutor txn) async {
     final rows = await txn.query(
       'app_settings',
       columns: ['value'],
@@ -1166,7 +414,7 @@ WHERE $column IS NOT NULL
       where: term.isEmpty
           ? 'deleted_at IS NULL'
           : "deleted_at IS NULL AND (nama LIKE ? ESCAPE '\\' "
-              "OR nomor_hp LIKE ? ESCAPE '\\')",
+                "OR nomor_hp LIKE ? ESCAPE '\\')",
       whereArgs: term.isEmpty ? null : ['%$escaped%', '%$escaped%'],
       orderBy: 'nama COLLATE NOCASE',
     );
@@ -1186,10 +434,7 @@ WHERE $column IS NOT NULL
   Future<Customer?> customerByPhone(String nomorHp) async {
     final normalized = normalizePhone(nomorHp);
     if (normalized.isEmpty) return null;
-    final rows = await db.query(
-      'customers',
-      where: 'deleted_at IS NULL',
-    );
+    final rows = await db.query('customers', where: 'deleted_at IS NULL');
     for (final row in rows) {
       if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
         return Customer.fromRow(row);
@@ -1213,10 +458,7 @@ WHERE $column IS NOT NULL
         throw ArgumentError('Nomor HP wajib diisi.');
       }
       if (!allowDuplicate) {
-        final rows = await txn.query(
-          'customers',
-          where: 'deleted_at IS NULL',
-        );
+        final rows = await txn.query('customers', where: 'deleted_at IS NULL');
         for (final row in rows) {
           if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
             throw DuplicateCustomerException(
@@ -1237,6 +479,7 @@ WHERE $column IS NOT NULL
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, id);
       return id;
@@ -1257,10 +500,7 @@ WHERE $column IS NOT NULL
       throw ArgumentError('Nomor HP wajib diisi.');
     }
     await db.transaction((txn) async {
-      final rows = await txn.query(
-        'customers',
-        where: 'deleted_at IS NULL',
-      );
+      final rows = await txn.query('customers', where: 'deleted_at IS NULL');
       for (final row in rows) {
         if (row['id'] == id) continue;
         if (normalizePhone(row['nomor_hp'] as String? ?? '') == normalized) {
@@ -1281,6 +521,7 @@ WHERE $column IS NOT NULL
           'do_not_contact': doNotContact ? 1 : 0,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
         },
         where: 'id = ?',
         whereArgs: [id],
@@ -1376,11 +617,16 @@ WHERE $column IS NOT NULL
   }
 
   Future<int> addUnit({
-    required int customerId,
-    required String unitType,
+    int? customerId,
+    String unitType = 'MOBIL',
     String? nopol,
-    String? jenisMobil,
+    String? merek,
+    String? tipe,
     int? tahunMobil,
+    String? noRangka,
+    String? noMesin,
+    int? kmTerakhir,
+    String? jenisMobil,
     String? tipeRadiator,
     String? labelRadiator,
     Future<void> Function(Transaction txn, int id)? enqueue,
@@ -1392,13 +638,19 @@ WHERE $column IS NOT NULL
         'customer_id': customerId,
         'unit_type': unitType,
         'nopol': _nullable(nopol),
+        'merek': _nullable(merek),
+        'tipe': _nullable(tipe),
         'jenis_mobil': _nullable(jenisMobil),
         'tahun_mobil': tahunMobil,
+        'no_rangka': _nullable(noRangka),
+        'no_mesin': _nullable(noMesin),
+        'km_terakhir': kmTerakhir,
         'tipe_radiator': _nullable(tipeRadiator),
         'label_radiator': _nullable(labelRadiator),
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, id);
       return id;
@@ -1439,6 +691,23 @@ WHERE $column IS NOT NULL
     if (actor != null) Permissions.require(actor, permissionChangeStock);
     if (hargaModalCents < 0 || hargaJualCents < 0) {
       throw ArgumentError('Harga tidak boleh negatif.');
+    }
+    if (actor != null && !actor.isOwner) {
+      if (id == null) {
+        throw StateError('Hanya pemilik yang dapat menetapkan harga barang.');
+      }
+      final existing = await db.query(
+        'stock_items',
+        columns: ['harga_modal', 'harga_jual'],
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (existing.isNotEmpty &&
+          ((existing.first['harga_modal'] as int?) != hargaModalCents ||
+              (existing.first['harga_jual'] as int?) != hargaJualCents)) {
+        throw StateError('Hanya pemilik yang dapat mengubah harga barang.');
+      }
     }
     final milli = jumlahMilli ?? jumlah * 1000;
     if (milli < 0) throw ArgumentError('Stok tidak boleh negatif.');
@@ -1488,6 +757,7 @@ WHERE $column IS NOT NULL
             ...payload,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
+            'updated_at': nowIso(),
           },
           where: 'id = ?',
           whereArgs: [id],
@@ -1506,6 +776,7 @@ WHERE $column IS NOT NULL
                 ? 'Koreksi stok'
                 : alasan!.trim(),
             'created_at': nowIso(),
+            'updated_at': nowIso(),
           });
         }
         if (enqueue != null) await enqueue(txn, id);
@@ -1523,6 +794,7 @@ WHERE $column IS NOT NULL
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       int? movementId;
       if (milli != 0) {
@@ -1537,6 +809,7 @@ WHERE $column IS NOT NULL
               ? 'Stok awal'
               : alasan!.trim(),
           'created_at': nowIso(),
+          'updated_at': nowIso(),
         });
       }
       if (enqueue != null) await enqueue(txn, newId);
@@ -1636,6 +909,7 @@ WHERE $column IS NOT NULL
             ? 'Opname stok'
             : alasan!.trim(),
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, item.id);
       if (enqueueMovement != null) await enqueueMovement(txn, movementId);
@@ -1677,6 +951,7 @@ WHERE $column IS NOT NULL
         'alasan': alasan,
         'service_record_id': serviceRecordId,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, item.id);
       if (enqueueMovement != null) await enqueueMovement(txn, movementId);
@@ -1696,19 +971,27 @@ WHERE $column IS NOT NULL
     int? id,
     required String nama,
     required int hargaCents,
+    int hargaModalCents = 0,
     int intervalBulan = 0,
     Operator? actor,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
     if (actor != null) {
       Permissions.require(actor, permissionChangeServicePrice);
+      if (!actor.isOwner) {
+        throw StateError('Hanya pemilik yang dapat mengubah tarif jasa.');
+      }
     }
     if (hargaCents < 0) {
       throw ArgumentError('Harga jasa tidak boleh negatif.');
     }
+    if (hargaModalCents < 0) {
+      throw ArgumentError('Harga modal jasa tidak boleh negatif.');
+    }
     final payload = {
       'nama': nama.trim(),
-      'harga_standar': hargaCents,
+      'harga_jual': hargaCents,
+      'harga_modal': hargaModalCents,
       'interval_servis_bulan': intervalBulan < 0 ? 0 : intervalBulan,
     };
     return db.transaction((txn) async {
@@ -1734,6 +1017,7 @@ WHERE $column IS NOT NULL
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, newId);
       return newId;
@@ -1765,7 +1049,8 @@ WHERE $column IS NOT NULL
   }
 
   Future<int> createTransaction({
-    required int unitId,
+    int? unitId,
+    int? customerId,
     required String keluhan,
     required List<JobDraft> jobs,
     required List<PartDraft> parts,
@@ -1787,16 +1072,35 @@ WHERE $column IS NOT NULL
     int garansiBarangNilai = 0,
     String garansiBarangSatuan = 'HARI',
     bool unitDitinggal = false,
+    String jenisTransaksi = transactionServisLangsung,
+    Map<String, Object?>? modeSaatDibuat,
+    String? workOrderSyncId,
+    String? estimateSyncId,
+    int? totalEstimasiTerakhir,
+    String? alasanDiskon,
+    String? ownerPin,
+    String? approverSecret,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
   }) async {
+    final jenis = sparepartOnly ? transactionJualSparepart : jenisTransaksi;
+    if (jenis == transactionEstimasiSaja) {
+      throw ArgumentError(
+        'Estimasi bukan transaksi keuangan. Gunakan layanan estimasi.',
+      );
+    }
+    if (!transactionTypes.contains(jenis)) {
+      throw ArgumentError('Jenis transaksi "$jenis" tidak dikenal.');
+    }
     if (jobs.isEmpty && parts.isEmpty) {
       throw ArgumentError('Tambahkan minimal satu jasa atau part.');
     }
-    if (sparepartOnly && jobs.isNotEmpty) {
-      throw ArgumentError('Mode sparepart hanya tidak boleh memuat jasa.');
+    if (jenis == transactionJualSparepart && jobs.isNotEmpty) {
+      throw ArgumentError('Penjualan sparepart hanya boleh memuat part.');
     }
-    if (sparepartOnly && parts.isEmpty) {
-      throw ArgumentError('Mode sparepart hanya membutuhkan minimal satu part.');
+    if (jenis == transactionJualSparepart && parts.isEmpty) {
+      throw ArgumentError('Penjualan sparepart membutuhkan minimal satu part.');
     }
     if (diskonCents < 0) {
       throw ArgumentError('Diskon tidak boleh negatif.');
@@ -1804,11 +1108,22 @@ WHERE $column IS NOT NULL
     if (bayarCents < 0) {
       throw ArgumentError('Nominal bayar tidak boleh negatif.');
     }
-    if (actor != null && diskonCents > 0) {
-      Permissions.require(actor, permissionDiscount);
-    }
     if (metodeBayar != 'CASH' && metodeBayar != 'TRANSFER') {
       throw ArgumentError('Metode pembayaran tidak dikenal.');
+    }
+    final settings = await StoreSettingsService.instance.ensure(executor: db);
+    final role = actor?.role ?? 'owner';
+    if (!settings.typeEnabled(jenis)) {
+      throw StateError('Jenis transaksi "$jenis" sedang dimatikan pemilik.');
+    }
+    if (!settings.roleCanSelect(role, jenis)) {
+      throw StateError('Peran $role tidak berhak membuat jenis "$jenis".');
+    }
+    if (actor != null && diskonCents > 0) {
+      Permissions.require(actor, permissionDiscount);
+      if (!settings.roleAllows(role, 'diskon')) {
+        throw StateError('Peran $role tidak berhak memberi diskon.');
+      }
     }
     for (final job in jobs) {
       if (job.jumlah <= 0) {
@@ -1832,6 +1147,21 @@ WHERE $column IS NOT NULL
           if (enqueue != null) await enqueue(txn, id);
           return id;
         }
+      }
+      final lines = <PriceLine>[];
+      for (final job in jobs) {
+        job.modalCents = job.modalCents < 0 ? 0 : job.modalCents;
+        lines.add(
+          PriceLine(
+            jenis: 'jasa',
+            label: job.deskripsi,
+            jumlah: job.jumlah,
+            hargaTerdaftar: job.hargaCents,
+            hargaModal: job.modalCents,
+            jasaId: job.jasaId,
+            intervalBulan: job.intervalBulan,
+          ),
+        );
       }
       for (final part in parts) {
         if (part.jumlah <= 0) {
@@ -1865,26 +1195,117 @@ WHERE $column IS NOT NULL
         part
           ..nama = stock.nama
           ..modalCents = stock.hargaModalCents;
+        lines.add(
+          PriceLine(
+            jenis: 'part',
+            label: stock.nama,
+            jumlah: part.jumlah,
+            hargaTerdaftar: stock.hargaJualCents,
+            hargaModal: stock.hargaModalCents,
+            stockItemId: stock.id,
+            intervalBulan: part.intervalBulan,
+          ),
+        );
       }
-      final biayaJasa = jobs.fold<int>(0, (sum, job) => sum + job.subtotalCents);
-      final totalPart =
-          parts.fold<int>(0, (sum, part) => sum + part.subtotalCents);
-      final bruto = biayaJasa + totalPart;
-      if (diskonCents > bruto) {
-        throw ArgumentError('Diskon melebihi total tagihan.');
-      }
-      final total = bruto - diskonCents;
       final isOwner = actor?.isOwner ?? true;
-      if (!isOwner && diskonCents > 0) {
+      // Saklar pemilik: bila mati (default), kasir tidak perlu persetujuan
+      // untuk mengeluarkan nota, termasuk saat harga di bawah modal.
+      // Selisihnya tetap dicatat sebagai anomali saat sinkronisasi.
+      final requiresApproval = !isOwner && settings.approvalBelowCost;
+      var ownerApproved = isOwner;
+      String? approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
+      final hasApprovalInput =
+          (ownerPin ?? '').trim().isNotEmpty ||
+          (approverSecret ?? '').trim().isNotEmpty;
+      ApprovalResult? approvalUsed;
+      Future<ApprovalResult> approve() async {
+        approvalUsed ??= await ApprovalService.instance.verify(
+          settings: settings,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+          executor: txn,
+        );
+        return approvalUsed!;
+      }
+
+      final brutoAwal = lines.fold<int>(0, (sum, line) => sum + line.subtotal);
+      if (!isOwner && diskonCents > 0 && brutoAwal > 0) {
         final limit = await _maxDiscountPercent(txn);
-        final percent = bruto == 0 ? 0.0 : diskonCents / bruto * 100;
+        final percent = diskonCents / brutoAwal * 100;
         if (percent > limit) {
-          throw StateError(
-            'Diskon ${percent.toStringAsFixed(1)}% melebihi batas $limit%. '
-            'Hanya pemilik yang dapat menyetujui diskon ini.',
-          );
+          if (!hasApprovalInput) {
+            throw StateError(
+              'Diskon ${percent.toStringAsFixed(1)}% melebihi batas $limit%. '
+              'Minta persetujuan pemilik atau penanggung jawab.',
+            );
+          }
+          await approve();
         }
       }
+      PriceAllocation? preliminary;
+      try {
+        preliminary = PriceRules.allocate(
+          lines,
+          diskonCents: diskonCents,
+          ownerApproved: ownerApproved,
+          allowBelowMinimum: !requiresApproval,
+          alasanDiskon: alasanDiskon,
+          disetujuiOleh: approver,
+        );
+      } on PriceRuleViolation catch (error) {
+        if (error.code != 'di_bawah_batas_minimal') rethrow;
+        if (!hasApprovalInput) rethrow;
+        try {
+          final approval = await approve();
+          ownerApproved = true;
+          approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
+        } on ApprovalException catch (failure) {
+          throw PriceRuleViolation('persetujuan_gagal', failure.message);
+        }
+      }
+      final allocation =
+          preliminary ??
+          PriceRules.allocate(
+            lines,
+            diskonCents: diskonCents,
+            ownerApproved: ownerApproved,
+            allowBelowMinimum: !requiresApproval,
+            alasanDiskon: alasanDiskon,
+            disetujuiOleh: approver,
+          );
+      if (allocation.belowMinimum && requiresApproval && !ownerApproved) {
+        throw PriceRuleViolation(
+          'di_bawah_batas_minimal',
+          'Harga di bawah batas minimal. Persetujuan pemilik diperlukan.',
+        );
+      }
+      for (var index = 0; index < jobs.length; index++) {
+        final line = allocation.lines[index];
+        jobs[index]
+          ..hargaFinalCents = line.hargaFinal
+          ..diskonAlokasiCents = line.diskonAlokasi
+          ..alasanDiskon = line.alasanDiskon
+          ..disetujuiOleh = line.disetujuiOleh;
+      }
+      for (var index = 0; index < parts.length; index++) {
+        final line = allocation.lines[jobs.length + index];
+        parts[index]
+          ..hargaFinalCents = line.hargaFinal
+          ..diskonAlokasiCents = line.diskonAlokasi
+          ..alasanDiskon = line.alasanDiskon
+          ..disetujuiOleh = line.disetujuiOleh;
+      }
+      final biayaJasa = jobs.fold<int>(
+        0,
+        (sum, job) => sum + job.subtotalCents,
+      );
+      final totalPart = parts.fold<int>(
+        0,
+        (sum, part) => sum + part.subtotalCents,
+      );
+      final bruto = biayaJasa + totalPart;
+      final diskon = allocation.diskon;
+      final total = bruto - diskon;
       if (metodeBayar == 'TRANSFER' && bayarCents > total) {
         throw ArgumentError(
           'Pembayaran transfer tidak boleh melebihi tagihan (tanpa kembalian).',
@@ -1897,7 +1318,53 @@ WHERE $column IS NOT NULL
       final sisa = total - dibayar;
       final statusBayar = sisa == 0 ? 'LUNAS' : 'KREDIT';
       final now = nowIso();
-      final noNota = await _nextNota(txn);
+      final prefix = switch (jenis) {
+        transactionJualSparepart => 'S',
+        transactionOrderKerja => 'O',
+        transactionPelunasanOrder => 'P',
+        _ => 'N',
+      };
+      final noNota = await allocateDocumentNumber(
+        txn,
+        docType: 'nota_$jenis',
+        prefix: prefix,
+      );
+      String? resolvedCustomerSync;
+      if (customerId != null) {
+        final rows = await txn.query(
+          'customers',
+          columns: ['sync_id'],
+          where: 'id = ?',
+          whereArgs: [customerId],
+          limit: 1,
+        );
+        resolvedCustomerSync = rows.isEmpty
+            ? null
+            : rows.first['sync_id'] as String?;
+      }
+      if (unitId != null) {
+        final unit = await txn.query(
+          'vehicle_or_units',
+          columns: ['customer_id'],
+          where: 'id = ?',
+          whereArgs: [unitId],
+          limit: 1,
+        );
+        if (unit.isEmpty) throw StateError('Kendaraan tidak ditemukan.');
+        final unitCustomer = unit.first['customer_id'];
+        if (resolvedCustomerSync == null && unitCustomer != null) {
+          final customer = await txn.query(
+            'customers',
+            columns: ['sync_id'],
+            where: 'id = ?',
+            whereArgs: [unitCustomer],
+            limit: 1,
+          );
+          if (customer.isNotEmpty) {
+            resolvedCustomerSync = customer.first['sync_id'] as String?;
+          }
+        }
+      }
       final requestedMechanics = <String>[];
       for (final id in mechanicEmployeeSyncIds) {
         final clean = id.trim();
@@ -1907,7 +1374,10 @@ WHERE $column IS NOT NULL
       }
       final mechanicRows = <Map<String, Object?>>[];
       if (requestedMechanics.isNotEmpty) {
-        final placeholders = List.filled(requestedMechanics.length, '?').join(',');
+        final placeholders = List.filled(
+          requestedMechanics.length,
+          '?',
+        ).join(',');
         final rows = await txn.query(
           'employee_accounts',
           where: 'sync_id IN ($placeholders) AND aktif = 1',
@@ -1927,7 +1397,7 @@ WHERE $column IS NOT NULL
           .join(', ');
       final warranty = await _warrantyFields(
         txn,
-        sparepartOnly: sparepartOnly,
+        sparepartOnly: jenis == transactionJualSparepart,
         bergaransi: bergaransi,
         garansiBulan: garansiBulan,
         customDate: garansiSampai,
@@ -1936,19 +1406,29 @@ WHERE $column IS NOT NULL
         barangNilai: garansiBarangNilai,
         barangSatuan: garansiBarangSatuan,
       );
+      final recordSyncId = newSyncId();
       final recordId = await txn.insert('service_records', {
-        'sync_id': newSyncId(),
+        'sync_id': recordSyncId,
         'unit_id': unitId,
+        'customer_id':
+            customerId ?? (await _customerIdBySync(txn, resolvedCustomerSync)),
         'no_nota': noNota,
         'request_id': (requestId ?? '').trim().isEmpty
             ? null
             : requestId!.trim(),
+        'jenis_transaksi': jenis,
+        'mode_saat_dibuat_json': jsonEncode(
+          modeSaatDibuat ?? settings.modeSnapshot(jenisTransaksi: jenis),
+        ),
+        'work_order_sync_id': _nullable(workOrderSyncId),
+        'estimate_sync_id': _nullable(estimateSyncId),
+        'total_estimasi_terakhir': totalEstimasiTerakhir,
         'waktu_service': now,
         'keluhan_awal': keluhan.trim(),
         'catatan_pengerjaan': _nullable(catatan),
         'biaya_jasa': biayaJasa,
         'total_part': totalPart,
-        'diskon': diskonCents,
+        'diskon': diskon,
         'total_servis': total,
         'metode_bayar': metodeBayar,
         'bayar': bayarCents,
@@ -1963,14 +1443,15 @@ WHERE $column IS NOT NULL
         'mechanic': _nullable(
           mechanic ?? (mechanicNames.isEmpty ? null : mechanicNames),
         ),
-        'mechanic_employee_id': mechanicEmployeeSyncId ??
+        'mechanic_employee_id':
+            mechanicEmployeeSyncId ??
             (mechanicRows.isEmpty ? null : mechanicRows.first['sync_id']),
         'bergaransi': warranty.bergaransi ? 1 : 0,
         'garansi_bulan': warranty.bulan,
         'garansi_sampai': warranty.sampai,
         'catatan_garansi': warranty.catatan,
         'status_klaim': 'Belum claim',
-        'sparepart_only': sparepartOnly ? 1 : 0,
+        'sparepart_only': jenis == transactionJualSparepart ? 1 : 0,
         'garansi_barang_aktif': warranty.barangAktif ? 1 : 0,
         'garansi_barang_nilai': warranty.barangNilai,
         'garansi_barang_satuan': warranty.barangSatuan,
@@ -1988,7 +1469,17 @@ WHERE $column IS NOT NULL
           'jumlah': job.jumlah,
           'harga': job.hargaCents,
           'subtotal': job.subtotalCents,
-          'interval_servis_bulan': job.intervalBulan < 0 ? 0 : job.intervalBulan,
+          'harga_jual_terdaftar': job.hargaTerdaftarCents,
+          'harga_batas_saat_transaksi': job.modalCents,
+          'harga_final': job.hargaFinalCents,
+          'diskon_alokasi': job.diskonAlokasiCents,
+          'alasan_diskon': job.alasanDiskon,
+          'disetujui_oleh': job.disetujuiOleh,
+          'interval_servis_bulan': job.intervalBulan < 0
+              ? 0
+              : job.intervalBulan,
+          'created_at': now,
+          'updated_at': now,
         });
       }
       for (final part in parts) {
@@ -2001,8 +1492,17 @@ WHERE $column IS NOT NULL
           'harga_satuan': part.hargaCents,
           'subtotal': part.subtotalCents,
           'harga_modal': part.modalCents,
-          'interval_servis_bulan':
-              part.intervalBulan < 0 ? 0 : part.intervalBulan,
+          'harga_jual_terdaftar': part.hargaTerdaftarCents,
+          'harga_batas_saat_transaksi': part.modalCents,
+          'harga_final': part.hargaFinalCents,
+          'diskon_alokasi': part.diskonAlokasiCents,
+          'alasan_diskon': part.alasanDiskon,
+          'disetujui_oleh': part.disetujuiOleh,
+          'interval_servis_bulan': part.intervalBulan < 0
+              ? 0
+              : part.intervalBulan,
+          'created_at': now,
+          'updated_at': now,
         });
         final stockRows = await txn.query(
           'stock_items',
@@ -2028,6 +1528,7 @@ WHERE $column IS NOT NULL
           'alasan': 'Penjualan $noNota',
           'service_record_id': recordId,
           'created_at': now,
+          'updated_at': now,
         });
       }
       if (dibayar > 0) {
@@ -2041,19 +1542,22 @@ WHERE $column IS NOT NULL
           'operator': actor?.label ?? 'Pemilik',
           'request_id': '${requestId ?? noNota}-bayar',
           'catatan': null,
+          'created_at': now,
+          'updated_at': now,
         });
       }
-      if (diskonCents > 0) {
-        final percent = bruto == 0 ? 0.0 : diskonCents / bruto * 100;
+      if (diskon > 0 || allocation.belowMinimum) {
         await txn.insert('permission_audits', {
           'actor': actor?.label ?? 'Pemilik',
           'target_account_id': actor?.employeeId,
-          'action': 'diskon',
+          'action': allocation.belowMinimum ? 'harga_bawah_modal' : 'diskon',
           'detail_json': jsonEncode({
             'no_nota': noNota,
-            'diskon': diskonCents,
-            'persen': percent,
-            'disetujui_pemilik': isOwner,
+            'jenis_transaksi': jenis,
+            'diskon': diskon,
+            'di_bawah_modal': allocation.belowMinimum,
+            'disetujui_oleh': approver,
+            'alasan_diskon': alasanDiskon,
           }),
           'created_at': now,
         });
@@ -2068,9 +1572,57 @@ WHERE $column IS NOT NULL
           parts: parts,
         );
       }
+      if ((workOrderSyncId ?? '').trim().isNotEmpty) {
+        final orderHlc = await nextSyncHlc(txn);
+        await txn.update(
+          'work_orders',
+          {
+            'nota_sync_id': recordSyncId,
+            'sync_hlc_wall': orderHlc.wall,
+            'sync_hlc_counter': orderHlc.counter,
+            'updated_at': now,
+          },
+          where: 'sync_id = ?',
+          whereArgs: [workOrderSyncId!.trim()],
+        );
+        if (enqueueOrder != null) {
+          await enqueueOrder(txn, workOrderSyncId.trim());
+        }
+      }
+      if ((estimateSyncId ?? '').trim().isNotEmpty) {
+        final estimateHlc = await nextSyncHlc(txn);
+        await txn.update(
+          'estimates',
+          {
+            'status': 'dikonversi',
+            'converted_nota_sync_id': recordSyncId,
+            'total_estimasi_terakhir': totalEstimasiTerakhir,
+            'sync_hlc_wall': estimateHlc.wall,
+            'sync_hlc_counter': estimateHlc.counter,
+            'updated_at': now,
+          },
+          where: 'sync_id = ?',
+          whereArgs: [estimateSyncId!.trim()],
+        );
+        if (enqueueEstimate != null) {
+          await enqueueEstimate(txn, estimateSyncId.trim());
+        }
+      }
       if (enqueue != null) await enqueue(txn, recordId);
       return recordId;
     });
+  }
+
+  Future<int?> _customerIdBySync(DatabaseExecutor txn, String? syncId) async {
+    if (syncId == null || syncId.isEmpty) return null;
+    final rows = await txn.query(
+      'customers',
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['id'] as int;
   }
 
   Future<void> _insertMechanicsAndCommissions(
@@ -2094,15 +1646,18 @@ WHERE $column IS NOT NULL
         'service_record_id': recordId,
         'employee_sync_id': syncId,
         'urutan': index,
+        'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       final mode = '${mechanic['komisi_mode'] ?? 'PERSEN'}';
-      final barangNilai = (mechanic['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
+      final barangNilai =
+          (mechanic['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
       final jasaNilai = (mechanic['komisi_jasa_nilai'] as num?)?.toInt() ?? 0;
       final shareJasa = _splitShare(biayaJasa, index, count);
       final shareMargin = _splitShare(margin, index, count);
       final nominal = mode == 'NOMINAL'
           ? (parts.isNotEmpty ? barangNilai : 0) +
-              (jobs.isNotEmpty ? jasaNilai : 0)
+                (jobs.isNotEmpty ? jasaNilai : 0)
           : (shareJasa * jasaNilai) ~/ 100 + (shareMargin * barangNilai) ~/ 100;
       if (nominal > 0) {
         await txn.insert('service_record_commissions', {
@@ -2110,6 +1665,8 @@ WHERE $column IS NOT NULL
           'service_record_id': recordId,
           'employee_sync_id': syncId,
           'nominal': nominal,
+          'created_at': nowIso(),
+          'updated_at': nowIso(),
         });
       }
       index++;
@@ -2134,43 +1691,154 @@ WHERE $column IS NOT NULL
     return double.tryParse(raw ?? '') ?? 10;
   }
 
-  /// Nomor nota selalu bilangan bulat 1, 2, 3, ... tanpa awalan perangkat.
-  /// Nilai diambil dari counter dan dari nomor numerik tertinggi yang sudah
-  /// ada, sehingga snapshot/restore atau nota masuk dari perangkat lain tidak
-  /// pernah memakai nomor yang sudah dipakai.
-  Future<String> allocateNextNota(DatabaseExecutor executor) async {
-    await _seedNumericNotaCounter(executor);
+  /// Nomor dokumen selalu ada dan unik tanpa koordinasi server.
+  ///
+  /// Format: `{kodeCabang}{kodePerangkat}-{prefix}{yyyymmdd}-{urutan}`.
+  /// Urutan disimpan per perangkat, per jenis, per tanggal sehingga dua
+  /// perangkat yang offline bersamaan tidak mungkin menghasilkan nomor sama.
+  Future<String> allocateDocumentNumber(
+    DatabaseExecutor executor, {
+    required String docType,
+    required String prefix,
+    DateTime? date,
+  }) async {
+    final tanggal = _dateKey(date ?? DateTime.now());
+    final kodePerangkat = await deviceCode(executor);
+    final branchCode = await _branchCode(executor);
     final rows = await executor.query(
-      'nota_counters',
+      'document_counters',
       columns: ['terakhir'],
-      where: 'tanggal = ?',
-      whereArgs: [_numericNotaKey],
+      where: 'device_id = ? AND doc_type = ? AND tanggal = ?',
+      whereArgs: [kodePerangkat, docType, tanggal],
       limit: 1,
     );
-    final next = ((rows.first['terakhir'] as int?) ?? 0) + 1;
-    await executor.update(
-      'nota_counters',
-      {'terakhir': next},
-      where: 'tanggal = ?',
-      whereArgs: [_numericNotaKey],
-    );
-    return '$next';
+    final next = rows.isEmpty ? 1 : (rows.first['terakhir'] as int) + 1;
+    if (rows.isEmpty) {
+      await executor.insert('document_counters', {
+        'device_id': kodePerangkat,
+        'doc_type': docType,
+        'tanggal': tanggal,
+        'terakhir': next,
+      });
+    } else {
+      await executor.update(
+        'document_counters',
+        {'terakhir': next},
+        where: 'device_id = ? AND doc_type = ? AND tanggal = ?',
+        whereArgs: [kodePerangkat, docType, tanggal],
+      );
+    }
+    final seq = next.toString().padLeft(4, '0');
+    return '$branchCode$kodePerangkat-$prefix$tanggal-$seq';
   }
 
-  static const _numericNotaKey = 'NUMERIC';
+  Future<String> allocateNextNota(DatabaseExecutor executor) =>
+      allocateDocumentNumber(executor, docType: 'nota', prefix: 'N');
 
-  Future<String> _nextNota(Transaction txn) => allocateNextNota(txn);
+  /// Nomor antrian pendek yang direset setiap hari per perangkat.
+  Future<String> allocateQueueNumber(
+    DatabaseExecutor executor, {
+    DateTime? date,
+  }) async {
+    final tanggal = _dateKey(date ?? DateTime.now());
+    final kodePerangkat = await deviceCode(executor);
+    final branchCode = await _branchCode(executor);
+    final rows = await executor.query(
+      'document_counters',
+      columns: ['terakhir'],
+      where: 'device_id = ? AND doc_type = ? AND tanggal = ?',
+      whereArgs: [kodePerangkat, 'antrian', tanggal],
+      limit: 1,
+    );
+    final next = rows.isEmpty ? 1 : (rows.first['terakhir'] as int) + 1;
+    if (rows.isEmpty) {
+      await executor.insert('document_counters', {
+        'device_id': kodePerangkat,
+        'doc_type': 'antrian',
+        'tanggal': tanggal,
+        'terakhir': next,
+      });
+    } else {
+      await executor.update(
+        'document_counters',
+        {'terakhir': next},
+        where: 'device_id = ? AND doc_type = ? AND tanggal = ?',
+        whereArgs: [kodePerangkat, 'antrian', tanggal],
+      );
+    }
+    return '$branchCode$kodePerangkat-${next.toString().padLeft(3, '0')}';
+  }
 
-  Future<({
-    bool bergaransi,
-    int bulan,
-    String? sampai,
-    String? catatan,
-    bool barangAktif,
-    int barangNilai,
-    String barangSatuan,
-    String? barangSampai,
-  })> _warrantyFields(
+  Future<String> deviceCode(DatabaseExecutor executor) async {
+    final stored = await executor.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['device.kode_lokal'],
+      limit: 1,
+    );
+    if (stored.isNotEmpty && '${stored.first['value']}'.trim().isNotEmpty) {
+      return '${stored.first['value']}';
+    }
+    final current = await executor.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['device.current_id'],
+      limit: 1,
+    );
+    String code;
+    if (current.isNotEmpty) {
+      final id = '${current.first['value']}';
+      code = id
+          .substring(id.length >= 3 ? id.length - 3 : 0)
+          .toUpperCase()
+          .replaceAll(RegExp(r'[^A-Z0-9]'), 'X');
+    } else {
+      final random = Random.secure();
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      code = List.generate(
+        3,
+        (_) => alphabet[random.nextInt(alphabet.length)],
+      ).join();
+    }
+    await executor.insert('app_settings', {
+      'key': 'device.kode_lokal',
+      'value': code,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return code;
+  }
+
+  Future<String> _branchCode(DatabaseExecutor executor) async {
+    final rows = await executor.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['toko.kode_cabang'],
+      limit: 1,
+    );
+    final raw = rows.isEmpty ? '' : '${rows.first['value']}'.trim();
+    return raw.isEmpty ? 'T' : raw.toUpperCase();
+  }
+
+  static String _dateKey(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}'
+      '${date.month.toString().padLeft(2, '0')}'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  Future<
+    ({
+      bool bergaransi,
+      int bulan,
+      String? sampai,
+      String? catatan,
+      bool barangAktif,
+      int barangNilai,
+      String barangSatuan,
+      String? barangSampai,
+    })
+  >
+  _warrantyFields(
     DatabaseExecutor executor, {
     required bool sparepartOnly,
     required bool bergaransi,
@@ -2319,10 +1987,7 @@ WHERE $column IS NOT NULL
     await db.transaction((txn) async {
       final updated = await txn.update(
         'service_records',
-        {
-          'diambil_at': diambil ? nowIso() : null,
-          'updated_at': nowIso(),
-        },
+        {'diambil_at': diambil ? nowIso() : null, 'updated_at': nowIso()},
         where: 'unit_ditinggal = 1 AND id = ?',
         whereArgs: [recordId],
       );
@@ -2357,21 +2022,18 @@ WHERE $column IS NOT NULL
       where.write(" AND r.sisa_bayar > 0 AND r.status != 'VOID'");
     }
     args.addAll([limit, offset]);
-    final rows = await db.rawQuery(
-      '''
+    final rows = await db.rawQuery('''
       SELECT r.*, c.nama AS customer_nama,
         COALESCE(NULLIF(TRIM(COALESCE(u.nopol, '') || ' ' ||
           COALESCE(u.jenis_mobil, '') || ' ' ||
           COALESCE(u.label_radiator, '')), ''), u.unit_type) AS unit_label
       FROM service_records r
-      JOIN vehicle_or_units u ON u.id = r.unit_id
-      JOIN customers c ON c.id = u.customer_id
+      LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
+      LEFT JOIN customers c ON c.id = u.customer_id
       WHERE $where
       ORDER BY r.waktu_service DESC
       LIMIT ? OFFSET ?
-      ''',
-      args,
-    );
+      ''', args);
     return rows.map(ServiceRecordSummary.fromRow).toList();
   }
 
@@ -2383,8 +2045,8 @@ WHERE $column IS NOT NULL
           COALESCE(u.jenis_mobil, '') || ' ' ||
           COALESCE(u.label_radiator, '')), ''), u.unit_type) AS unit_label
       FROM service_records r
-      JOIN vehicle_or_units u ON u.id = r.unit_id
-      JOIN customers c ON c.id = u.customer_id
+      LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
+      LEFT JOIN customers c ON c.id = u.customer_id
       WHERE r.id = ?
       LIMIT 1
       ''',
@@ -2420,6 +2082,13 @@ WHERE $column IS NOT NULL
       ''',
       [id],
     );
+    final correctionRows = await db.query(
+      'nota_adjustments',
+      where: 'nota_sync_id = ? AND deleted_at IS NULL',
+      whereArgs: [row['sync_id']],
+      orderBy: 'created_at',
+    );
+    final noNota = row['no_nota'] as String? ?? '';
     return RecordDetail(
       record: ServiceRecordSummary.fromRow(row),
       jobs: jobRows
@@ -2469,6 +2138,21 @@ WHERE $column IS NOT NULL
               nama: item['nama'] as String? ?? '',
               nominalCents: item['nominal'] as int? ?? 0,
               overrideCents: item['nominal_override'] as int?,
+            ),
+          )
+          .toList(),
+      corrections: correctionRows
+          .map(
+            (item) => CorrectionEntry(
+              noNota: noNota,
+              waktu:
+                  DateTime.tryParse('${item['created_at']}')?.toLocal() ??
+                  DateTime.now(),
+              alasan: item['alasan'] as String? ?? '',
+              nilaiSelisihCents: (item['nilai_selisih'] as num?)?.toInt() ?? 0,
+              nilaiBaruCents: (item['nilai_baru'] as num?)?.toInt() ?? 0,
+              dibuatOleh: item['dibuat_oleh'] as String?,
+              disetujuiOleh: item['disetujui_oleh'] as String?,
             ),
           )
           .toList(),
@@ -2530,6 +2214,7 @@ WHERE $column IS NOT NULL
           'alasan': 'Void nota ${rows.first['no_nota']}',
           'service_record_id': id,
           'created_at': now,
+          'updated_at': now,
         });
       }
       final payments = await txn.rawQuery(
@@ -2556,6 +2241,8 @@ WHERE $column IS NOT NULL
             'operator': actor?.label ?? 'Pemilik',
             'request_id': 'void-${rows.first['sync_id']}',
             'catatan': cleanReason,
+            'created_at': now,
+            'updated_at': now,
           });
         }
       }
@@ -2634,6 +2321,8 @@ WHERE $column IS NOT NULL
             ? newSyncId()
             : requestId!.trim(),
         'catatan': 'Pelunasan piutang',
+        'created_at': now,
+        'updated_at': now,
       });
       await txn.update(
         'service_records',
@@ -2708,6 +2397,16 @@ WHERE $column IS NOT NULL
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
+    final typeRows = await db.rawQuery(
+      '''
+      SELECT jenis_transaksi, COUNT(*) AS jumlah,
+        COALESCE(SUM(total_servis), 0) AS total
+      FROM service_records
+      WHERE waktu_service BETWEEN ? AND ? AND status != 'VOID'
+      GROUP BY jenis_transaksi
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to)],
+    );
     final omzetPart = parts.first['omzet'] as int? ?? 0;
     final modalPart = parts.first['modal'] as int? ?? 0;
     return ReportSummary(
@@ -2726,7 +2425,138 @@ WHERE $column IS NOT NULL
         for (final cash in cashRows)
           (cash['metode'] as String? ?? 'CASH'): cash['total'] as int? ?? 0,
       },
+      countByType: {
+        for (final type in typeRows)
+          (type['jenis_transaksi'] as String? ?? 'servis_langsung'):
+              (type['jumlah'] as num?)?.toInt() ?? 0,
+      },
+      totalByType: {
+        for (final type in typeRows)
+          (type['jenis_transaksi'] as String? ?? 'servis_langsung'):
+              (type['total'] as num?)?.toInt() ?? 0,
+      },
     );
+  }
+
+  Future<List<BelowPriceSale>> belowPriceSales(
+    DateTime from,
+    DateTime to, {
+    int limit = 200,
+  }) async {
+    final rows = await db.rawQuery(
+      '''
+      SELECT r.no_nota, r.waktu_service, r.jenis_transaksi, r.created_by,
+        j.deskripsi, j.jumlah, j.harga_jual_terdaftar, j.harga_final,
+        j.disetujui_oleh
+      FROM service_jobs j
+      JOIN service_records r ON r.id = j.service_record_id
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+        AND j.harga_final < j.harga_jual_terdaftar
+      UNION ALL
+      SELECT r.no_nota, r.waktu_service, r.jenis_transaksi, r.created_by,
+        p.nama_part, p.jumlah, p.harga_jual_terdaftar, p.harga_final,
+        p.disetujui_oleh
+      FROM service_parts p
+      JOIN service_records r ON r.id = p.service_record_id
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+        AND p.harga_final < p.harga_jual_terdaftar
+      ORDER BY waktu_service DESC
+      LIMIT ?
+      ''',
+      [
+        isoStartOfDay(from),
+        isoEndOfDay(to),
+        isoStartOfDay(from),
+        isoEndOfDay(to),
+        limit,
+      ],
+    );
+    return rows
+        .map(
+          (row) => BelowPriceSale(
+            noNota: row['no_nota'] as String? ?? '',
+            waktu:
+                DateTime.tryParse('${row['waktu_service']}')?.toLocal() ??
+                DateTime.now(),
+            jenis: row['jenis_transaksi'] as String? ?? '',
+            deskripsi: row['deskripsi'] as String? ?? '',
+            jumlah: (row['jumlah'] as num?)?.toInt() ?? 0,
+            hargaTerdaftarCents:
+                (row['harga_jual_terdaftar'] as num?)?.toInt() ?? 0,
+            hargaFinalCents: (row['harga_final'] as num?)?.toInt() ?? 0,
+            kasir: row['created_by'] as String?,
+            disetujuiOleh: row['disetujui_oleh'] as String?,
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<CorrectionEntry>> correctionsInRange(
+    DateTime from,
+    DateTime to, {
+    int limit = 200,
+  }) async {
+    final rows = await db.rawQuery(
+      '''
+      SELECT r.no_nota, a.created_at, a.alasan, a.nilai_selisih,
+        a.nilai_baru, a.dibuat_oleh, a.disetujui_oleh
+      FROM nota_adjustments a
+      JOIN service_records r ON r.sync_id = a.nota_sync_id
+      WHERE a.deleted_at IS NULL
+        AND a.created_at BETWEEN ? AND ?
+      ORDER BY a.created_at DESC
+      LIMIT ?
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to), limit],
+    );
+    return rows
+        .map(
+          (row) => CorrectionEntry(
+            noNota: row['no_nota'] as String? ?? '',
+            waktu:
+                DateTime.tryParse('${row['created_at']}')?.toLocal() ??
+                DateTime.now(),
+            alasan: row['alasan'] as String? ?? '',
+            nilaiSelisihCents: (row['nilai_selisih'] as num?)?.toInt() ?? 0,
+            nilaiBaruCents: (row['nilai_baru'] as num?)?.toInt() ?? 0,
+            dibuatOleh: row['dibuat_oleh'] as String?,
+            disetujuiOleh: row['disetujui_oleh'] as String?,
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<EstimateAgingRow>> estimateAging(
+    DateTime from,
+    DateTime to, {
+    int limit = 300,
+  }) async {
+    final rows = await db.rawQuery(
+      '''
+      SELECT e.nomor_estimasi, e.total, e.status, e.dibuat_oleh,
+        e.masa_berlaku, e.converted_nota_sync_id, r.total_servis AS nota_total
+      FROM estimates e
+      LEFT JOIN service_records r ON r.sync_id = e.converted_nota_sync_id
+      WHERE e.deleted_at IS NULL
+        AND e.created_at BETWEEN ? AND ?
+      ORDER BY e.created_at DESC
+      LIMIT ?
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to), limit],
+    );
+    return rows
+        .map(
+          (row) => EstimateAgingRow(
+            nomorEstimasi: row['nomor_estimasi'] as String? ?? '',
+            totalCents: (row['total'] as num?)?.toInt() ?? 0,
+            status: row['status'] as String? ?? 'aktif',
+            dibuatOleh: row['dibuat_oleh'] as String?,
+            masaBerlaku: DateTime.tryParse('${row['masa_berlaku']}')?.toLocal(),
+            convertedNotaSyncId: row['converted_nota_sync_id'] as String?,
+            finalNotaCents: (row['nota_total'] as num?)?.toInt(),
+          ),
+        )
+        .toList();
   }
 
   Future<DashboardData> dashboard() async {
@@ -2736,13 +2566,11 @@ WHERE $column IS NOT NULL
       'SELECT COUNT(*) AS total FROM stock_items '
       'WHERE COALESCE(jumlah_milli, jumlah * 1000) <= stok_minimum * 1000',
     );
-    final receivableRows = await db.rawQuery(
-      '''
+    final receivableRows = await db.rawQuery('''
       SELECT COALESCE(SUM(sisa_bayar), 0) AS total
       FROM service_records
       WHERE status != 'VOID' AND sisa_bayar > 0
-      ''',
-    );
+      ''');
     final negativeRows = await db.rawQuery(
       'SELECT COUNT(*) AS total FROM stock_items '
       'WHERE COALESCE(jumlah_milli, jumlah * 1000) < 0',

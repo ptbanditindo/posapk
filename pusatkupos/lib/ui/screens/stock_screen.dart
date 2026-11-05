@@ -46,6 +46,14 @@ class _StockScreenState extends State<StockScreen> {
       showSnack(context, 'Izin ubah stok tidak tersedia.', error: true);
       return;
     }
+    if (item == null && !AppState.instance.isOwner) {
+      showSnack(
+        context,
+        'Hanya pemilik yang dapat menambah barang beserta harganya.',
+        error: true,
+      );
+      return;
+    }
     final supplierEnabled =
         (await AppDatabase.instance.getSetting('fitur.supplier') ?? '1') ==
             '1';
@@ -190,7 +198,9 @@ class _StockScreenState extends State<StockScreen> {
               ),
               const SizedBox(width: 10),
               FilledButton.icon(
-                onPressed: AppState.instance.can('ubah_stok')
+                onPressed:
+                    AppState.instance.can('ubah_stok') &&
+                        AppState.instance.isOwner
                     ? () => _openForm()
                     : null,
                 icon: const Icon(Icons.add),
@@ -213,7 +223,9 @@ class _StockScreenState extends State<StockScreen> {
                   subtitle: 'Tambahkan barang agar bisa dipakai di kasir.',
                   icon: Icons.inventory_2_outlined,
                   action: FilledButton(
-                    onPressed: () => _openForm(),
+                    onPressed: AppState.instance.isOwner
+                        ? () => _openForm()
+                        : null,
                     child: const Text('Tambah barang'),
                   ),
                 );
@@ -379,6 +391,8 @@ class _StockDialogState extends State<_StockDialog> {
   late final Set<int> _supplierIds = {...widget.selectedSupplierIds};
   String? _error;
 
+  bool get _isOwner => AppState.instance.isOwner;
+
   @override
   void initState() {
     super.initState();
@@ -423,8 +437,12 @@ class _StockDialogState extends State<_StockDialog> {
       setState(() => _error = 'Jumlah stok tidak valid.');
       return;
     }
-    final modal = tryParseRupiahToCents(_modal.text);
-    final jual = tryParseRupiahToCents(_jual.text);
+    final modal = _isOwner
+        ? tryParseRupiahToCents(_modal.text)
+        : (widget.item?.hargaModalCents ?? 0);
+    final jual = _isOwner
+        ? tryParseRupiahToCents(_jual.text)
+        : (widget.item?.hargaJualCents ?? 0);
     if (modal == null || jual == null) {
       setState(() => _error = 'Format harga tidak valid.');
       return;
@@ -464,25 +482,36 @@ class _StockDialogState extends State<_StockDialog> {
               decoration: const InputDecoration(labelText: 'Nama barang'),
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _modal,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Harga modal'),
+            if (_isOwner)
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _modal,
+                      keyboardType: TextInputType.number,
+                      decoration:
+                          const InputDecoration(labelText: 'Harga modal'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: _jual,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Harga jual'),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _jual,
+                      keyboardType: TextInputType.number,
+                      decoration:
+                          const InputDecoration(labelText: 'Harga jual'),
+                    ),
                   ),
+                ],
+              )
+            else
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Harga hanya dapat diubah pemilik.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
-              ],
-            ),
+              ),
             const SizedBox(height: 10),
             Row(
               children: [

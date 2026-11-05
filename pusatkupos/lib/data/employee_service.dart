@@ -174,6 +174,7 @@ class EmployeeService {
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, syncId);
       return id;
@@ -327,6 +328,7 @@ class EmployeeService {
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, syncId);
     });
@@ -401,6 +403,8 @@ class EmployeeService {
           'nominal_override': overrideCents,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
+          'created_at': nowIso(),
+          'updated_at': nowIso(),
         });
         if (enqueue != null) await enqueue(txn, id);
         return;

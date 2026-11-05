@@ -80,6 +80,14 @@ class PairingService {
       throw StateError('Tanda tangan izin karyawan tidak valid.');
     }
     final accountId = await AccountService.instance.installRemoteAccount(account);
+    // Kode pairing menggantikan password saat pemasangan; jangan memaksa
+    // karyawan mengganti password yang tidak pernah ia masukkan.
+    await AppDatabase.instance.db.update(
+      'employee_accounts',
+      {'must_change_password': 0},
+      where: 'id = ?',
+      whereArgs: [accountId],
+    );
     final ownerId = account['owner_id'] as String? ?? '';
     final storeId = response['store_id'] as String? ?? 'utama';
     final token = response['token'] as String? ?? '';
@@ -151,6 +159,7 @@ class PairingService {
       );
     }
     return {
+      'owner_id': ownerId,
       'account_id': accountId,
       'username': account['username'],
       'nama': account['nama'],

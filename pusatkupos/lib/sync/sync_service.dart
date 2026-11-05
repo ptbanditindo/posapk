@@ -15,6 +15,8 @@ import '../data/license_service.dart';
 import '../data/license_verifier.dart';
 import '../data/models.dart';
 import '../data/note_sync.dart';
+import '../data/nota_adjustment_service.dart';
+import '../data/store_settings.dart';
 import '../data/secure_store.dart';
 import 'crypto.dart';
 import 'protocol.dart';
@@ -28,6 +30,8 @@ class SyncService {
   static final SyncService instance = SyncService._();
 
   Future<String?> _setting(String key) => AppDatabase.instance.getSetting(key);
+
+  Future<String?> setting(String key) => _setting(key);
 
   Future<void> _requirePremium() async {
     if (!await LicenseService.instance.isPremium()) {
@@ -226,6 +230,49 @@ class SyncService {
       throw StateError('Daftarkan perangkat ini ke relay terlebih dahulu.');
     }
     return RelayClient(baseUrl: url, deviceToken: token).devices();
+  }
+
+  /// Membuat kode pairing karyawan yang berlaku 10 menit dan sekali pakai.
+  Future<Map<String, Object?>> createPairingInvite({
+    required String accountSyncId,
+    String? storeId,
+    int ttlMinutes = 10,
+  }) async {
+    await _requirePremium();
+    final url = await relayUrl();
+    final token = await relayDeviceToken();
+    final ownerId = await LicenseService.instance.ownerId();
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw StateError('Perangkat ini belum terhubung ke server akun.');
+    }
+    if (ownerId == null || ownerId.isEmpty) {
+      throw StateError('Identitas pemilik belum tersedia.');
+    }
+    final targetStore = (storeId == null || storeId.trim().isEmpty)
+        ? await this.storeId()
+        : storeId.trim();
+    return RelayClient(baseUrl: url, deviceToken: token).createInvite(
+      ownerId: ownerId,
+      accountSyncId: accountSyncId,
+      storeId: targetStore,
+      ttlMinutes: ttlMinutes,
+    );
+  }
+
+  Future<void> revokeRelayDevice(String relayDeviceId) async {
+    final url = await relayUrl();
+    final token = await relayDeviceToken();
+    final ownerId = await LicenseService.instance.ownerId();
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw StateError('Perangkat ini belum terhubung ke server akun.');
+    }
+    if (ownerId == null || ownerId.isEmpty) {
+      throw StateError('Identitas pemilik belum tersedia.');
+    }
+    await RelayClient(baseUrl: url, deviceToken: token).revokeManagedDevice(
+      ownerId: ownerId,
+      deviceId: relayDeviceId,
+    );
   }
 
   Future<Map<String, Object?>> bootstrapNow() async {
@@ -730,9 +777,15 @@ class SyncService {
     final lastError = await _setting('sync.last_error');
     final lastAttempt = await _setting('sync.last_attempt_at');
     final pending = await pendingCount();
+    final warnHours =
+        int.tryParse(await _setting('sync.warn_after_hours') ?? '') ?? 6;
     final age = lastSuccess == null
         ? null
         : DateTime.now().difference(DateTime.parse(lastSuccess));
+    final storageUsed =
+        int.tryParse(await _setting('sync.storage_used_bytes') ?? '') ?? 0;
+    final storageLimit =
+        int.tryParse(await _setting('sync.storage_limit_bytes') ?? '') ?? 0;
     return {
       'relay_url': await relayUrl() ?? '',
       'store_id': await storeId(),
@@ -746,8 +799,13 @@ class SyncService {
       'last_error': lastError ?? '',
       'last_attempt_at': lastAttempt ?? '',
       'syncing': _inflight != null,
-      'stale': pending > 0 && (age == null || age.inHours >= 24),
+      'stale': pending > 0 && (age == null || age.inHours >= warnHours),
+      'pending_warn_hours': warnHours,
       'cursor': cursorRows.isEmpty ? 0 : cursorRows.first['last_seq'] ?? 0,
+      'storage_used_bytes': storageUsed,
+      'storage_limit_bytes': storageLimit,
+      'storage_warning':
+          (await _setting('sync.storage_warning') ?? '0') == '1',
     };
   }
 
@@ -869,8 +927,13 @@ class SyncService {
             customer.isEmpty ? '' : customer.first['sync_id'],
         'unit_type': row['unit_type'],
         'nopol': row['nopol'],
+        'merek': row['merek'],
+        'tipe': row['tipe'],
         'jenis_mobil': row['jenis_mobil'],
         'tahun_mobil': row['tahun_mobil'],
+        'no_rangka': row['no_rangka'],
+        'no_mesin': row['no_mesin'],
+        'km_terakhir': row['km_terakhir'],
         'tipe_radiator': row['tipe_radiator'],
         'label_radiator': row['label_radiator'],
         'created_at': row['created_at'],
@@ -906,33 +969,6 @@ class SyncService {
         'satuan': row['satuan'] ?? 'pcs',
         'desimal': row['desimal'] ?? 0,
         'deleted_at': row['deleted_at'],
-      },
-    );
-  }
-
-  Future<void> enqueueStockDelta(
-    int stockItemId,
-    int qty, {
-    int? qtyMilli,
-    DatabaseExecutor? txn,
-  }) async {
-    final executor = txn ?? AppDatabase.instance.db;
-    final rows = await executor.query(
-      'stock_items',
-      where: 'id = ?',
-      whereArgs: [stockItemId],
-      limit: 1,
-    );
-    if (rows.isEmpty) return;
-    final row = rows.first;
-    await enqueue(
-      txn: txn,
-      entity: 'stock',
-      action: 'delta',
-      entityId: row['sync_id'] as String,
-      payload: {
-        'sync_id': row['sync_id'],
-        'qty_milli': qtyMilli ?? qty * 1000,
       },
     );
   }
@@ -1033,7 +1069,8 @@ class SyncService {
       payload: {
         'sync_id': row['sync_id'],
         'nama': row['nama'],
-        'harga_standar': row['harga_standar'],
+        'harga_jual': row['harga_jual'],
+        'harga_modal': row['harga_modal'],
         'interval_servis_bulan': row['interval_servis_bulan'] ?? 0,
         'created_at': row['created_at'],
         'deleted_at': row['deleted_at'],
@@ -1239,6 +1276,294 @@ class SyncService {
     );
   }
 
+  Future<void> enqueueStoreSettings(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'store_settings',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'store_settings',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'types': _jsonObject(row['transaction_types_json']),
+        'stages': _jsonObject(row['order_stages_json']),
+        'simpan_estimasi_lepas':
+            ((row['simpan_estimasi_lepas'] as num?)?.toInt() ?? 1) == 1,
+        'role_permissions': _jsonObject(row['role_permissions_json']),
+        'preset': row['preset'],
+        'updated_at': row['updated_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueEstimate(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'estimates',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final items = await executor.query(
+      'estimate_items',
+      where: 'estimate_sync_id = ?',
+      whereArgs: [syncId],
+      orderBy: 'id',
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'estimate',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'device_id': row['device_id'],
+        'nomor_estimasi': row['nomor_estimasi'],
+        'work_order_sync_id': row['work_order_sync_id'],
+        'customer_sync_id': row['customer_sync_id'],
+        'unit_sync_id': row['unit_sync_id'],
+        'versi': row['versi'],
+        'revisi_dari_sync_id': row['revisi_dari_sync_id'],
+        'alasan_revisi': row['alasan_revisi'],
+        'masa_berlaku': row['masa_berlaku'],
+        'total': row['total'],
+        'status': row['status'],
+        'disetujui_oleh': row['disetujui_oleh'],
+        'disetujui_at': row['disetujui_at'],
+        'mode_saat_dibuat': _jsonObject(row['mode_saat_dibuat_json']),
+        'converted_nota_sync_id': row['converted_nota_sync_id'],
+        'total_estimasi_terakhir': row['total_estimasi_terakhir'],
+        'dibuat_oleh': row['dibuat_oleh'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'items': items
+            .map(
+              (item) => {
+                'sync_id': item['sync_id'],
+                'jenis': item['jenis'],
+                'stock_sync_id': item['stock_sync_id'],
+                'deskripsi': item['deskripsi'],
+                'jumlah': item['jumlah'],
+                'harga_jual_terdaftar': item['harga_jual_terdaftar'],
+                'harga_batas_saat_transaksi':
+                    item['harga_batas_saat_transaksi'],
+                'harga_final': item['harga_final'],
+                'harga_modal': item['harga_modal'],
+                'diskon_alokasi': item['diskon_alokasi'],
+                'interval_servis_bulan': item['interval_servis_bulan'] ?? 0,
+                'subtotal': item['subtotal'],
+              },
+            )
+            .toList(),
+      },
+    );
+  }
+
+  Future<void> enqueueWorkOrder(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'work_orders',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'work_order',
+      action: row['deleted_at'] == null ? 'upsert' : 'delete',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'device_id': row['device_id'],
+        'nomor_order': row['nomor_order'],
+        'nomor_antrian': row['nomor_antrian'],
+        'customer_sync_id': row['customer_sync_id'],
+        'unit_sync_id': row['unit_sync_id'],
+        'keluhan': row['keluhan'],
+        'status': row['status'],
+        'mekanik_sync_id': row['mekanik_sync_id'],
+        'mekanik_nama': row['mekanik_nama'],
+        'waktu_masuk': row['waktu_masuk'],
+        'waktu_selesai': row['waktu_selesai'],
+        'nota_sync_id': row['nota_sync_id'],
+        'mode_saat_dibuat': _jsonObject(row['mode_saat_dibuat_json']),
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'deleted_at': row['deleted_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueWorkOrderStatus(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'work_order_status_log',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'work_order_status',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'work_order_sync_id': row['work_order_sync_id'],
+        'status': row['status'],
+        'waktu': row['waktu'],
+        'pembuat': row['pembuat'],
+        'perangkat': row['perangkat'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueNotaAdjustment(
+    int id, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'nota_adjustments',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'nota_adjustment',
+      action: 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'nota_sync_id': row['nota_sync_id'],
+        'nilai_selisih': row['nilai_selisih'],
+        'nilai_baru': row['nilai_baru'],
+        'alasan': row['alasan'],
+        'dibuat_oleh': row['dibuat_oleh'],
+        'disetujui_oleh': row['disetujui_oleh'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueDayDigest(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'day_digests',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'day_digest',
+      action: 'upsert',
+      entityId: syncId,
+      payload: {
+        'sync_id': syncId,
+        'source_device_id': row['source_device_id'],
+        'tanggal': row['tanggal'],
+        'data_type': row['data_type'],
+        'jumlah': row['jumlah'],
+        'hash': row['hash'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueDataRequest({
+    required String tanggal,
+    required String dataType,
+    required String alasan,
+    required String targetDeviceId,
+    Duration ttl = const Duration(days: 3),
+    DatabaseExecutor? txn,
+  }) async {
+    final syncId = newSyncId();
+    await enqueue(
+      txn: txn,
+      entity: 'data_request',
+      action: 'upsert',
+      entityId: syncId,
+      payload: {
+        'sync_id': syncId,
+        'target_device_id': targetDeviceId,
+        'tanggal': tanggal,
+        'data_type': dataType,
+        'alasan': alasan,
+        'expires_at': DateTime.now().add(ttl).toIso8601String(),
+        'created_at': nowIso(),
+      },
+    );
+  }
+
+  Future<void> enqueueDataResponse({
+    required String requestSyncId,
+    required List<Map<String, Object?>> envelopes,
+    DatabaseExecutor? txn,
+  }) async {
+    final syncId = newSyncId();
+    await enqueue(
+      txn: txn,
+      entity: 'data_response',
+      action: 'upsert',
+      entityId: syncId,
+      payload: {
+        'sync_id': syncId,
+        'request_sync_id': requestSyncId,
+        'envelopes': envelopes,
+        'created_at': nowIso(),
+      },
+    );
+  }
+
   Future<void> refreshEmployeePermission() async {
     final device = await DeviceService.instance.currentDevice();
     if (device == null || device['kind'] != 'employee') return;
@@ -1342,68 +1667,51 @@ class SyncService {
       whereArgs: [now],
       orderBy: 'seq',
     );
-    for (final item in pending) {
-      try {
-        final payload = jsonDecode(item['payload_json'] as String)
-            as Map<String, Object?>;
-        final envelope = await buildEnvelope(
-          devicePrivateKey: privateKey,
-          storeKey: storeKey,
-          storeId: store,
-          senderDeviceId: deviceId,
-          recipientDeviceId: '',
-          seq: item['seq'] as int,
-          hlcWall: item['hlc_wall'] as int,
-          hlcCounter: item['hlc_counter'] as int,
-          idempotencyKey: item['idempotency_key'] as String,
-          entity: item['entity'] as String,
-          action: item['action'] as String,
-          entityId: item['entity_id'] as String,
-          payload: payload,
-        );
-        await client.submitEnvelope(envelope);
-        await AppDatabase.instance.db.update(
-          'sync_outbox',
-          {
-            'status': 'sent',
-            'sent_at': nowIso(),
-            'error': '',
-            'next_retry_at': null,
-          },
-          where: 'id = ?',
-          whereArgs: [item['id']],
-        );
-        sent++;
-      } catch (error) {
-        final attempts = ((item['retry_count'] as num?)?.toInt() ?? 0) + 1;
-        await AppDatabase.instance.db.update(
-          'sync_outbox',
-          {
-            'retry_count': attempts,
-            'error': '$error',
-            'next_retry_at': DateTime.now()
-                .add(SyncConflictRules.backoffFor(attempts))
-                .toIso8601String(),
-          },
-          where: 'id = ?',
-          whereArgs: [item['id']],
-        );
-        await AppDatabase.instance.setSetting(
-          'sync.last_error',
-          '$error',
-        );
-        break;
+    if (pending.isNotEmpty) {
+      final envelopes = <Map<String, Object?>>[];
+      final rows = <Map<String, Object?>>[];
+      for (final item in pending) {
+        try {
+          final payload = jsonDecode(item['payload_json'] as String)
+              as Map<String, Object?>;
+          envelopes.add(
+            await buildEnvelope(
+              devicePrivateKey: privateKey,
+              storeKey: storeKey,
+              storeId: store,
+              senderDeviceId: deviceId,
+              recipientDeviceId: '',
+              seq: item['seq'] as int,
+              hlcWall: item['hlc_wall'] as int,
+              hlcCounter: item['hlc_counter'] as int,
+              idempotencyKey: item['idempotency_key'] as String,
+              entity: item['entity'] as String,
+              action: item['action'] as String,
+              entityId: item['entity_id'] as String,
+              payload: payload,
+            ),
+          );
+          rows.add(item);
+        } catch (error) {
+          await _failOutbox(item, error);
+        }
       }
+      sent = await _sendBatches(
+        client: client,
+        storeId: store,
+        envelopes: envelopes,
+        rows: rows,
+      );
     }
     final devices = await client.devices();
     var keys = _senderKeys(devices);
-    var kinds = _senderKinds(devices);
+    var profiles = _senderProfiles(devices);
     final inbox = await _retryInbox(
       store: store,
       deviceId: deviceId,
       storeKey: storeKey,
       keys: keys,
-      kinds: kinds,
+      profiles: profiles,
     );
     var applied = inbox.applied;
     var conflictCount = inbox.failed;
@@ -1424,113 +1732,124 @@ class SyncService {
         'Akan dicoba lagi otomatis.',
       );
     }
-    final feed = await client.feed(storeId: store, sinceSeq: cursor);
-    if (feed['snapshot_required'] == true) {
-      final boot = await client.bootstrap(store);
-      final rawSnapshot = boot['snapshot'];
-      if (rawSnapshot is Map) {
-        final snapshot = Map<String, Object?>.from(rawSnapshot);
-        final sender = snapshot['device_id'] as String? ?? '';
-        final senderKey = keys[sender];
-        if (senderKey == null) {
-          throw StateError('Kunci publik pengirim snapshot tidak ditemukan.');
-        }
-        final result = await AppDatabase.instance.applySnapshotPayload(
-          snapshot,
-          senderPublicKey: senderKey,
-          storeKey: storeKey,
-          storeId: store,
-          deviceId: deviceId,
-        );
-        final seq = (result['store_seq'] as num?)?.toInt() ?? 0;
-        if (result['applied'] == true) {
-          await client.ack(storeId: store, lastSeq: seq);
-          await _setCursor(store, deviceId, seq);
-          await AppDatabase.instance.setSetting(
-            'sync.last_success_at',
-            nowIso(),
-          );
-        }
-        await _ackOpenRound(client, store: store, lastSeq: seq);
-        return {
-          'sent': sent,
-          'applied': 0,
-          'cursor': seq,
-          'snapshot_required': false,
-          'snapshot_applied': result['applied'] == true,
-        };
-      }
-      return {
-        'sent': sent,
-        'applied': 0,
-        'cursor': cursor,
-        'snapshot_required': true,
-      };
-    }
+    var next = cursor;
+    var pageCursor = cursor;
     int? blockedSeq;
     String blockedError = '';
     var refreshedDevices = false;
-    for (final raw in (feed['envelopes'] as List? ?? const [])) {
-      final envelope = (raw as Map).map(
-        (key, value) => MapEntry('$key', value),
-      );
-      final sender = envelope['sender_device_id'] as String? ?? '';
-      final relaySeq = (envelope['relay_seq'] as num?)?.toInt() ??
-          (envelope['seq'] as num?)?.toInt() ??
-          0;
-      if (sender == deviceId) {
-        continue;
+    while (true) {
+      final feed = await client.feed(storeId: store, sinceSeq: pageCursor);
+      if (feed['snapshot_required'] == true) {
+        final boot = await client.bootstrap(store);
+        final rawSnapshot = boot['snapshot'];
+        if (rawSnapshot is Map) {
+          final snapshot = Map<String, Object?>.from(rawSnapshot);
+          final sender = snapshot['device_id'] as String? ?? '';
+          final senderKey = keys[sender];
+          if (senderKey == null) {
+            throw StateError('Kunci publik pengirim snapshot tidak ditemukan.');
+          }
+          final result = await AppDatabase.instance.applySnapshotPayload(
+            snapshot,
+            senderPublicKey: senderKey,
+            storeKey: storeKey,
+            storeId: store,
+            deviceId: deviceId,
+          );
+          final seq = (result['store_seq'] as num?)?.toInt() ?? 0;
+          if (result['applied'] == true) {
+            await client.ack(storeId: store, lastSeq: seq);
+            await _setCursor(store, deviceId, seq);
+            await AppDatabase.instance.setSetting(
+              'sync.last_success_at',
+              nowIso(),
+            );
+          }
+          await _ackOpenRound(client, store: store, lastSeq: seq);
+          return {
+            'sent': sent,
+            'applied': 0,
+            'cursor': seq,
+            'snapshot_required': false,
+            'snapshot_applied': result['applied'] == true,
+          };
+        }
+        return {
+          'sent': sent,
+          'applied': 0,
+          'cursor': pageCursor,
+          'snapshot_required': true,
+        };
       }
-      if (relaySeq <= cursor) continue;
-      var key = keys[sender];
-      if (key == null && !refreshedDevices) {
-        refreshedDevices = true;
-        final fresh = await client.devices();
-        keys = _senderKeys(fresh);
-        kinds = _senderKinds(fresh);
-        key = keys[sender];
-      }
-      if (key == null) {
-        blockedSeq = blockedSeq == null || relaySeq < blockedSeq
-            ? relaySeq
-            : blockedSeq;
-        blockedError = sender.isEmpty
-            ? 'Amplop tanpa pengirim.'
-            : 'Amplop dari perangkat "$sender" tidak dikenal.';
-        break;
-      }
-      try {
-        final didApply = await _applyOnce(
-          envelope: envelope,
-          senderKey: key,
-          senderKind: kinds[sender] ?? 'unknown',
-          storeKey: storeKey,
-          storeId: store,
+      for (final raw in (feed['envelopes'] as List? ?? const [])) {
+        final envelope = (raw as Map).map(
+          (key, value) => MapEntry('$key', value),
         );
-        if (didApply) applied++;
-      } catch (error) {
-        final attempts = await _rememberFailure(
-          storeId: store,
-          deviceId: deviceId,
-          relaySeq: relaySeq,
-          envelope: envelope,
-          error: error,
-        );
-        conflictCount++;
-        if (attempts >= SyncConflictRules.maxRetries) {
-          // Percobaan habis: amplop dilewati tetapi konflik tetap terlihat
-          // dan dapat dicoba ulang dari layar konflik.
+        final sender = envelope['sender_device_id'] as String? ?? '';
+        final relaySeq = (envelope['relay_seq'] as num?)?.toInt() ??
+            (envelope['seq'] as num?)?.toInt() ??
+            0;
+        if (sender == deviceId) {
           continue;
         }
-        if (blockedSeq == null || relaySeq < blockedSeq) {
-          blockedSeq = relaySeq;
-          blockedError = '$error';
+        if (relaySeq <= pageCursor) continue;
+        var key = keys[sender];
+        if (key == null && !refreshedDevices) {
+          refreshedDevices = true;
+          final fresh = await client.devices();
+          keys = _senderKeys(fresh);
+          profiles = _senderProfiles(fresh);
+          key = keys[sender];
+        }
+        if (key == null) {
+          blockedSeq = blockedSeq == null || relaySeq < blockedSeq
+              ? relaySeq
+              : blockedSeq;
+          blockedError = sender.isEmpty
+              ? 'Amplop tanpa pengirim.'
+              : 'Amplop dari perangkat "$sender" tidak dikenal.';
+          break;
+        }
+        try {
+          final didApply = await _applyOnce(
+            envelope: envelope,
+            senderKey: key,
+            senderKind: profiles[sender]?.kind ?? 'unknown',
+            senderProfile: profiles[sender],
+            storeKey: storeKey,
+            storeId: store,
+          );
+          if (didApply) applied++;
+        } catch (error) {
+          final attempts = await _rememberFailure(
+            storeId: store,
+            deviceId: deviceId,
+            relaySeq: relaySeq,
+            envelope: envelope,
+            error: error,
+          );
+          conflictCount++;
+          if (attempts >= SyncConflictRules.maxRetries) {
+            // Percobaan habis: amplop dilewati tetapi konflik tetap terlihat
+            // dan dapat dicoba ulang dari layar konflik.
+            continue;
+          }
+          if (blockedSeq == null || relaySeq < blockedSeq) {
+            blockedSeq = relaySeq;
+            blockedError = '$error';
+          }
         }
       }
+      final latest = (feed['latest_seq'] as num?)?.toInt() ?? 0;
+      final advance = blockedSeq != null
+          ? (blockedSeq > 0 ? blockedSeq - 1 : pageCursor)
+          : (feed['next_seq'] as int? ?? pageCursor);
+      if (advance > next) next = advance;
+      if (blockedSeq != null) break;
+      if (advance <= pageCursor) break;
+      pageCursor = advance;
+      if (pageCursor >= latest) break;
     }
-    final next = blockedSeq != null
-        ? (blockedSeq > 0 ? blockedSeq - 1 : cursor)
-        : (feed['next_seq'] as int? ?? cursor);
     if (next > 0) {
       await client.ack(storeId: store, lastSeq: next);
       await _setCursor(store, deviceId, next);
@@ -1553,14 +1872,149 @@ class SyncService {
       'applied': applied,
       'conflicts': conflictCount,
       'cursor': next,
-      'snapshot_required': feed['snapshot_required'] == true,
+      'snapshot_required': false,
     };
+  }
+
+  Future<void> _failOutbox(Map<String, Object?> row, Object error) async {
+    final attempts = ((row['retry_count'] as num?)?.toInt() ?? 0) + 1;
+    await AppDatabase.instance.db.update(
+      'sync_outbox',
+      {
+        'retry_count': attempts,
+        'error': '$error',
+        'next_retry_at': DateTime.now()
+            .add(SyncConflictRules.backoffFor(attempts))
+            .toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [row['id']],
+    );
+    await AppDatabase.instance.setSetting('sync.last_error', '$error');
+  }
+
+  /// Kirim outbox secara bertahap. Ukuran batch diturunkan saat relay sibuk
+  /// dan dinaikkan perlahan saat lancar; batas atas mengikuti `max_batch`
+  /// yang dihitung relay dari beban nyata, bukan dari isi payload.
+  Future<int> _sendBatches({
+    required RelayClient client,
+    required String storeId,
+    required List<Map<String, Object?>> envelopes,
+    required List<Map<String, Object?>> rows,
+  }) async {
+    if (envelopes.isEmpty) return 0;
+    var countLimit =
+        (int.tryParse(await _setting('sync.batch_size') ?? '') ?? 5)
+            .clamp(1, 100);
+    var bytesLimit =
+        (int.tryParse(await _setting('sync.batch_bytes') ?? '') ?? 262144)
+            .clamp(16384, 4 * 1024 * 1024);
+    var index = 0;
+    var sent = 0;
+    while (index < envelopes.length) {
+      final start = index;
+      final batch = <Map<String, Object?>>[];
+      final batchRows = <Map<String, Object?>>[];
+      var bytes = 0;
+      while (index < envelopes.length && batch.length < countLimit) {
+        final size = utf8.encode(jsonEncode(envelopes[index])).length;
+        if (batch.isNotEmpty && bytes + size > bytesLimit) break;
+        batch.add(envelopes[index]);
+        batchRows.add(rows[index]);
+        bytes += size;
+        index++;
+      }
+      try {
+        final response = await client.submitEnvelopes(
+          storeId: storeId,
+          envelopes: batch,
+        );
+        final storage = response['storage'];
+        if (storage is Map) {
+          final used = (storage['used_bytes'] as num?)?.toInt() ?? 0;
+          final limit = (storage['limit_bytes'] as num?)?.toInt() ?? 0;
+          await AppDatabase.instance
+              .setSetting('sync.storage_used_bytes', '$used');
+          await AppDatabase.instance
+              .setSetting('sync.storage_limit_bytes', '$limit');
+          await AppDatabase.instance.setSetting(
+            'sync.storage_warning',
+            storage['warning'] == true ? '1' : '0',
+          );
+        }
+        final stamp = nowIso();
+        await AppDatabase.instance.db.transaction((txn) async {
+          for (final row in batchRows) {
+            await txn.update(
+              'sync_outbox',
+              {
+                'status': 'sent',
+                'sent_at': stamp,
+                'error': '',
+                'next_retry_at': null,
+              },
+              where: 'id = ?',
+              whereArgs: [row['id']],
+            );
+          }
+        });
+        sent += batch.length;
+        countLimit = _nextCountLimit(response, countLimit);
+        bytesLimit = _nextBytesLimit(response, bytesLimit);
+        await AppDatabase.instance.setSetting('sync.batch_size', '$countLimit');
+        await AppDatabase.instance
+            .setSetting('sync.batch_bytes', '$bytesLimit');
+      } on RelayException catch (error) {
+        if (error.busy) {
+          countLimit = max(1, countLimit ~/ 2);
+          await AppDatabase.instance
+              .setSetting('sync.batch_size', '$countLimit');
+          final retry = (error.retryAfterSeconds ?? 60).clamp(5, 900);
+          final nextTry = DateTime.now().add(Duration(seconds: retry));
+          for (final row in rows.sublist(start)) {
+            await AppDatabase.instance.db.update(
+              'sync_outbox',
+              {
+                'next_retry_at': nextTry.toIso8601String(),
+                'error': '$error',
+              },
+              where: 'id = ?',
+              whereArgs: [row['id']],
+            );
+          }
+          await AppDatabase.instance.setSetting('sync.last_error', '$error');
+          break;
+        }
+        await _failOutbox(batchRows.first, error);
+        break;
+      } catch (error) {
+        await _failOutbox(batchRows.first, error);
+        break;
+      }
+    }
+    return sent;
+  }
+
+  int _nextCountLimit(Map<String, Object?> response, int current) {
+    final limits = response['max_batch'];
+    final maxCount = limits is Map ? (limits['count'] as num?)?.toInt() : null;
+    var next = current + max(1, current ~/ 2);
+    if (maxCount != null && maxCount > 0) next = min(next, maxCount);
+    return next.clamp(1, 100).toInt();
+  }
+
+  int _nextBytesLimit(Map<String, Object?> response, int current) {
+    final limits = response['max_batch'];
+    final maxBytes = limits is Map ? (limits['bytes'] as num?)?.toInt() : null;
+    if (maxBytes == null || maxBytes <= 0) return current;
+    return maxBytes.clamp(16384, 4 * 1024 * 1024).toInt();
   }
 
   Future<bool> _applyOnce({
     required Map<String, Object?> envelope,
     required String senderKey,
     required String senderKind,
+    SenderProfile? senderProfile,
     required List<int> storeKey,
     required String storeId,
   }) async {
@@ -1587,7 +2041,7 @@ class SyncService {
         txn,
         data,
         envelope['id'] as String? ?? '',
-        senderKind: senderKind,
+        senderProfile: senderProfile ?? SenderProfile.legacy(senderKind),
       );
       await txn.insert(
         'applied_deltas',
@@ -1626,7 +2080,7 @@ class SyncService {
     required String deviceId,
     required List<int> storeKey,
     required Map<String, String?> keys,
-    required Map<String, String> kinds,
+    required Map<String, SenderProfile> profiles,
   }) async {
     final rows = await AppDatabase.instance.db.query(
       'sync_inbox',
@@ -1666,7 +2120,8 @@ class SyncService {
         final didApply = await _applyOnce(
           envelope: envelope,
           senderKey: key,
-          senderKind: kinds[sender] ?? 'unknown',
+          senderKind: profiles[sender]?.kind ?? 'unknown',
+          senderProfile: profiles[sender],
           storeKey: storeKey,
           storeId: store,
         );
@@ -1738,6 +2193,7 @@ class SyncService {
       envelope: envelope,
       senderKey: senderKey,
       senderKind: senderKind,
+      senderProfile: SenderProfile.legacy(senderKind),
       storeKey: storeKey,
       storeId: storeId,
     );
@@ -1757,7 +2213,10 @@ class SyncService {
       deviceId: deviceId,
       storeKey: storeKey,
       keys: keys,
-      kinds: kinds,
+      profiles: {
+        for (final entry in kinds.entries)
+          entry.key: SenderProfile.legacy(entry.value),
+      },
     );
   }
 
@@ -1899,10 +2358,22 @@ class SyncService {
     };
   }
 
-  Map<String, String> _senderKinds(List<Map<String, Object?>> devices) {
+  Map<String, SenderProfile> _senderProfiles(
+    List<Map<String, Object?>> devices,
+  ) {
     return {
       for (final device in devices)
-        if (device['id'] != null) '${device['id']}': '${device['kind'] ?? ''}',
+        if (device['id'] != null)
+          '${device['id']}': SenderProfile(
+            kind: '${device['kind'] ?? ''}',
+            roleBase: '${device['role_base'] ?? ''}',
+            extraPermissions: ((device['extra_permissions'] as List?) ?? const [])
+                .map((item) => '$item')
+                .toSet(),
+            storeIds: ((device['store_ids'] as List?) ?? const [])
+                .map((item) => '$item')
+                .toList(),
+          ),
     };
   }
 
@@ -1955,8 +2426,9 @@ class SyncService {
     DatabaseExecutor txn,
     Map<String, Object?> data,
     String envelopeId, {
-    String senderKind = 'unknown',
+    SenderProfile senderProfile = const SenderProfile.legacy('unknown'),
   }) async {
+    final senderKind = senderProfile.kind;
     final entity = data['entity'] as String? ?? '';
     final action = data['action'] as String? ?? '';
     final payload = data['payload'] as Map<String, Object?>? ?? const {};
@@ -1964,7 +2436,7 @@ class SyncService {
     final counter = (data['hlc_counter'] as num?)?.toInt() ?? 0;
     final hlc = {'sync_hlc_wall': wall, 'sync_hlc_counter': counter};
     final violation = SyncConflictRules.senderViolation(
-      senderKind: senderKind,
+      sender: senderProfile,
       entity: entity,
       action: action,
     );
@@ -2016,6 +2488,7 @@ class SyncService {
         'deleted_at':
             action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
         ...hlc,
+        'updated_at': payload['updated_at'] ?? nowIso(),
       };
       final rows = await txn.query(
         'customers',
@@ -2042,18 +2515,22 @@ class SyncService {
       final syncId = payload['sync_id'] as String? ?? '';
       final customerSync = payload['customer_sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
-      final customer = await txn.query(
-        'customers',
-        columns: ['id'],
-        where: 'sync_id = ?',
-        whereArgs: [customerSync],
-        limit: 1,
-      );
-      if (customer.isEmpty) {
-        throw RetryableSyncException(
-          'Unit menunggu data pelanggan ($customerSync) diterapkan.',
-          code: 'unit_butuh_customer',
+      int? customerId;
+      if (customerSync.isNotEmpty) {
+        final customer = await txn.query(
+          'customers',
+          columns: ['id'],
+          where: 'sync_id = ?',
+          whereArgs: [customerSync],
+          limit: 1,
         );
+        if (customer.isEmpty) {
+          throw RetryableSyncException(
+            'Unit menunggu data pelanggan ($customerSync) diterapkan.',
+            code: 'unit_butuh_customer',
+          );
+        }
+        customerId = customer.first['id'] as int;
       }
       if (!await _remoteWins(
         txn,
@@ -2072,16 +2549,22 @@ class SyncService {
         return;
       }
       final values = {
-        'customer_id': customer.first['id'],
+        'customer_id': customerId,
         'unit_type': payload['unit_type'] ?? 'MOBIL',
         'nopol': payload['nopol'],
+        'merek': payload['merek'],
+        'tipe': payload['tipe'],
         'jenis_mobil': payload['jenis_mobil'],
         'tahun_mobil': payload['tahun_mobil'],
+        'no_rangka': payload['no_rangka'],
+        'no_mesin': payload['no_mesin'],
+        'km_terakhir': payload['km_terakhir'],
         'tipe_radiator': payload['tipe_radiator'],
         'label_radiator': payload['label_radiator'],
         'deleted_at':
             action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
         ...hlc,
+        'updated_at': payload['updated_at'] ?? nowIso(),
       };
       final rows = await txn.query(
         'vehicle_or_units',
@@ -2113,25 +2596,6 @@ class SyncService {
         whereArgs: [syncId],
         limit: 1,
       );
-      if (action == 'delta') {
-        if (rows.isEmpty) {
-          throw RetryableSyncException(
-            'Delta stok diterima sebelum metadata barang ($syncId).',
-            code: 'stok_tanpa_metadata',
-          );
-        }
-        final delta = (payload['qty_milli'] as num?)?.toInt() ??
-            ((payload['qty'] as num?)?.toInt() ?? 0) * 1000;
-        final before = StockItem.fromRow(rows.first);
-        final next = before.jumlahMilli + delta;
-        await txn.update(
-          'stock_items',
-          {'jumlah': next ~/ 1000, 'jumlah_milli': next},
-          where: 'sync_id = ?',
-          whereArgs: [syncId],
-        );
-        return;
-      }
       if (!await _remoteWins(
         txn,
         table: 'stock_items',
@@ -2159,6 +2623,7 @@ class SyncService {
         'deleted_at':
             action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
         ...hlc,
+        'updated_at': payload['updated_at'] ?? nowIso(),
       };
       if (rows.isEmpty) {
         if ((payload['kode'] as String? ?? '').isEmpty) {
@@ -2228,6 +2693,7 @@ class SyncService {
         'alasan': payload['alasan'],
         'service_record_id': recordId,
         'created_at': payload['created_at'] ?? nowIso(),
+        'updated_at': payload['updated_at'] ?? nowIso(),
       });
       final before = StockItem.fromRow(stock.first);
       final next = before.jumlahMilli + qtyMilli;
@@ -2272,11 +2738,13 @@ class SyncService {
       }
       final values = {
         'nama': payload['nama'] ?? '',
-        'harga_standar': payload['harga_standar'] ?? 0,
+        'harga_jual': payload['harga_jual'] ?? 0,
+        'harga_modal': payload['harga_modal'] ?? 0,
         'interval_servis_bulan': payload['interval_servis_bulan'] ?? 0,
         'deleted_at':
             action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
         ...hlc,
+        'updated_at': payload['updated_at'] ?? nowIso(),
       };
       final rows = await txn.query(
         'harga_jasa',
@@ -2423,6 +2891,7 @@ class SyncService {
           'supplier_id': supplier.first['id'],
           'stock_item_id': stock.first['id'],
           ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
         });
       } else {
         await txn.update(
@@ -2474,6 +2943,8 @@ class SyncService {
           'service_record_id': record.first['id'],
           'employee_sync_id': payload['employee_sync_id'] ?? '',
           ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': payload['updated_at'] ?? nowIso(),
         });
       } else {
         await txn.update(
@@ -2514,6 +2985,7 @@ class SyncService {
           'sync_id': syncId,
           ...values,
           'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': payload['updated_at'] ?? nowIso(),
         });
       } else {
         await txn.update(
@@ -2563,6 +3035,7 @@ class SyncService {
           'sync_id': syncId,
           ...values,
           'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': payload['updated_at'] ?? nowIso(),
         });
       } else {
         await txn.update(
@@ -2604,6 +3077,456 @@ class SyncService {
         payload,
         action: action,
       );
+      final record = payload['record'] as Map<String, Object?>? ?? const {};
+      final recordSync = '${record['sync_id'] ?? ''}';
+      final estimateSync = '${record['estimate_sync_id'] ?? ''}'.trim();
+      if (recordSync.isNotEmpty && estimateSync.isNotEmpty) {
+        await txn.update(
+          'estimates',
+          {
+            'status': 'dikonversi',
+            'converted_nota_sync_id': recordSync,
+            'total_estimasi_terakhir':
+                record['total_estimasi_terakhir'],
+            'updated_at': nowIso(),
+          },
+          where: 'sync_id = ?',
+          whereArgs: [estimateSync],
+        );
+      }
+      final orderSync = '${record['work_order_sync_id'] ?? ''}'.trim();
+      if (recordSync.isNotEmpty && orderSync.isNotEmpty) {
+        await txn.update(
+          'work_orders',
+          {'nota_sync_id': recordSync, 'updated_at': nowIso()},
+          where: 'sync_id = ?',
+          whereArgs: [orderSync],
+        );
+      }
+      if (recordSync.isNotEmpty) {
+        for (final key in const ['jobs', 'parts']) {
+          for (final raw in (payload[key] as List? ?? const [])) {
+            if (raw is! Map) continue;
+            final finalPrice = (raw['harga_final'] as num?)?.toInt() ??
+                (raw['harga'] as num?)?.toInt() ??
+                0;
+            final batas =
+                (raw['harga_batas_saat_transaksi'] as num?)?.toInt() ?? 0;
+            if (finalPrice >= batas) continue;
+            final approver = '${raw['disetujui_oleh'] ?? ''}'.trim();
+            if (approver.isNotEmpty) continue;
+            await _recordConflict(
+              txn,
+              entity: 'nota',
+              entityId: recordSync,
+              reason: 'harga_di_bawah_batas',
+              detail: {
+                'baris': key,
+                'deskripsi': raw['deskripsi'],
+                'harga_final': finalPrice,
+                'harga_batas': batas,
+                'error': '',
+              },
+              status: 'review',
+            );
+          }
+        }
+      }
+    } else if (entity == 'store_settings') {
+      await StoreSettingsService.instance.applyRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+      );
+    } else if (entity == 'estimate') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      final rows = await txn.query(
+        'estimates',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      final items = (payload['items'] as List? ?? const [])
+          .whereType<Map>()
+          .map((item) => Map<String, Object?>.from(item))
+          .toList();
+      if (rows.isEmpty) {
+        await txn.insert('estimates', {
+          'sync_id': syncId,
+          'device_id': payload['device_id'] ?? '',
+          'nomor_estimasi': payload['nomor_estimasi'] ?? '',
+          'work_order_sync_id': payload['work_order_sync_id'],
+          'customer_sync_id': payload['customer_sync_id'],
+          'unit_sync_id': payload['unit_sync_id'],
+          'versi': payload['versi'] ?? 1,
+          'revisi_dari_sync_id': payload['revisi_dari_sync_id'],
+          'alasan_revisi': payload['alasan_revisi'],
+          'masa_berlaku': payload['masa_berlaku'],
+          'total': payload['total'] ?? 0,
+          'status': payload['status'] ?? 'aktif',
+          'disetujui_oleh': payload['disetujui_oleh'],
+          'disetujui_at': payload['disetujui_at'],
+          'mode_saat_dibuat_json':
+              jsonEncode(payload['mode_saat_dibuat'] ?? const {}),
+          'converted_nota_sync_id': payload['converted_nota_sync_id'],
+          'total_estimasi_terakhir': payload['total_estimasi_terakhir'],
+          'dibuat_oleh': payload['dibuat_oleh'],
+          ...hlc,
+          'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': payload['updated_at'] ?? nowIso(),
+        });
+        for (final item in items) {
+          final itemSync = item['sync_id'] as String? ?? '';
+          if (itemSync.isEmpty) continue;
+          await txn.insert('estimate_items', {
+            'sync_id': itemSync,
+            'estimate_sync_id': syncId,
+            'jenis': item['jenis'] ?? 'jasa',
+            'stock_sync_id': item['stock_sync_id'],
+            'deskripsi': item['deskripsi'] ?? '',
+            'jumlah': item['jumlah'] ?? 0,
+            'harga_jual_terdaftar': item['harga_jual_terdaftar'] ?? 0,
+            'harga_batas_saat_transaksi':
+                item['harga_batas_saat_transaksi'] ?? 0,
+            'harga_final': item['harga_final'] ?? 0,
+            'harga_modal': item['harga_modal'] ?? 0,
+            'diskon_alokasi': item['diskon_alokasi'] ?? 0,
+            'interval_servis_bulan': item['interval_servis_bulan'] ?? 0,
+            'subtotal': item['subtotal'] ?? 0,
+            'created_at': payload['created_at'] ?? nowIso(),
+            'updated_at': nowIso(),
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      } else {
+        if (!await _remoteWins(
+          txn,
+          table: 'estimates',
+          syncId: syncId,
+          wall: wall,
+          counter: counter,
+        )) {
+          return;
+        }
+        await txn.update(
+          'estimates',
+          {
+            'status': payload['status'] ?? 'aktif',
+            'disetujui_oleh': payload['disetujui_oleh'],
+            'disetujui_at': payload['disetujui_at'],
+            'converted_nota_sync_id': payload['converted_nota_sync_id'],
+            'total_estimasi_terakhir': payload['total_estimasi_terakhir'],
+            ...hlc,
+            'updated_at': payload['updated_at'] ?? nowIso(),
+          },
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+      for (final item in items) {
+        final finalPrice = (item['harga_final'] as num?)?.toInt() ?? 0;
+        final batas =
+            (item['harga_batas_saat_transaksi'] as num?)?.toInt() ?? 0;
+        final approved = '${payload['disetujui_oleh'] ?? ''}'.trim();
+        if (finalPrice < batas && approved.isEmpty) {
+          await _recordConflict(
+            txn,
+            entity: 'estimate',
+            entityId: syncId,
+            reason: 'harga_di_bawah_batas',
+            detail: {
+              'item': item['deskripsi'],
+              'harga_final': finalPrice,
+              'harga_batas': batas,
+              'error': '',
+            },
+            status: 'review',
+          );
+        }
+      }
+    } else if (entity == 'work_order') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      if (syncId.isEmpty) return;
+      if (!await _remoteWins(
+        txn,
+        table: 'work_orders',
+        syncId: syncId,
+        wall: wall,
+        counter: counter,
+      )) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {'envelope_id': envelopeId, 'hlc_wall': wall, 'error': ''},
+        );
+        return;
+      }
+      final rows = await txn.query(
+        'work_orders',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      final values = {
+        'device_id': payload['device_id'] ?? '',
+        'nomor_order': payload['nomor_order'],
+        'nomor_antrian': payload['nomor_antrian'],
+        'customer_sync_id': payload['customer_sync_id'],
+        'unit_sync_id': payload['unit_sync_id'],
+        'keluhan': payload['keluhan'] ?? '',
+        'status': payload['status'] ?? 'antri',
+        'mekanik_sync_id': payload['mekanik_sync_id'],
+        'mekanik_nama': payload['mekanik_nama'],
+        'waktu_masuk': payload['waktu_masuk'] ?? nowIso(),
+        'waktu_selesai': payload['waktu_selesai'],
+        'nota_sync_id': payload['nota_sync_id'],
+        'mode_saat_dibuat_json':
+            jsonEncode(payload['mode_saat_dibuat'] ?? const {}),
+        'deleted_at':
+            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        ...hlc,
+        'updated_at': payload['updated_at'] ?? nowIso(),
+      };
+      if (rows.isEmpty) {
+        await txn.insert('work_orders', {
+          'sync_id': syncId,
+          ...values,
+          'created_at': payload['created_at'] ?? nowIso(),
+        });
+      } else {
+        await txn.update(
+          'work_orders',
+          values,
+          where: 'sync_id = ?',
+          whereArgs: [syncId],
+        );
+      }
+      await _refreshWorkOrderStatus(txn, syncId);
+    } else if (entity == 'work_order_status') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final orderSync = payload['work_order_sync_id'] as String? ?? '';
+      final status = payload['status'] as String? ?? '';
+      if (syncId.isEmpty || orderSync.isEmpty || status.isEmpty) return;
+      final order = await txn.query(
+        'work_orders',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [orderSync],
+        limit: 1,
+      );
+      if (order.isEmpty) {
+        throw RetryableSyncException(
+          'Status order menunggu order ($orderSync).',
+          code: 'status_tanpa_order',
+        );
+      }
+      final existing = await txn.query(
+        'work_order_status_log',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        await _refreshWorkOrderStatus(txn, orderSync);
+        return;
+      }
+      final previous = await txn.query(
+        'work_order_status_log',
+        columns: ['status'],
+        where: 'work_order_sync_id = ?',
+        whereArgs: [orderSync],
+        orderBy:
+            'sync_hlc_wall DESC, sync_hlc_counter DESC, id DESC',
+        limit: 1,
+      );
+      final from =
+          previous.isEmpty ? null : previous.first['status'] as String?;
+      if (from != null &&
+          !senderProfile.isOwner &&
+          !allowedWorkOrderTransitions(from).contains(status)) {
+        await _recordConflict(
+          txn,
+          entity: 'work_order_status',
+          entityId: orderSync,
+          reason: 'transisi_status_dilarang',
+          detail: {'dari': from, 'ke': status, 'error': ''},
+          status: 'review',
+        );
+        return;
+      }
+      await txn.insert('work_order_status_log', {
+        'sync_id': syncId,
+        'work_order_sync_id': orderSync,
+        'status': status,
+        'waktu': payload['waktu'] ?? nowIso(),
+        'pembuat': payload['pembuat'],
+        'perangkat': payload['perangkat'],
+        ...hlc,
+        'created_at': payload['created_at'] ?? nowIso(),
+        'updated_at': nowIso(),
+      });
+      await _refreshWorkOrderStatus(txn, orderSync);
+    } else if (entity == 'nota_adjustment') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final notaSync = payload['nota_sync_id'] as String? ?? '';
+      if (syncId.isEmpty || notaSync.isEmpty) return;
+      final record = await txn.query(
+        'service_records',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [notaSync],
+        limit: 1,
+      );
+      if (record.isEmpty) {
+        throw RetryableSyncException(
+          'Koreksi menunggu nota asal ($notaSync).',
+          code: 'koreksi_tanpa_nota',
+        );
+      }
+      await NotaAdjustmentService.instance.applyRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+      );
+      final modal = await txn.rawQuery(
+        'SELECT '
+        'COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah) '
+        'FROM service_jobs WHERE service_record_id = ?), 0) + '
+        'COALESCE((SELECT SUM(harga_batas_saat_transaksi * jumlah) '
+        'FROM service_parts WHERE service_record_id = ?), 0) AS modal',
+        [record.first['id'], record.first['id']],
+      );
+      final modalTotal = (modal.first['modal'] as num?)?.toInt() ?? 0;
+      final nilaiBaru = (payload['nilai_baru'] as num?)?.toInt() ?? 0;
+      final approver = '${payload['disetujui_oleh'] ?? ''}'.trim();
+      if (nilaiBaru < modalTotal && approver.isEmpty) {
+        await _recordConflict(
+          txn,
+          entity: 'nota_adjustment',
+          entityId: syncId,
+          reason: 'koreksi_di_bawah_batas',
+          detail: {
+            'nota_sync_id': notaSync,
+            'nilai_baru': nilaiBaru,
+            'modal': modalTotal,
+            'error': '',
+          },
+          status: 'review',
+        );
+      }
+    } else if (entity == 'day_digest') {
+      final tanggal = payload['tanggal'] as String? ?? '';
+      final dataType = payload['data_type'] as String? ?? 'nota';
+      final source = payload['source_device_id'] as String? ?? '';
+      if (tanggal.isEmpty || source.isEmpty) return;
+      final syncId = payload['sync_id'] as String? ?? newSyncId();
+      await txn.insert(
+        'day_digests',
+        {
+          'sync_id': syncId,
+          'source_device_id': source,
+          'tanggal': tanggal,
+          'data_type': dataType,
+          'jumlah': payload['jumlah'] ?? 0,
+          'hash': payload['hash'] ?? '',
+          ...hlc,
+          'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': nowIso(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+      final local = await _localDayDigest(txn, tanggal, dataType);
+      final remoteHash = '${payload['hash'] ?? ''}';
+      if (local != null && remoteHash.isNotEmpty && local != remoteHash) {
+        final localDevice = await _localRelayDeviceId(txn);
+        final isOwner =
+            await SecureStore.instance.read('owner.signing.private') != null;
+        final requestSync = newSyncId();
+        await txn.insert(
+          'reconciliation_requests',
+          {
+            'sync_id': requestSync,
+            'target_device_id': source,
+            'tanggal': tanggal,
+            'data_type': dataType,
+            'alasan': 'Ringkasan harian berbeda',
+            'expires_at': DateTime.now()
+                .add(const Duration(days: 3))
+                .toIso8601String(),
+            'status': isOwner ? 'sent' : 'open',
+            'created_at': nowIso(),
+            'updated_at': nowIso(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        if (isOwner && localDevice.isNotEmpty) {
+          await enqueueDataRequest(
+            tanggal: tanggal,
+            dataType: dataType,
+            alasan: 'Ringkasan harian berbeda',
+            targetDeviceId: source,
+            txn: txn,
+          );
+        }
+        await _recordConflict(
+          txn,
+          entity: 'day_digest',
+          entityId: syncId,
+          reason: 'rekonsiliasi_beda',
+          detail: {
+            'tanggal': tanggal,
+            'data_type': dataType,
+            'lokal': local,
+            'remote': remoteHash,
+            'source_device_id': source,
+            'error': '',
+          },
+          status: 'review',
+        );
+      }
+    } else if (entity == 'data_request') {
+      final target = payload['target_device_id'] as String? ?? '';
+      final localDevice = await _localRelayDeviceId(txn);
+      if (target.isEmpty || target != localDevice) return;
+      final expires = DateTime.tryParse('${payload['expires_at'] ?? ''}');
+      if (expires != null && expires.isBefore(DateTime.now())) return;
+      final receipts = await _buildReconciliationResponse(
+        txn,
+        tanggal: payload['tanggal'] as String? ?? '',
+        dataType: payload['data_type'] as String? ?? 'nota',
+        requestSyncId: payload['sync_id'] as String? ?? '',
+      );
+      await enqueueDataResponse(
+        requestSyncId: payload['sync_id'] as String? ?? '',
+        envelopes: receipts,
+        txn: txn,
+      );
+    } else if (entity == 'data_response') {
+      for (final raw in (payload['envelopes'] as List? ?? const [])) {
+        if (raw is! Map) continue;
+        final item = raw.map((key, value) => MapEntry('$key', value));
+        final nestedEntity = '${item['entity'] ?? ''}';
+        if (nestedEntity.isEmpty) continue;
+        await _apply(
+          txn,
+          {
+            'entity': nestedEntity,
+            'action': '${item['action'] ?? 'upsert'}',
+            'payload': item['payload'] ?? const {},
+            'hlc_wall': item['hlc_wall'] ?? 0,
+            'hlc_counter': item['hlc_counter'] ?? 0,
+          },
+          '$envelopeId#response',
+          senderProfile: senderProfile,
+        );
+      }
     } else {
       await _recordConflict(
         txn,
@@ -2613,6 +3536,133 @@ class SyncService {
         detail: {'envelope_id': envelopeId, 'data': data, 'error': ''},
       );
     }
+  }
+
+  Future<void> _refreshWorkOrderStatus(
+    DatabaseExecutor txn,
+    String orderSync,
+  ) async {
+    final rows = await txn.query(
+      'work_order_status_log',
+      columns: ['status'],
+      where: 'work_order_sync_id = ?',
+      whereArgs: [orderSync],
+      orderBy: 'sync_hlc_wall DESC, sync_hlc_counter DESC, id DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    await txn.update(
+      'work_orders',
+      {'status': rows.first['status']},
+      where: 'sync_id = ?',
+      whereArgs: [orderSync],
+    );
+  }
+
+  Future<String> _localRelayDeviceId(DatabaseExecutor txn) async {
+    final rows = await txn.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['sync.relay_device_id'],
+      limit: 1,
+    );
+    return rows.isEmpty ? '' : rows.first['value'] as String? ?? '';
+  }
+
+  Future<String?> _localDayDigest(
+    DatabaseExecutor txn,
+    String tanggal,
+    String dataType,
+  ) async {
+    final rows = await txn.query(
+      'day_digests',
+      columns: ['hash'],
+      where:
+          'tanggal = ? AND data_type = ? AND source_device_id = ?',
+      whereArgs: [tanggal, dataType, await _localRelayDeviceId(txn)],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) return rows.first['hash'] as String?;
+    return null;
+  }
+
+  Future<List<Map<String, Object?>>> _buildReconciliationResponse(
+    DatabaseExecutor txn, {
+    required String tanggal,
+    required String dataType,
+    required String requestSyncId,
+  }) async {
+    if (tanggal.isEmpty) return const [];
+    final rows = await txn.query(
+      'service_records',
+      columns: ['id', 'sync_id', 'waktu_service'],
+      where: 'substr(waktu_service, 1, 10) = ?',
+      whereArgs: [tanggal],
+      orderBy: 'id',
+      limit: 300,
+    );
+    final result = <Map<String, Object?>>[];
+    for (final row in rows) {
+      final payload = await AppDatabase.instance.noteSyncPayload(
+        row['id'] as int,
+        executor: txn,
+      );
+      final record = payload['record'] as Map<String, Object?>? ?? const {};
+      result.add({
+        'entity': 'nota',
+        'action': 'upsert',
+        'hlc_wall': (record['sync_hlc_wall'] as num?)?.toInt() ?? 0,
+        'hlc_counter': (record['sync_hlc_counter'] as num?)?.toInt() ?? 0,
+        'payload': payload,
+      });
+    }
+    if (dataType != 'semua') return result;
+    final estimates = await txn.query(
+      'estimates',
+      where: 'substr(created_at, 1, 10) = ?',
+      whereArgs: [tanggal],
+      limit: 100,
+    );
+    for (final row in estimates) {
+      final items = await txn.query(
+        'estimate_items',
+        where: 'estimate_sync_id = ?',
+        whereArgs: [row['sync_id']],
+      );
+      result.add({
+        'entity': 'estimate',
+        'action': 'upsert',
+        'hlc_wall': (row['sync_hlc_wall'] as num?)?.toInt() ?? 0,
+        'hlc_counter': (row['sync_hlc_counter'] as num?)?.toInt() ?? 0,
+        'payload': {
+          'sync_id': row['sync_id'],
+          'nomor_estimasi': row['nomor_estimasi'],
+          'versi': row['versi'],
+          'total': row['total'],
+          'status': row['status'],
+          'created_at': row['created_at'],
+          'items': items
+              .map(
+                (item) => {
+                  'sync_id': item['sync_id'],
+                  'jenis': item['jenis'],
+                  'deskripsi': item['deskripsi'],
+                  'jumlah': item['jumlah'],
+                  'harga_jual_terdaftar': item['harga_jual_terdaftar'],
+                  'harga_batas_saat_transaksi':
+                      item['harga_batas_saat_transaksi'],
+                  'harga_final': item['harga_final'],
+                  'harga_modal': item['harga_modal'],
+                  'diskon_alokasi': item['diskon_alokasi'],
+                  'subtotal': item['subtotal'],
+                },
+              )
+              .toList(),
+        },
+      });
+    }
+    return result;
   }
 
   Future<void> cleanupSyncHistory() async {
@@ -2669,4 +3719,17 @@ class SyncService {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+}
+
+Map<String, Object?> _jsonObject(Object? raw) {
+  if (raw is Map) {
+    return {for (final entry in raw.entries) '${entry.key}': entry.value};
+  }
+  try {
+    final decoded = jsonDecode('${raw ?? '{}'}');
+    if (decoded is Map) {
+      return {for (final entry in decoded.entries) '${entry.key}': entry.value};
+    }
+  } catch (_) {}
+  return {};
 }

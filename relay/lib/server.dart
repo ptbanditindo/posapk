@@ -43,12 +43,17 @@ class RelayServer {
     window: const Duration(minutes: 10),
   );
   final Router _router;
+  int _activeRequests = 0;
+  int _writeQueue = 0;
+  int _lastLatencyMs = 0;
 
   Handler get handler {
     _router.get('/relay/health', _health);
     _router.post('/relay/devices', _enroll);
+    _router.post('/relay/pairing', _createPairing);
     _router.post('/relay/keys', _putKeyWrap);
     _router.post('/relay/envelopes', _submitEnvelope);
+    _router.post('/relay/envelopes/batch', _submitEnvelopeBatch);
     _router.get('/relay/feed', _feed);
     _router.post('/relay/feed/ack', _ack);
     _router.get('/relay/devices', _devices);
@@ -78,8 +83,23 @@ class RelayServer {
         .addMiddleware(logRequests())
         .addMiddleware(_cors)
         .addMiddleware(_errors)
+        .addMiddleware(_load)
         .addHandler(_router.call);
   }
+
+  Middleware get _load => (inner) {
+        return (request) async {
+          _activeRequests++;
+          final watch = Stopwatch()..start();
+          try {
+            return await inner(request);
+          } finally {
+            _activeRequests--;
+            watch.stop();
+            _lastLatencyMs = watch.elapsedMilliseconds;
+          }
+        };
+      };
 
   Middleware get _cors => (inner) {
         const headers = {
@@ -208,6 +228,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   /// terenkripsi, jadi pemeriksaan ini memakai petunjuk `entity`/`action`
   /// yang dikirim client; aturan konflik tetap ditegakkan saat apply.
   Future<bool> _employeeCanSend(
+    DatabaseSession tx,
     Map<String, Object?> device,
     String entity,
     String action,
@@ -218,7 +239,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     final accountId = device['employee_account_id'] as String? ?? '';
     final account = accountId.isEmpty
         ? null
-        : await db.one(
+        : await tx.one(
             'SELECT role_base, extra_permissions FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
             {'owner': device['owner_id'], 'sync': accountId},
           );
@@ -349,6 +370,12 @@ VALUES (@id, @owner, @nama, @kind, @account, @public, @encrypt, @ownerPublic,
         'hash': _hash(token),
       },
     );
+    if (auth['token'] != null) {
+      await db.execute(
+        'UPDATE enroll_tokens SET revoked = true WHERE token = @token',
+        {'token': auth['token']},
+      );
+    }
     return _json(200, {
       'device': {
         'id': deviceId,
@@ -360,6 +387,32 @@ VALUES (@id, @owner, @nama, @kind, @account, @public, @encrypt, @ownerPublic,
       },
       'token': token,
       'license_token': await _licenseFor(owner),
+    });
+  }
+
+  /// Membuat kode pairing berumur pendek (10-15 menit) untuk satu perangkat.
+  /// Kode hanya dapat dipakai sekali dan token perangkat hasil pairing dapat
+  /// dicabut kapan saja.
+  Future<Response> _createPairing(Request request) async {
+    final body = await _body(request);
+    final ownerId = '${body['owner_id'] ?? ''}';
+    final auth = await _manageAuth(request, ownerId);
+    if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
+    final ttl = ((body['ttl_minutes'] as num?)?.toInt() ?? 15).clamp(5, 20);
+    final code = _token();
+    final expires = DateTime.now().toUtc().add(Duration(minutes: ttl));
+    await db.execute(
+      '''
+INSERT INTO enroll_tokens (token, owner_id, expires_at)
+VALUES (@token, @owner, @expires)
+''',
+      {'token': code, 'owner': ownerId, 'expires': expires},
+    );
+    return _json(200, {
+      'code': code,
+      'owner_id': ownerId,
+      'expires_at': expires.toIso8601String(),
+      'ttl_minutes': ttl,
     });
   }
 
@@ -420,14 +473,87 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final body = await _body(request);
+    final store = '${body['store_id'] ?? ''}';
+    try {
+      _guardOverload();
+      final saved = await db.tx(
+        (tx) => _ingestEnvelope(tx, device, body),
+      );
+      await _pruneAcknowledged(device['owner_id'] as String, store);
+      return _json(200, {
+        ...saved,
+        ..._batchLimits(),
+        'storage': await _storageStatus(device['owner_id'] as String, store),
+      });
+    } on _BusyRejection catch (error) {
+      return _busy(error);
+    } on _EnvelopeRejection catch (error) {
+      return _error(error.status, error.detail, code: error.code);
+    }
+  }
+
+  Future<Response> _submitEnvelopeBatch(Request request) async {
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final body = await _body(request);
+    final store = '${body['store_id'] ?? ''}';
+    final raw = body['envelopes'];
+    if (raw is! List || raw.isEmpty) {
+      return _error(400, 'Batch amplop kosong.');
+    }
+    try {
+      _guardOverload();
+      _writeQueue++;
+      final results = await db.tx((tx) async {
+        final output = <Map<String, Object?>>[];
+        for (final item in raw) {
+          if (item is! Map) {
+            throw _EnvelopeRejection(400, 'Amplop tidak valid.');
+          }
+          output.add(
+            await _ingestEnvelope(
+              tx,
+              device,
+              item.map((key, value) => MapEntry('$key', value)),
+            ),
+          );
+        }
+        return output;
+      });
+      await _pruneAcknowledged(device['owner_id'] as String, store);
+      return _json(200, {
+        'results': results,
+        'accepted': results.length,
+        ..._batchLimits(),
+        'storage': await _storageStatus(device['owner_id'] as String, store),
+      });
+    } on _BusyRejection catch (error) {
+      return _busy(error);
+    } on _EnvelopeRejection catch (error) {
+      return _error(error.status, error.detail, code: error.code);
+    } finally {
+      if (_writeQueue > 0) _writeQueue--;
+    }
+  }
+
+  /// Validasi dan simpan satu amplop. Dipakai baik oleh endpoint tunggal
+  /// maupun batch sehingga aturan tanda tangan dan peran tidak berbeda.
+  Future<Map<String, Object?>> _ingestEnvelope(
+    DatabaseSession tx,
+    Map<String, Object?> device,
+    Map<String, Object?> body,
+  ) async {
     final sender = '${body['sender_device_id'] ?? ''}';
     if (sender.isEmpty || sender != device['id']) {
-      return _error(403, 'Pengirim amplop bukan perangkat ini.');
+      throw _EnvelopeRejection(403, 'Pengirim amplop bukan perangkat ini.');
     }
     final store = '${body['store_id'] ?? ''}';
     final stores = stringList(device['store_ids']);
     if (!stores.contains(store)) {
-      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+      throw _EnvelopeRejection(
+        403,
+        'Perangkat tidak terdaftar pada toko $store.',
+      );
     }
     final fields = {
       'v': 1,
@@ -452,47 +578,62 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
         fields['nonce'] == '' ||
         (fields['seq'] as int) <= 0 ||
         signature.isEmpty) {
-      return _error(400, 'Amplop tidak lengkap.');
+      throw _EnvelopeRejection(400, 'Amplop tidak lengkap.');
     }
     final valid = await license.verifyPayload(
       publicKey: device['public_key'] as String,
       payload: canonicalJson(fields),
       signature: signature,
     );
-    if (!valid) return _error(400, 'Tanda tangan amplop tidak valid.');
-    if (hintsSignature.isNotEmpty) {
-      final hintsValid = await license.verifyPayload(
-        publicKey: device['public_key'] as String,
-        payload: canonicalJson(
-          envelopeHintFields(
-            storeId: store,
-            senderDeviceId: sender,
-            entity: entity,
-            action: action,
-            entityId: entityId,
-            idempotencyKey: fields['idempotency_key'] as String,
-          ),
-        ),
-        signature: hintsSignature,
+    if (!valid) {
+      throw _EnvelopeRejection(400, 'Tanda tangan amplop tidak valid.');
+    }
+    if (hintsSignature.isEmpty) {
+      throw _EnvelopeRejection(
+        400,
+        'Tanda tangan petunjuk amplop wajib ada.',
+        code: 'hints_required',
       );
-      if (!hintsValid) {
-        return _error(400, 'Tanda tangan petunjuk amplop tidak valid.');
-      }
+    }
+    final hintsValid = await license.verifyPayload(
+      publicKey: device['public_key'] as String,
+      payload: canonicalJson(
+        envelopeHintFields(
+          storeId: store,
+          senderDeviceId: sender,
+          entity: entity,
+          action: action,
+          entityId: entityId,
+          idempotencyKey: fields['idempotency_key'] as String,
+        ),
+      ),
+      signature: hintsSignature,
+    );
+    if (!hintsValid) {
+      throw _EnvelopeRejection(
+        400,
+        'Tanda tangan petunjuk amplop tidak valid.',
+        code: 'hints_invalid',
+      );
     }
     final kind = '${device['kind'] ?? ''}';
     if (!canDeviceSubmitEnvelope(kind)) {
-      return _error(403, 'Perangkat ringkasan hanya dapat membaca data.');
+      throw _EnvelopeRejection(
+        403,
+        'Perangkat ringkasan hanya dapat membaca data.',
+      );
     }
     if (kind == 'employee') {
-      if (!await _employeeCanSend(device, entity, action)) {
-        return _error(
+      if (!await _employeeCanSend(tx, device, entity, action)) {
+        throw _EnvelopeRejection(
           403,
           'Perangkat ini tidak berwenang mengirim perubahan tersebut.',
+          code: 'permission_denied',
         );
       }
     }
 
-    final existing = await db.one(
+    final existing = await tx.one(
       '''
 SELECT id, relay_seq FROM envelopes
 WHERE owner_id = @owner
@@ -508,20 +649,20 @@ WHERE owner_id = @owner
       },
     );
     if (existing != null) {
-      return _json(200, {
+      return {
         'id': existing['id'],
         'relay_seq': existing['relay_seq'],
         'duplicate': true,
-      });
+      };
     }
     final id = _id('env');
-    await db.execute(
+    await tx.execute(
       '''
 INSERT INTO envelopes (id, owner_id, store_id, sender_device_id,
   recipient_device_id, seq, hlc_wall, hlc_counter, idempotency_key,
-  ciphertext, nonce, signature)
+  ciphertext, nonce, signature, entity, action, entity_id, hints_signature)
 VALUES (@id, @owner, @store, @sender, @recipient, @seq, @wall, @counter, @key,
-  @ciphertext, @nonce, @signature)
+  @ciphertext, @nonce, @signature, @entity, @action, @entityId, @hints)
 ON CONFLICT DO NOTHING
 ''',
       {
@@ -537,13 +678,113 @@ ON CONFLICT DO NOTHING
         'ciphertext': fields['ciphertext'],
         'nonce': fields['nonce'],
         'signature': signature,
+        'entity': entity,
+        'action': action,
+        'entityId': entityId,
+        'hints': hintsSignature,
       },
     );
-    final saved = await db.one(
+    final saved = await tx.one(
       'SELECT id, relay_seq FROM envelopes WHERE idempotency_key = @key',
       {'key': fields['idempotency_key']},
     );
-    return _json(200, saved ?? {'id': id});
+    return saved ?? {'id': id};
+  }
+
+  void _guardOverload() {
+    if (_activeRequests > 40 ||
+        _writeQueue > 20 ||
+        _lastLatencyMs > 1500) {
+      final seconds = (_lastLatencyMs / 500).ceil().clamp(2, 30);
+      throw _BusyRejection(seconds);
+    }
+  }
+
+  Response _busy(_BusyRejection error) {
+    return Response(
+      429,
+      body: jsonEncode({
+        'detail': 'Relay sedang sibuk. Coba lagi sebentar.',
+        'code': 'relay_sibuk',
+        'retry_after': error.seconds,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'retry-after': '${error.seconds}',
+      },
+    );
+  }
+
+  Map<String, Object?> _batchLimits() {
+    final count = (100 - _activeRequests * 5 - _writeQueue * 2).clamp(5, 100);
+    final bytes = (4 * 1024 * 1024 -
+            _writeQueue * 65536 -
+            _lastLatencyMs * 512)
+        .clamp(128 * 1024, 4 * 1024 * 1024);
+    return {
+      'max_batch': {'count': count, 'bytes': bytes},
+      'retry_after': null,
+    };
+  }
+
+  Future<Map<String, Object?>> _storageStatus(
+    String ownerId,
+    String store,
+  ) async {
+    final row = await db.one(
+      '''
+SELECT COALESCE(SUM(octet_length(ciphertext) + octet_length(nonce)), 0) AS bytes
+FROM envelopes WHERE owner_id = @owner AND store_id = @store
+''',
+      {'owner': ownerId, 'store': store},
+    );
+    final used = (row?['bytes'] as num?)?.toInt() ?? 0;
+    final limit = config.storageLimitBytes;
+    return {
+      'used_bytes': used,
+      'limit_bytes': limit,
+      'warning': used >= limit,
+    };
+  }
+
+  /// Hapus amplop yang sudah diakui SEMUA perangkat aktif pada toko.
+  /// Perangkat yang dicabut tidak lagi masuk daftar ack.
+  Future<void> _pruneAcknowledged(String ownerId, String store) async {
+    if (store.isEmpty) return;
+    final activeRow = await db.one(
+      '''
+SELECT COUNT(*) AS total FROM devices
+WHERE owner_id = @owner AND revoked_at IS NULL
+  AND store_ids @> CAST(@stores AS jsonb)
+''',
+      {'owner': ownerId, 'stores': jsonEncode([store])},
+    );
+    final active = (activeRow?['total'] as num?)?.toInt() ?? 0;
+    if (active <= 0) return;
+    final floorRow = await db.one(
+      '''
+SELECT MIN(c.last_seq) AS seq, COUNT(*) AS total
+FROM cursors c
+JOIN devices d ON d.id = c.device_id AND d.owner_id = c.owner_id
+WHERE c.owner_id = @owner AND c.store_id = @store
+  AND d.revoked_at IS NULL AND d.store_ids @> CAST(@stores AS jsonb)
+''',
+      {
+        'owner': ownerId,
+        'store': store,
+        'stores': jsonEncode([store]),
+      },
+    );
+    final acked = (floorRow?['total'] as num?)?.toInt() ?? 0;
+    final seq = (floorRow?['seq'] as num?)?.toInt() ?? 0;
+    if (acked < active || seq <= 0) return;
+    await db.execute(
+      '''
+DELETE FROM envelopes
+WHERE owner_id = @owner AND store_id = @store AND relay_seq <= @seq
+''',
+      {'owner': ownerId, 'store': store, 'seq': seq},
+    );
   }
 
   Future<Response> _feed(Request request) async {
@@ -610,6 +851,10 @@ ORDER BY relay_seq ASC LIMIT @limit
             'ciphertext': row['ciphertext'],
             'nonce': row['nonce'],
             'signature': row['signature'],
+            'entity': row['entity'],
+            'action': row['action'],
+            'entity_id': row['entity_id'],
+            'hints_signature': row['hints_signature'],
             'relay_seq': (row['relay_seq'] as num?)?.toInt() ?? 0,
           },
         )
@@ -657,9 +902,13 @@ ON CONFLICT (owner_id, device_id, store_id) DO UPDATE SET
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final rows = await db.query(
       '''
-SELECT id, owner_id, nama, kind, public_key, encryption_key, store_ids,
-       created_at, revoked_at
-FROM devices WHERE owner_id = @owner ORDER BY created_at
+SELECT d.id, d.owner_id, d.nama, d.kind, d.public_key, d.encryption_key,
+       d.store_ids, d.created_at, d.revoked_at, d.last_seen_at,
+       a.role_base, a.extra_permissions
+FROM devices d
+LEFT JOIN accounts a ON a.owner_id = d.owner_id
+  AND a.sync_id = d.employee_account_id
+WHERE d.owner_id = @owner ORDER BY d.created_at
 ''',
       {'owner': device['owner_id']},
     );
@@ -671,10 +920,13 @@ FROM devices WHERE owner_id = @owner ORDER BY created_at
         'owner_id': row['owner_id'],
         'nama': row['nama'],
         'kind': row['kind'],
+        'role_base': row['role_base'] ?? '',
+        'extra_permissions': stringList(row['extra_permissions']),
         'public_key': row['public_key'],
         'encryption_key': row['encryption_key'],
         'store_ids': stringList(row['store_ids']),
         'created_at': _iso(row['created_at']),
+        'last_seen_at': _iso(row['last_seen_at']),
         'revoked_at': _iso(row['revoked_at']),
       };
 
@@ -1616,7 +1868,13 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     final auth = await _manageAuth(request, ownerId);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
-      'SELECT * FROM devices WHERE owner_id = @owner ORDER BY created_at',
+      '''
+SELECT d.*, a.role_base, a.extra_permissions
+FROM devices d
+LEFT JOIN accounts a ON a.owner_id = d.owner_id
+  AND a.sync_id = d.employee_account_id
+WHERE d.owner_id = @owner ORDER BY d.created_at
+''',
       {'owner': ownerId},
     );
     return _json(200, rows.map(_deviceJson).toList());
@@ -1671,7 +1929,7 @@ ON CONFLICT (owner_id) DO UPDATE SET
       {
         'token': enroll,
         'owner': ownerId,
-        'expires': DateTime.now().toUtc().add(const Duration(days: 365)),
+        'expires': DateTime.now().toUtc().add(const Duration(minutes: 15)),
       },
     );
     return _json(200, {
@@ -1808,7 +2066,7 @@ ON CONFLICT (owner_id) DO UPDATE SET
       {
         'token': enroll,
         'owner': owner['owner_id'],
-        'expires': DateTime.now().toUtc().add(const Duration(days: 30)),
+        'expires': DateTime.now().toUtc().add(const Duration(minutes: 15)),
       },
     );
     return _json(200, {
@@ -1893,4 +2151,18 @@ ON CONFLICT (email) DO UPDATE SET
     );
     return _json(200, _identityJson(row!));
   }
+}
+
+class _EnvelopeRejection implements Exception {
+  _EnvelopeRejection(this.status, this.detail, {this.code = ''});
+
+  final int status;
+  final String detail;
+  final String code;
+}
+
+class _BusyRejection implements Exception {
+  _BusyRejection(this.seconds);
+
+  final int seconds;
 }

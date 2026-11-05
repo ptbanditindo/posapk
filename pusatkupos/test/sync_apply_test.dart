@@ -209,7 +209,7 @@ void main() {
       payload: {
         'sync_id': 'hj-1',
         'nama': 'Cuci radiator',
-        'harga_standar': 1000,
+        'harga_jual': 1000,
         'created_at': '2026-01-01T00:00:00.000Z',
       },
     );
@@ -249,7 +249,7 @@ void main() {
       payload: {
         'sync_id': 'hj-1',
         'nama': 'Cuci radiator',
-        'harga_standar': 5000,
+        'harga_jual': 5000,
         'created_at': '2026-01-01T00:00:00.000Z',
       },
     );
@@ -269,7 +269,7 @@ void main() {
       whereArgs: ['hj-1'],
     ))
         .single;
-    expect(row['harga_standar'], 5000);
+    expect(row['harga_jual'], 5000);
 
     final staleEnvelope = await makeEnvelope(
       entity: 'harga_jasa',
@@ -280,7 +280,7 @@ void main() {
       payload: {
         'sync_id': 'hj-1',
         'nama': 'Cuci radiator',
-        'harga_standar': 1000,
+        'harga_jual': 1000,
         'created_at': '2026-01-01T00:00:00.000Z',
       },
     );
@@ -297,7 +297,7 @@ void main() {
       whereArgs: ['hj-1'],
     ))
         .single;
-    expect(row['harga_standar'], 5000);
+    expect(row['harga_jual'], 5000);
   });
 
   test('viewer dan karyawan tidak dapat menerapkan entity terlarang',
@@ -532,6 +532,7 @@ void main() {
           'nama': 'Rollback',
           'nomor_hp': '081200000022',
           'created_at': DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
         });
         await SyncService.instance.enqueue(
           txn: txn,
@@ -561,6 +562,7 @@ void main() {
         'nama': 'Persist',
         'nomor_hp': '081200000033',
         'created_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       });
       await SyncService.instance.enqueue(
         txn: txn,

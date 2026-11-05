@@ -34,36 +34,53 @@ void main() {
   });
 
   test('harga jasa dan stok membutuhkan izin tambahan', () {
-    expect(employeeEntityAllowed(
-      entity: 'harga_jasa',
-      action: 'upsert',
-      roleBase: 'TEKNISI',
-      extras: {},
-    ), isFalse);
-    expect(employeeEntityAllowed(
-      entity: 'harga_jasa',
-      action: 'upsert',
-      roleBase: 'TEKNISI',
-      extras: {'ubah_harga_jasa'},
-    ), isTrue);
-    expect(employeeEntityAllowed(
-      entity: 'stock',
-      action: 'upsert',
-      roleBase: 'KASIR',
-      extras: {},
-    ), isFalse);
-    expect(employeeEntityAllowed(
-      entity: 'stock',
-      action: 'delta',
-      roleBase: 'TEKNISI',
-      extras: {},
-    ), isTrue);
-    expect(employeeEntityAllowed(
-      entity: 'stock',
-      action: 'upsert',
-      roleBase: 'TEKNISI',
-      extras: {'ubah_stok'},
-    ), isTrue);
+    expect(
+      employeeEntityAllowed(
+        entity: 'harga_jasa',
+        action: 'upsert',
+        roleBase: 'TEKNISI',
+        extras: {},
+      ),
+      isFalse,
+    );
+    // Tarif jasa hanya boleh diubah pemilik; izin tambahan tidak membuka.
+    expect(
+      employeeEntityAllowed(
+        entity: 'harga_jasa',
+        action: 'upsert',
+        roleBase: 'TEKNISI',
+        extras: {'ubah_harga_jasa', 'ubah_stok', 'koreksi'},
+      ),
+      isFalse,
+    );
+    expect(
+      employeeEntityAllowed(
+        entity: 'stock',
+        action: 'upsert',
+        roleBase: 'KASIR',
+        extras: {},
+      ),
+      isFalse,
+    );
+    // Data barang memuat harga modal, jadi tetap terkunci untuk pemilik.
+    expect(
+      employeeEntityAllowed(
+        entity: 'stock',
+        action: 'delta',
+        roleBase: 'TEKNISI',
+        extras: {},
+      ),
+      isFalse,
+    );
+    expect(
+      employeeEntityAllowed(
+        entity: 'stock',
+        action: 'upsert',
+        roleBase: 'TEKNISI',
+        extras: {'ubah_stok'},
+      ),
+      isFalse,
+    );
   });
 
   test('follow-up supplier mengikuti peran kasir atau izin followup', () {
@@ -80,6 +97,42 @@ void main() {
     expect(followup('KASIR', {}), isTrue);
     expect(followup('KEDUANYA', {}), isTrue);
     expect(followup('TEKNISI', {'followup'}), isTrue);
+  });
+
+  test('peran dasar memetakan izin entity baru', () {
+    expect(
+      baseRolePermissions['KASIR'],
+      containsAll(['buat_estimasi', 'buat_order']),
+    );
+    expect(baseRolePermissions['KASIR'], contains('koreksi'));
+    expect(baseRolePermissions['MEKANIK'], {'ubah_status'});
+    expect(baseRolePermissions['KEDUANYA'], contains('buat_nota'));
+
+    bool allowed(
+      String entity, {
+      String role = 'KASIR',
+      Set<String> extras = const {},
+    }) {
+      return employeeEntityAllowed(
+        entity: entity,
+        action: 'upsert',
+        roleBase: role,
+        extras: extras,
+      );
+    }
+
+    expect(allowed('estimate'), isTrue);
+    expect(allowed('work_order'), isTrue);
+    expect(allowed('work_order_status'), isTrue);
+    expect(allowed('nota_adjustment'), isTrue);
+    expect(allowed('estimate', role: 'MEKANIK'), isFalse);
+    expect(allowed('nota_adjustment', role: 'MEKANIK'), isFalse);
+    expect(
+      allowed('estimate', role: 'MEKANIK', extras: {'buat_estimasi'}),
+      isTrue,
+    );
+    expect(allowed('harga_jasa', extras: {'ubah_harga_jasa'}), isFalse);
+    expect(allowed('salary'), isFalse);
   });
 
   test('petunjuk entity/action yang dibatasi ikut ditandatangani', () {

@@ -179,6 +179,7 @@ class AccountService {
     final id = await db.insert('employee_accounts', {
       ...values,
       'created_at': now,
+      'updated_at': now,
     });
     await recordAudit(
       actor: 'relay',

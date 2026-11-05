@@ -12,6 +12,7 @@ import '../widgets.dart';
 import 'followup_settings_screen.dart';
 import 'printer_settings_screen.dart';
 import 'receipt_settings_screen.dart';
+import 'store_settings_screen.dart';
 import 'stores_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -414,6 +415,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
+          title: 'Aturan transaksi',
+          subtitle:
+              'Jenis transaksi, tahap order, persetujuan kasir, dan izin peran.',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.tune_outlined),
+            title: const Text('Atur transaksi dan izin'),
+            subtitle: const Text('Preset, persetujuan, dan hak tiap peran'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const StoreSettingsScreen()),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
           title: 'Karyawan',
           subtitle:
               'Jika dimatikan, nama kasir dan mekanik tidak dicetak di struk.',
@@ -538,6 +555,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  children: [
+                    Icon(
+                      AppDatabase.instance.databaseEncrypted
+                          ? Icons.enhanced_encryption_outlined
+                          : Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        AppDatabase.instance.encryptionNote,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

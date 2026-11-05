@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../../data/account_service.dart';
@@ -6,6 +9,8 @@ import '../../data/app_database.dart';
 import '../../data/device_service.dart';
 import '../../data/google_auth_service.dart';
 import '../../data/license_service.dart';
+import '../../data/owner_access_api.dart';
+import '../../data/reconciliation_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../upload_backup_dialog.dart';
@@ -25,6 +30,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
   String? _licenseEmail;
   List<Map<String, Object?>> _accounts = [];
   List<Map<String, Object?>> _devices = [];
+  List<Map<String, Object?>>? _relayAccounts;
+  List<Map<String, Object?>>? _relayDevices;
+  List<Map<String, Object?>> _reconcileRequests = [];
   Map<String, Object?>? _syncStatus;
   bool _busy = false;
 
@@ -48,6 +56,20 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final devices = await DeviceService.instance.listDevices();
     final sync = await SyncService.instance.status();
     final email = await AppDatabase.instance.getSetting('license.email');
+    final reconcile = await ReconciliationService.instance.openRequests();
+    List<Map<String, Object?>>? relayAccounts = _relayAccounts;
+    List<Map<String, Object?>>? relayDevices = _relayDevices;
+    if (relayAccounts == null || relayDevices == null) {
+      final api = await _ownerApi();
+      if (api != null) {
+        try {
+          relayAccounts = await api.accounts();
+          relayDevices = await api.devices();
+        } catch (_) {
+          // Server belum siap; daftar akses tetap kosong.
+        }
+      }
+    }
     if (!mounted) return;
     setState(() {
       _status = status;
@@ -56,7 +78,267 @@ class _PremiumScreenState extends State<PremiumScreen> {
       _accounts = accounts;
       _devices = devices;
       _syncStatus = sync;
+      _reconcileRequests = reconcile;
+      _relayAccounts = relayAccounts;
+      _relayDevices = relayDevices;
     });
+  }
+
+  Future<OwnerApi?> _ownerApi() async {
+    final url = await SyncService.instance.relayUrl();
+    final token = await SyncService.instance.relayDeviceToken();
+    final ownerId = await LicenseService.instance.ownerId();
+    if (url == null ||
+        url.isEmpty ||
+        token == null ||
+        token.isEmpty ||
+        ownerId == null ||
+        ownerId.isEmpty) {
+      return null;
+    }
+    return OwnerApi(baseUrl: url, deviceToken: token, ownerId: ownerId);
+  }
+
+  Future<void> _refreshRelayAccess() async {
+    final api = await _ownerApi();
+    if (api == null) {
+      if (mounted) {
+        showSnack(
+          context,
+          'Perangkat ini belum terhubung ke server akun.',
+          error: true,
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busy = true);
+    try {
+      final accounts = await api.accounts();
+      final devices = await api.devices();
+      if (!mounted) return;
+      setState(() {
+        _relayAccounts = accounts;
+        _relayDevices = devices;
+      });
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal memuat akses: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _pushAccountsToServer() async {
+    final api = await _ownerApi();
+    if (api == null) {
+      if (mounted) {
+        showSnack(
+          context,
+          'Perangkat ini belum terhubung ke server akun.',
+          error: true,
+        );
+      }
+      return;
+    }
+    final store = await SyncService.instance.storeId();
+    setState(() => _busy = true);
+    try {
+      var count = 0;
+      for (final account in _accounts.where((row) => row['aktif'] == 1)) {
+        final stores = _jsonList(account['store_ids_json']);
+        await api.saveAccount(
+          syncId: '${account['sync_id'] ?? ''}',
+          username: '${account['username'] ?? ''}',
+          nama: '${account['nama'] ?? ''}',
+          role: '${account['role_base'] ?? 'KASIR'}',
+          permissions: _jsonList(account['extra_permissions_json']),
+          stores: stores.isEmpty ? [store] : stores,
+          passwordHash: '${account['password_hash'] ?? ''}',
+          passwordSalt: '${account['password_salt'] ?? ''}',
+          passwordIterations:
+              (account['password_iterations'] as num?)?.toInt() ?? 600000,
+          aktif: account['aktif'] == 1,
+          permissionVersion:
+              (account['permission_version'] as num?)?.toInt() ?? 0,
+        );
+        count++;
+      }
+      await _refreshRelayAccess();
+      if (mounted) {
+        showSnack(context, '$count akun dikirim ke server akun.');
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal mengirim akun: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  List<String> _jsonList(Object? raw) {
+    if (raw is List) return raw.map((value) => '$value').toList();
+    try {
+      final decoded = jsonDecode('${raw ?? '[]'}');
+      if (decoded is List) return decoded.map((value) => '$value').toList();
+    } catch (_) {}
+    return const [];
+  }
+
+  Future<void> _createPairingCode(Map<String, Object?> account) async {
+    final api = await _ownerApi();
+    final syncId = '${account['sync_id'] ?? ''}';
+    if (api == null || syncId.isEmpty) {
+      if (mounted) {
+        showSnack(
+          context,
+          'Perangkat ini belum terhubung ke server akun.',
+          error: true,
+        );
+      }
+      return;
+    }
+    final stores = ((account['store_ids'] as List?) ?? const [])
+        .map((value) => '$value')
+        .toList();
+    final storeId =
+        stores.isEmpty ? await SyncService.instance.storeId() : stores.first;
+    setState(() => _busy = true);
+    try {
+      final result = await api.createInvite(
+        accountSyncId: syncId,
+        storeId: storeId,
+      );
+      if (!mounted) return;
+      final expires = DateTime.tryParse('${result['expires_at'] ?? ''}');
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Kode pairing'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SelectableText(
+                '${result['code'] ?? ''}',
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                expires == null
+                    ? 'Kode hanya dapat dipakai sekali.'
+                    : 'Berlaku sampai '
+                        '${DateFormat('dd/MM/yyyy HH:mm').format(expires.toLocal())}.',
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Buka aplikasi di HP karyawan, pilih "Hubungkan perangkat '
+                'karyawan", lalu masukkan kode ini. Kode hangus setelah '
+                'dipakai.',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(text: '${result['code'] ?? ''}'),
+                );
+                if (context.mounted) Navigator.pop(context);
+              },
+              child: const Text('Salin'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Tutup'),
+            ),
+          ],
+        ),
+      );
+      await _refreshRelayAccess();
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal membuat kode: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _revokeRelayDevice(Map<String, Object?> device) async {
+    final api = await _ownerApi();
+    final id = '${device['id'] ?? ''}';
+    final current = await SyncService.instance.relayDeviceId();
+    if (api == null || id.isEmpty) return;
+    if (!mounted) return;
+    if (id == current) {
+      showSnack(
+        context,
+        'Perangkat ini tidak dapat dicabut dari dirinya sendiri.',
+        error: true,
+      );
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cabut perangkat'),
+        content: Text(
+          'Cabut ${device['nama'] ?? 'perangkat ini'}? Perangkat tersebut '
+          'harus pairing ulang untuk mengirim data.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Cabut'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _busy = true);
+    try {
+      await api.revokeDevice(id);
+      await _refreshRelayAccess();
+      if (mounted) showSnack(context, 'Perangkat dicabut.');
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal mencabut: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showReconcileRequests() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rekonsiliasi tertunda'),
+        content: SizedBox(
+          width: 420,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final row in _reconcileRequests)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('${row['tanggal']} · ${row['data_type']}'),
+                  subtitle: Text('${row['alasan']} · ${row['status']}'),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Tutup'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _activateLicense() async {
@@ -657,6 +939,99 @@ class _PremiumScreenState extends State<PremiumScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
+          title: 'Akses karyawan',
+          subtitle:
+              'Kode pairing berlaku 10 menit dan hangus setelah dipakai '
+              'satu perangkat.',
+          trailing: IconButton(
+            tooltip: 'Muat akses',
+            onPressed: _busy ? null : _refreshRelayAccess,
+            icon: const Icon(Icons.refresh),
+          ),
+          child: _relayAccounts == null
+              ? const Text(
+                  'Perangkat ini belum terhubung ke server akun. '
+                  'Sambungkan perangkat lebih dulu.',
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: FilledButton.tonalIcon(
+                        onPressed: _busy ? null : _pushAccountsToServer,
+                        icon: const Icon(Icons.cloud_upload_outlined),
+                        label: const Text('Kirim akun ke server'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_relayAccounts!.isEmpty)
+                      const Text('Belum ada akun karyawan di server.')
+                    else
+                      ..._relayAccounts!.map(
+                        (account) => ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.badge_outlined),
+                          title: Text('${account['nama'] ?? '-'}'),
+                          subtitle: Text(
+                            '${account['username'] ?? '-'} · '
+                            '${account['role_base'] ?? '-'}',
+                          ),
+                          trailing: TextButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _createPairingCode(account),
+                            icon: const Icon(Icons.qr_code_2, size: 18),
+                            label: const Text('Kode pairing'),
+                          ),
+                        ),
+                      ),
+                    const Divider(height: 24),
+                    Text(
+                      'Perangkat terdaftar',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    if ((_relayDevices ?? const []).isEmpty)
+                      const Text('Belum ada perangkat terdaftar.')
+                    else
+                      ...(_relayDevices ?? const []).map(
+                        (device) {
+                          final revoked =
+                              '${device['revoked_at'] ?? ''}'.isNotEmpty;
+                          final lastSeen = _lastSeenLabel(device);
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              device['kind'] == 'owner'
+                                  ? Icons.phone_android_outlined
+                                  : Icons.badge_outlined,
+                            ),
+                            title: Text('${device['nama'] ?? 'Perangkat'}'),
+                            subtitle: Text(
+                              revoked
+                                  ? 'dicabut'
+                                  : '${device['kind'] ?? '-'} · $lastSeen',
+                            ),
+                            trailing: revoked
+                                ? null
+                                : TextButton(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _revokeRelayDevice(device),
+                                    child: const Text('Cabut'),
+                                  ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
           title: 'Sinkronisasi',
           subtitle:
               'Data toko dikirim terenkripsi antar perangkat milik akun Anda.',
@@ -709,6 +1084,30 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 'Terakhir diterima',
                 '${_syncStatus?['cursor'] ?? 0}',
               ),
+              _line(
+                'Rekonsiliasi terbuka',
+                '${_reconcileRequests.length}',
+              ),
+              if (_reconcileRequests.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: _showReconcileRequests,
+                    child: const Text('Lihat rekonsiliasi'),
+                  ),
+                ),
+              if (_syncStatus?['storage_warning'] == true) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Penyimpanan server hampir penuh. Data lama dibersihkan '
+                  'otomatis setelah semua perangkat menerimanya; cabut '
+                  'perangkat yang sudah tidak dipakai.',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
               if (_syncStatus?['stale'] == true) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -741,6 +1140,17 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final parsed = DateTime.tryParse(raw);
     if (parsed == null) return raw;
     return DateFormat('dd/MM/yyyy HH:mm').format(parsed.toLocal());
+  }
+
+  String _lastSeenLabel(Map<String, Object?> device) {
+    final raw = '${device['last_seen_at'] ?? ''}';
+    if (raw.isEmpty) return 'belum pernah terhubung';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return raw;
+    final local = parsed.toLocal();
+    final days = DateTime.now().difference(local).inDays;
+    final label = DateFormat('dd/MM/yyyy HH:mm').format(local);
+    return days >= 7 ? '$label (tertinggal)' : label;
   }
 
   Widget _line(String label, String value) {

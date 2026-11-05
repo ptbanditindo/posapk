@@ -25,6 +25,49 @@ import 'test_support.dart';
 const _configPath = String.fromEnvironment('PEER_CONFIG');
 const _phase = String.fromEnvironment('PEER_PHASE');
 
+
+/// Menyimpan rahasia uji ke direktori sementara agar setiap fase E2E yang
+/// berjalan sebagai proses terpisah membaca nilai yang sama. Direktori dipilih
+/// dari database yang sedang terbuka supaya satu fase yang membuka dua
+/// database (mis. A4) tidak bertukar token perangkat.
+class _FileSecureBackend implements SecureStoreBackend {
+  _FileSecureBackend(this.root);
+
+  final String root;
+
+  File _file(String key) {
+    final app = AppDatabase.instance;
+    final device = app.isOpen
+        ? p.basenameWithoutExtension(app.databasePath)
+        : 'default';
+    final directory = Directory(p.join(root, device))
+      ..createSync(recursive: true);
+    return File(
+      p.join(
+        directory.path,
+        base64Url.encode(utf8.encode(key)).replaceAll('=', ''),
+      ),
+    );
+  }
+
+  @override
+  Future<String?> read(String key) async {
+    final file = _file(key);
+    if (!await file.exists()) return null;
+    return file.readAsString();
+  }
+
+  @override
+  Future<void> write(String key, String value) =>
+      _file(key).writeAsString(value, flush: true);
+
+  @override
+  Future<void> delete(String key) async {
+    final file = _file(key);
+    if (await file.exists()) await file.delete();
+  }
+}
+
 Future<Map<String, dynamic>> _readJson(String path) async {
   final raw = await File(path).readAsString();
   return jsonDecode(raw) as Map<String, dynamic>;
@@ -35,6 +78,34 @@ Future<void> _writeJson(String path, Map<String, Object?> data) async {
 }
 
 Future<Map<String, dynamic>> _session() => _readJson(_configPath);
+
+/// Token pendaftaran bersifat sekali pakai, jadi setiap perangkat E2E meminta
+/// token baru ke relay lewat jalur admin sebelum mendaftar.
+Future<void> _refreshEnrollToken(Map<String, dynamic> config) async {
+  final admin = '${config['admin_token'] ?? ''}'.trim();
+  if (admin.isEmpty) return;
+  final response = await http.post(
+    Uri.parse('${config['relay_url']}/relay/admin/owners'),
+    headers: {
+      'authorization': 'Bearer $admin',
+      'content-type': 'application/json',
+    },
+    body: jsonEncode({
+      'owner_id': config['owner_id'],
+      'owner_public_key': config['owner_public'],
+      'days': 30,
+      'store_limit': 10,
+    }),
+  );
+  if (response.statusCode != 200) {
+    throw StateError(
+      'Gagal membuat token pendaftaran E2E: ${response.statusCode} '
+      '${response.body}',
+    );
+  }
+  final created = jsonDecode(response.body) as Map<String, dynamic>;
+  config['relay_token'] = created['enroll_token'];
+}
 
 Future<void> _openAndSeed(Map<String, dynamic> config, String dbPath) async {
   final db = AppDatabase.instance;
@@ -67,14 +138,15 @@ Future<void> _openAndSeed(Map<String, dynamic> config, String dbPath) async {
 }
 
 Future<String> _hashPassword(String value, String salt) async {
-  final key = await Pbkdf2(
-    macAlgorithm: Hmac.sha256(),
-    iterations: 120000,
-    bits: 256,
-  ).deriveKey(
-    secretKey: SecretKey(utf8.encode(value)),
-    nonce: base64Url.decode(salt),
-  );
+  final key =
+      await Pbkdf2(
+        macAlgorithm: Hmac.sha256(),
+        iterations: 120000,
+        bits: 256,
+      ).deriveKey(
+        secretKey: SecretKey(utf8.encode(value)),
+        nonce: base64Url.decode(salt),
+      );
   return base64UrlEncode(await key.extractBytes());
 }
 
@@ -91,8 +163,7 @@ Future<http.Response> _submitProbe({
   required String entity,
   required String action,
 }) async {
-  final signing =
-      await SecureStore.instance.read('device.$localDeviceId.sign');
+  final signing = await SecureStore.instance.read('device.$localDeviceId.sign');
   final envelope = await buildEnvelope(
     devicePrivateKey: signing!,
     storeKey: List<int>.generate(32, (index) => index + 7),
@@ -110,72 +181,61 @@ Future<http.Response> _submitProbe({
   );
   return http.post(
     Uri.parse('${config['relay_url'] as String}/relay/envelopes'),
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Device-Token': token,
-    },
+    headers: {'Content-Type': 'application/json', 'X-Device-Token': token},
     body: jsonEncode(envelope),
   );
 }
 
 void main() {
-  SecureStore.useDatabaseForTests = true;
+  SecureStore.useMemoryForTests = true;
   test(
     'peer sync fase $_phase',
     () async {
       final config = await _session();
+      SecureStore.useMemoryForTests = false;
+      SecureStore.testBackend = _FileSecureBackend(
+        p.join(config['base_dir'] as String, 'secure'),
+      );
       final db = AppDatabase.instance;
       switch (_phase) {
         case 'init':
           final keys = await generateSigningKey();
           config['owner_id'] = 'E2E${newNotaPrefix(length: 5)}';
-          config['store_id'] = 'e2e-${(config['owner_id'] as String).toLowerCase()}';
+          config['store_id'] =
+              'e2e-${(config['owner_id'] as String).toLowerCase()}';
           config['owner_public'] = keys.publicKey;
           config['owner_private'] = keys.privateKey;
+          await _refreshEnrollToken(config);
           config['a_db'] = p.join(config['base_dir'] as String, 'a.db');
           config['b_db'] = p.join(config['base_dir'] as String, 'b.db');
-          config['a1_result'] =
-              p.join(config['base_dir'] as String, 'a1.json');
-          config['b1_result'] =
-              p.join(config['base_dir'] as String, 'b1.json');
-          config['a2_result'] =
-              p.join(config['base_dir'] as String, 'a2.json');
-          config['b2_result'] =
-              p.join(config['base_dir'] as String, 'b2.json');
-          config['a3_result'] =
-              p.join(config['base_dir'] as String, 'a3.json');
-          config['a4_result'] =
-              p.join(config['base_dir'] as String, 'a4.json');
-          config['b3_result'] =
-              p.join(config['base_dir'] as String, 'b3.json');
+          config['a1_result'] = p.join(config['base_dir'] as String, 'a1.json');
+          config['b1_result'] = p.join(config['base_dir'] as String, 'b1.json');
+          config['a2_result'] = p.join(config['base_dir'] as String, 'a2.json');
+          config['b2_result'] = p.join(config['base_dir'] as String, 'b2.json');
+          config['a3_result'] = p.join(config['base_dir'] as String, 'a3.json');
+          config['a4_result'] = p.join(config['base_dir'] as String, 'a4.json');
+          config['b3_result'] = p.join(config['base_dir'] as String, 'b3.json');
           config['e1_db'] = p.join(config['base_dir'] as String, 'e1.db');
-          config['m1_result'] =
-              p.join(config['base_dir'] as String, 'm1.json');
-          config['e1_result'] =
-              p.join(config['base_dir'] as String, 'e1.json');
-          config['a6_result'] =
-              p.join(config['base_dir'] as String, 'a6.json');
-          config['e2_result'] =
-              p.join(config['base_dir'] as String, 'e2.json');
+          config['m1_result'] = p.join(config['base_dir'] as String, 'm1.json');
+          config['e1_result'] = p.join(config['base_dir'] as String, 'e1.json');
+          config['a6_result'] = p.join(config['base_dir'] as String, 'a6.json');
+          config['e2_result'] = p.join(config['base_dir'] as String, 'e2.json');
           config['v_db'] = p.join(config['base_dir'] as String, 'v.db');
-          config['r1_result'] =
-              p.join(config['base_dir'] as String, 'r1.json');
-          config['v1_result'] =
-              p.join(config['base_dir'] as String, 'v1.json');
-          config['a7_result'] =
-              p.join(config['base_dir'] as String, 'a7.json');
-          config['v2_result'] =
-              p.join(config['base_dir'] as String, 'v2.json');
+          config['r1_result'] = p.join(config['base_dir'] as String, 'r1.json');
+          config['v1_result'] = p.join(config['base_dir'] as String, 'v1.json');
+          config['a7_result'] = p.join(config['base_dir'] as String, 'a7.json');
+          config['v2_result'] = p.join(config['base_dir'] as String, 'v2.json');
           await _writeJson(_configPath, config);
           break;
         case 'A1':
+          await _refreshEnrollToken(config);
           await _openAndSeed(config, config['a_db'] as String);
           final reg = await SyncService.instance.registerRelayDevice(
             nama: 'HP Owner A',
           );
           expect(reg['key_pending'], isFalse);
-          config['device_token'] =
-              await SyncService.instance.relayDeviceToken();
+          config['device_token'] = await SyncService.instance
+              .relayDeviceToken();
           await _writeJson(_configPath, config);
           final customerId = await db.addCustomer(
             nama: 'Pelanggan E2E',
@@ -239,6 +299,7 @@ void main() {
           });
           break;
         case 'B1':
+          await _refreshEnrollToken(config);
           await _openAndSeed(config, config['b_db'] as String);
           final reg = await SyncService.instance.registerRelayDevice(
             nama: 'HP Kasir B',
@@ -358,7 +419,9 @@ void main() {
           final snapshot = await SyncService.instance.uploadSnapshot(
             roundId: '${check['id']}',
           );
-          expect(snapshot['store_seq'], 3);
+          // relay_seq global milik relay, bukan nomor urut toko; snapshot harus
+          // berada tepat di posisi feed terakhir toko ini.
+          expect(snapshot['store_seq'], sync['cursor']);
           await _writeJson(config['a4_result'] as String, {
             'snapshot_id': snapshot['id'],
             'store_seq': snapshot['store_seq'],
@@ -371,9 +434,10 @@ void main() {
             await db.db.delete(table);
           }
           await db.db.delete('sync_cursor');
+          final a4 = await _readJson(config['a4_result'] as String);
           final result = await SyncService.instance.bootstrapNow();
           expect(result['applied'], isTrue);
-          expect(result['cursor'], 3);
+          expect(result['cursor'], a4['store_seq']);
           final records = await db.listRecords(limit: 10);
           expect(records.length, 2);
           expect(records.where((row) => row.isVoid).length, 1);
@@ -447,7 +511,8 @@ void main() {
             }),
           );
           expect(inviteResponse.statusCode, 200, reason: inviteResponse.body);
-          final invite = jsonDecode(inviteResponse.body) as Map<String, dynamic>;
+          final invite =
+              jsonDecode(inviteResponse.body) as Map<String, dynamic>;
           await _writeJson(config['m1_result'] as String, {
             'code': invite['code'],
             'username': username,
@@ -464,6 +529,17 @@ void main() {
             code: m1['code'] as String,
             deviceName: 'HP Kasir E2E',
           );
+          final reused = await http.post(
+            Uri.parse('${config['relay_url']}/relay/invites/claim'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'code': m1['code'],
+              'nama': 'HP Lain',
+              'public_key': 'kunci-uji',
+              'encryption_key': 'kunci-enkripsi-uji',
+            }),
+          );
+          expect(reused.statusCode, 409, reason: reused.body);
           expect(await db.getSetting('app.role'), 'employee');
           final firstLogin = await AccountService.instance.loginHub(
             username: m1['username'] as String,
@@ -471,7 +547,9 @@ void main() {
             pin: '123456',
           );
           expect(firstLogin, isNotNull);
-          expect(firstLogin!.mustChangePassword, isTrue);
+          // Kode pairing menjadi kredensial pemasangan, jadi password awal
+          // milik pemilik tidak dipaksa diganti sebelum karyawan memakainya.
+          expect(firstLogin!.mustChangePassword, isFalse);
           const newPassword = 'Rahasia456';
           await AccountService.instance.changePassword(
             firstLogin.employeeId!,
@@ -489,8 +567,7 @@ void main() {
           final denied = await _submitProbe(
             config: config,
             token: employeeToken!,
-            localDeviceId:
-                await db.getSetting('sync.local_device_id') ?? '',
+            localDeviceId: await db.getSetting('sync.local_device_id') ?? '',
             relayDeviceId: paired['relay_device_id'] as String,
             entity: 'salary',
             action: 'upsert',
@@ -557,6 +634,7 @@ void main() {
           });
           break;
         case 'V1':
+          await _refreshEnrollToken(config);
           await db.initForTest(config['v_db'] as String);
           await db.db.insert('owner_identity', {
             'id': 1,
@@ -584,8 +662,7 @@ void main() {
           final denied = await _submitProbe(
             config: config,
             token: viewerToken!,
-            localDeviceId:
-                await db.getSetting('sync.local_device_id') ?? '',
+            localDeviceId: await db.getSetting('sync.local_device_id') ?? '',
             relayDeviceId: registered['relay_device_id'] as String,
             entity: 'customer',
             action: 'upsert',

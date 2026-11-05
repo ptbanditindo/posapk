@@ -45,8 +45,8 @@ tersedia.
   dimigrasikan (aplikasi menyarankan ganti).
 - PIN dan login perangkat memakai lockout bertingkat (`login_guards`).
 - Kunci privat perangkat/owner/store hanya di secure storage. Tidak ada
-  fallback diam-diam ke database; untuk tes/desktop set
-  `PUSATKU_SECURE_DB=true`.
+  fallback ke database aplikasi; harness E2E memakai backend file di
+  direktori sementara yang hanya diaktifkan oleh kode test.
 - Relay wajib `https://`; `http://` hanya untuk localhost pada build debug.
 - Kunci owner dipin (TOFU) saat pairing. Izin karyawan, key-wrap kunci toko,
   dan snapshot diverifikasi terhadap kunci owner/perangkat yang dipin.

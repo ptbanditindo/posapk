@@ -5,9 +5,18 @@ import 'package:http/http.dart' as http;
 import '../core/relay_url.dart';
 
 class RelayException implements Exception {
-  RelayException(this.statusCode, this.message);
+  RelayException(
+    this.statusCode,
+    this.message, {
+    this.code = '',
+    this.retryAfterSeconds,
+  });
   final int statusCode;
   final String message;
+  final String code;
+  final int? retryAfterSeconds;
+
+  bool get busy => statusCode == 429 || statusCode == 503;
 
   @override
   String toString() => 'Relay $statusCode: $message';
@@ -42,10 +51,19 @@ class RelayClient {
     if (response.statusCode >= 400) {
       throw RelayException(
         response.statusCode,
-        (body['detail'] ?? response.reasonPhrase ?? 'Permintaan gagal') as String,
+        (body['detail'] ?? response.reasonPhrase ?? 'Permintaan gagal')
+            as String,
+        code: '${body['code'] ?? ''}',
+        retryAfterSeconds: _retryAfterSeconds(response, body),
       );
     }
     return body;
+  }
+
+  int? _retryAfterSeconds(http.Response response, Map<String, Object?> body) {
+    final header = int.tryParse(response.headers['retry-after'] ?? '');
+    if (header != null) return header;
+    return (body['retry_after'] as num?)?.toInt();
   }
 
   Future<Map<String, Object?>> health() async {
@@ -176,6 +194,67 @@ class RelayClient {
       body: jsonEncode(envelope),
     );
     return _json(response);
+  }
+
+  /// Mengirim banyak amplop dalam satu permintaan. Relay menyimpannya dalam
+  /// satu transaksi; setiap amplop tetap idempoten sendiri-sendiri.
+  Future<Map<String, Object?>> submitEnvelopes({
+    required String storeId,
+    required List<Map<String, Object?>> envelopes,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/envelopes/batch'),
+      headers: _headers,
+      body: jsonEncode({'store_id': storeId, 'envelopes': envelopes}),
+    );
+    return _json(response);
+  }
+
+  /// Membuat kode pairing berumur pendek (default 15 menit) yang hanya dapat
+  /// dipakai sekali untuk mendaftarkan satu perangkat owner.
+  Future<Map<String, Object?>> createPairing({
+    required String ownerId,
+    int ttlMinutes = 15,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/pairing'),
+      headers: _headers,
+      body: jsonEncode({'owner_id': ownerId, 'ttl_minutes': ttlMinutes}),
+    );
+    return _json(response);
+  }
+
+  /// Membuat kode undangan karyawan enam karakter yang berlaku singkat
+  /// (default 10 menit) dan hanya dapat diklaim satu perangkat.
+  Future<Map<String, Object?>> createInvite({
+    required String ownerId,
+    required String accountSyncId,
+    required String storeId,
+    int ttlMinutes = 10,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/manage/invites'),
+      headers: _headers,
+      body: jsonEncode({
+        'owner_id': ownerId,
+        'account_sync_id': accountSyncId,
+        'store_id': storeId,
+        'ttl_minutes': ttlMinutes,
+      }),
+    );
+    return _json(response);
+  }
+
+  Future<void> revokeManagedDevice({
+    required String ownerId,
+    required String deviceId,
+  }) async {
+    final response = await http.post(
+      _uri('/relay/manage/devices/$deviceId/revoke', {'owner_id': ownerId}),
+      headers: _headers,
+      body: jsonEncode({'reason': 'dicabut owner'}),
+    );
+    await _json(response);
   }
 
   Future<Map<String, Object?>> feed({

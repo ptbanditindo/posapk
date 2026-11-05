@@ -23,6 +23,14 @@ const snapshotTables = [
   'employee_debts',
   'salary_payments',
   'stock_movements',
+  'nota_adjustments',
+  'store_settings',
+  'estimates',
+  'estimate_items',
+  'work_orders',
+  'work_order_status_log',
+  'day_digests',
+  'reconciliation_requests',
   'followup_items',
   'followup_events',
   'wa_message_logs',
@@ -40,6 +48,14 @@ const snapshotDeleteOrder = [
   'employee_debts',
   'salary_payments',
   'stock_movements',
+  'estimate_items',
+  'estimates',
+  'work_order_status_log',
+  'work_orders',
+  'nota_adjustments',
+  'reconciliation_requests',
+  'day_digests',
+  'store_settings',
   'followup_events',
   'wa_message_logs',
   'followup_items',
@@ -66,6 +82,7 @@ const snapshotLocalTables = [
   'applied_deltas',
   'sync_conflicts',
   'device_sync_status',
+  'document_counters',
 ];
 
 const snapshotLocalSettingsWhere =
@@ -84,7 +101,7 @@ extension SnapshotDatabase on AppDatabase {
   }) async {
     final raw = await exportSnapshotBytes(
       db,
-      dropTables: [...snapshotLocalTables, 'nota_counters'],
+      dropTables: snapshotLocalTables,
       settingsWhere: snapshotLocalSettingsWhere,
     );
     final checksum = sha256Hex(raw);

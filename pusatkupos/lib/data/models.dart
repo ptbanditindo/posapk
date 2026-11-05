@@ -27,40 +27,57 @@ class Customer {
 class VehicleUnit {
   const VehicleUnit({
     required this.id,
-    required this.customerId,
+    this.customerId,
     required this.unitType,
     this.nopol,
+    this.merek,
+    this.tipe,
     this.jenisMobil,
     this.tahunMobil,
+    this.noRangka,
+    this.noMesin,
+    this.kmTerakhir,
     this.tipeRadiator,
     this.labelRadiator,
   });
 
   final int id;
-  final int customerId;
+  final int? customerId;
   final String unitType;
   final String? nopol;
+  final String? merek;
+  final String? tipe;
   final String? jenisMobil;
   final int? tahunMobil;
+  final String? noRangka;
+  final String? noMesin;
+  final int? kmTerakhir;
   final String? tipeRadiator;
   final String? labelRadiator;
 
   String get displayLabel {
     final parts = <String>[
       if ((nopol ?? '').trim().isNotEmpty) nopol!.trim(),
-      if ((jenisMobil ?? '').trim().isNotEmpty) jenisMobil!.trim(),
-      if ((labelRadiator ?? '').trim().isNotEmpty) labelRadiator!.trim(),
+      if ((merek ?? jenisMobil ?? '').trim().isNotEmpty)
+        (merek ?? jenisMobil)!.trim(),
+      if ((tipe ?? labelRadiator ?? '').trim().isNotEmpty)
+        (tipe ?? labelRadiator)!.trim(),
     ];
     return parts.isEmpty ? unitType : parts.join(' · ');
   }
 
   factory VehicleUnit.fromRow(Map<String, Object?> row) => VehicleUnit(
         id: row['id'] as int,
-        customerId: row['customer_id'] as int,
-        unitType: row['unit_type'] as String,
+        customerId: row['customer_id'] as int?,
+        unitType: row['unit_type'] as String? ?? 'MOBIL',
         nopol: row['nopol'] as String?,
+        merek: row['merek'] as String?,
+        tipe: row['tipe'] as String?,
         jenisMobil: row['jenis_mobil'] as String?,
         tahunMobil: row['tahun_mobil'] as int?,
+        noRangka: row['no_rangka'] as String?,
+        noMesin: row['no_mesin'] as String?,
+        kmTerakhir: row['km_terakhir'] as int?,
         tipeRadiator: row['tipe_radiator'] as String?,
         labelRadiator: row['label_radiator'] as String?,
       );
@@ -124,18 +141,21 @@ class ServiceCatalog {
     required this.id,
     required this.nama,
     required this.hargaCents,
+    this.hargaModalCents = 0,
     this.intervalBulan = 0,
   });
 
   final int id;
   final String nama;
   final int hargaCents;
+  final int hargaModalCents;
   final int intervalBulan;
 
   factory ServiceCatalog.fromRow(Map<String, Object?> row) => ServiceCatalog(
         id: row['id'] as int,
         nama: row['nama'] as String,
-        hargaCents: row['harga_standar'] as int? ?? 0,
+        hargaCents: row['harga_jual'] as int? ?? 0,
+        hargaModalCents: row['harga_modal'] as int? ?? 0,
         intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
       );
 }
@@ -163,11 +183,13 @@ class ServiceRecordSummary {
     this.tanggalKlaim,
     this.unitDitinggal = false,
     this.diambilAt,
+    this.jenisTransaksi = 'servis_langsung',
   });
 
   final int id;
   final String noNota;
   final DateTime waktu;
+  final String jenisTransaksi;
   final String customerNama;
   final String unitLabel;
   final String keluhan;
@@ -213,6 +235,8 @@ class ServiceRecordSummary {
         customerNama: (row['customer_nama'] as String?) ?? '',
         unitLabel: (row['unit_label'] as String?) ?? '',
         keluhan: (row['keluhan_awal'] as String?) ?? '',
+        jenisTransaksi:
+            row['jenis_transaksi'] as String? ?? 'servis_langsung',
         biayaJasaCents: row['biaya_jasa'] as int? ?? 0,
         totalPartCents: row['total_part'] as int? ?? 0,
         diskonCents: row['diskon'] as int? ?? 0,
@@ -245,14 +269,21 @@ class JobDraft {
     required this.jumlah,
     required this.hargaCents,
     this.jasaId,
+    this.modalCents = 0,
     this.intervalBulan = 0,
-  });
+  }) : hargaTerdaftarCents = hargaCents;
 
   String deskripsi;
   int jumlah;
   int hargaCents;
   final int? jasaId;
+  int modalCents;
   final int intervalBulan;
+  final int hargaTerdaftarCents;
+  int hargaFinalCents = 0;
+  int diskonAlokasiCents = 0;
+  String? alasanDiskon;
+  String? disetujuiOleh;
 
   int get subtotalCents => jumlah * hargaCents;
 }
@@ -265,7 +296,7 @@ class PartDraft {
     required this.hargaCents,
     required this.modalCents,
     this.intervalBulan = 0,
-  });
+  }) : hargaTerdaftarCents = hargaCents;
 
   final int stockItemId;
   String nama;
@@ -273,6 +304,11 @@ class PartDraft {
   int hargaCents;
   int modalCents;
   final int intervalBulan;
+  final int hargaTerdaftarCents;
+  int hargaFinalCents = 0;
+  int diskonAlokasiCents = 0;
+  String? alasanDiskon;
+  String? disetujuiOleh;
 
   int get subtotalCents => jumlah * hargaCents;
 }
@@ -326,6 +362,7 @@ class RecordDetail {
     this.createdBy,
     this.mechanic,
     this.commissions = const [],
+    this.corrections = const [],
   });
 
   final ServiceRecordSummary record;
@@ -341,6 +378,7 @@ class RecordDetail {
   final String? createdBy;
   final String? mechanic;
   final List<CommissionRow> commissions;
+  final List<CorrectionEntry> corrections;
 }
 
 class ReportSummary {
@@ -357,6 +395,8 @@ class ReportSummary {
     this.komisiCents = 0,
     this.gajiCents = 0,
     this.cashByMethod = const {},
+    this.countByType = const {},
+    this.totalByType = const {},
   });
 
   final int transaksi;
@@ -371,6 +411,90 @@ class ReportSummary {
   final int komisiCents;
   final int gajiCents;
   final Map<String, int> cashByMethod;
+  final Map<String, int> countByType;
+  final Map<String, int> totalByType;
+}
+
+class BelowPriceSale {
+  const BelowPriceSale({
+    required this.noNota,
+    required this.waktu,
+    required this.jenis,
+    required this.deskripsi,
+    required this.jumlah,
+    required this.hargaTerdaftarCents,
+    required this.hargaFinalCents,
+    this.kasir,
+    this.disetujuiOleh,
+  });
+
+  final String noNota;
+  final DateTime waktu;
+  final String jenis;
+  final String deskripsi;
+  final int jumlah;
+  final int hargaTerdaftarCents;
+  final int hargaFinalCents;
+  final String? kasir;
+  final String? disetujuiOleh;
+
+  int get selisihCents => (hargaFinalCents - hargaTerdaftarCents) * jumlah;
+}
+
+class CorrectionEntry {
+  const CorrectionEntry({
+    required this.noNota,
+    required this.waktu,
+    required this.alasan,
+    required this.nilaiSelisihCents,
+    required this.nilaiBaruCents,
+    this.dibuatOleh,
+    this.disetujuiOleh,
+  });
+
+  final String noNota;
+  final DateTime waktu;
+  final String alasan;
+  final int nilaiSelisihCents;
+  final int nilaiBaruCents;
+  final String? dibuatOleh;
+  final String? disetujuiOleh;
+}
+
+class EstimateAgingRow {
+  const EstimateAgingRow({
+    required this.nomorEstimasi,
+    required this.totalCents,
+    required this.status,
+    this.dibuatOleh,
+    this.masaBerlaku,
+    this.convertedNotaSyncId,
+    this.finalNotaCents,
+  });
+
+  final String nomorEstimasi;
+  final int totalCents;
+  final String status;
+  final String? dibuatOleh;
+  final DateTime? masaBerlaku;
+  final String? convertedNotaSyncId;
+  final int? finalNotaCents;
+
+  bool get converted => (convertedNotaSyncId ?? '').isNotEmpty;
+
+  bool get kedaluwarsa {
+    final expiry = masaBerlaku;
+    if (expiry == null || converted) return false;
+    final today = DateTime.now();
+    return DateTime(today.year, today.month, today.day)
+        .isAfter(DateTime(expiry.year, expiry.month, expiry.day));
+  }
+
+  int get varianceCents {
+    final finalTotal = finalNotaCents;
+    if (!converted || finalTotal == null) return 0;
+    return finalTotal - totalCents;
+  }
 }
 
 class DashboardData {
