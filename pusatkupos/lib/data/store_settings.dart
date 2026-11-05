@@ -99,7 +99,7 @@ class StoreSettings {
     this.types = const {},
     this.stages = const {},
     this.simpanEstimasiLepas = true,
-    this.approvalBelowCost = false,
+    this.approvalDiscount = false,
     this.vehicleRequired = true,
     this.approverMode = approverOwner,
     this.approverEmployeeSyncId,
@@ -115,10 +115,10 @@ class StoreSettings {
   final Map<String, bool> stages;
   final bool simpanEstimasiLepas;
 
-  /// Bila aktif, kasir wajib persetujuan PIN pemilik untuk nota dengan harga
-  /// di bawah modal. Bila mati (default), kasir bebas mengeluarkan nota dan
-  /// selisihnya hanya dicatat sebagai anomali untuk ditinjau pemilik.
-  final bool approvalBelowCost;
+  /// Bila aktif, setiap diskon kasir wajib persetujuan pemilik atau
+  /// penanggung jawab. Diskon tetap dibatasi selisih harga jual dan modal.
+  /// Kolom database tetap bernama `approval_below_cost` untuk kompatibilitas.
+  final bool approvalDiscount;
 
   /// `owner` atau `penanggung_jawab`. Penanggung jawab harus akun karyawan
   /// aktif yang ditunjuk dan punya izin `setujui`.
@@ -171,7 +171,7 @@ class StoreSettings {
         'types': types,
         'stages': stages,
         'simpan_estimasi_lepas': simpanEstimasiLepas,
-        'approval_below_cost': approvalBelowCost,
+        'approval_below_cost': approvalDiscount,
         'vehicle_required': vehicleRequired,
         'approver_mode': approverMode,
         'approver_employee_sync_id': approverEmployeeSyncId,
@@ -185,7 +185,7 @@ class StoreSettings {
         'types': types,
         'stages': stages,
         'simpan_estimasi_lepas': simpanEstimasiLepas,
-        'approval_below_cost': approvalBelowCost,
+        'approval_below_cost': approvalDiscount,
         'vehicle_required': vehicleRequired,
         'approver_mode': approverMode,
         'approver_employee_sync_id': approverEmployeeSyncId,
@@ -201,7 +201,7 @@ class StoreSettings {
         stages: _decodeBoolMap(row['order_stages_json']),
         simpanEstimasiLepas:
             ((row['simpan_estimasi_lepas'] as num?)?.toInt() ?? 1) == 1,
-        approvalBelowCost:
+        approvalDiscount:
             ((row['approval_below_cost'] as num?)?.toInt() ?? 0) == 1,
         vehicleRequired:
             ((row['vehicle_required'] as num?)?.toInt() ?? 1) == 1,
@@ -360,7 +360,7 @@ class StoreSettingsService {
         'transaction_types_json': jsonEncode(settings.types),
         'order_stages_json': jsonEncode(settings.stages),
         'simpan_estimasi_lepas': settings.simpanEstimasiLepas ? 1 : 0,
-        'approval_below_cost': settings.approvalBelowCost ? 1 : 0,
+        'approval_below_cost': settings.approvalDiscount ? 1 : 0,
         'vehicle_required': settings.vehicleRequired ? 1 : 0,
         'approver_mode': settings.approverMode,
         'approver_employee_sync_id': settings.approverEmployeeSyncId,
@@ -394,7 +394,7 @@ class StoreSettingsService {
           'transaction_types_json': jsonEncode(settings.types),
           'order_stages_json': jsonEncode(settings.stages),
           'simpan_estimasi_lepas': settings.simpanEstimasiLepas ? 1 : 0,
-          'approval_below_cost': settings.approvalBelowCost ? 1 : 0,
+          'approval_below_cost': settings.approvalDiscount ? 1 : 0,
           'vehicle_required': settings.vehicleRequired ? 1 : 0,
           'approver_mode': settings.approverMode,
           'approver_employee_sync_id': settings.approverEmployeeSyncId,

@@ -16,17 +16,19 @@ sinkronisasi dan dua arahan pemilik mengenai persetujuan kasir.
   minimal, koreksi append-only, jenis transaksi/tahap/preset/izin, estimasi dan
   konversinya, work order dan log status, sinkron terjadwal/batch/retensi/
   rekonsiliasi, serta peran + kode pairing.
-- **Selesai (2 arahan pemilik):** saklar persetujuan kasir di bawah modal
-  (default mati) dan peran penanggung jawab sebagai penyetuju alternatif.
+- **Selesai (2 arahan pemilik):** aturan batas modal mutlak untuk kasir
+  (harga akhir tidak boleh di bawah modal, diskon maksimal sebesar selisih
+  harga jual dan modal) dan peran penanggung jawab sebagai penyetuju diskon
+  alternatif. Saklar persetujuan diskon default mati.
 - **Selesai dengan batasan platform:** SQLCipher hanya aktif di Android, iOS,
   dan macOS. Windows, Linux, dan web memakai SQLite biasa dan menampilkan
   keterangan tersebut di Pengaturan → Keamanan.
 - **Tidak ada butir yang dilewati sepenuhnya.**
 - **Sudah diuji pada tahap ini.** `flutter analyze` dan `dart analyze` bersih;
-  `flutter test` 104 lulus (1 dilewati, yaitu fase peer tanpa konfigurasi);
-  `dart test` 25 lulus; `sync_peer_test` 16 dari 16 fase lulus pada relay +
-  PostgreSQL yang dibangun ulang dari nol. Uji perangkat fisik tetap belum
-  dikerjakan.
+  `flutter test` 105 lulus (2 dilewati: fase peer tanpa konfigurasi dan tes
+  login dummy tanpa flag build); `dart test` 25 lulus; `sync_peer_test` 16 dari
+  16 fase lulus pada relay + PostgreSQL yang dibangun ulang dari nol. Uji
+  perangkat fisik tetap belum dikerjakan.
 
 Prinsip yang dipertahankan: relay tetap jembatan buta. Relay hanya menyimpan
 amplop terenkripsi dan tidak membaca isi transaksi maupun tanggal transaksi.
@@ -39,15 +41,15 @@ nyata; skema dimulai bersih pada versi 1.
 |---|--------|--------------------|---------------------|---------|
 | 1 | Selesai | `pusatkupos/lib/data/schema.dart`; `lib/data/app_database.dart` | Skema bersih v1 tanpa jalur upgrade. Semua tabel yang disinkronkan membawa `sync_id`, `store_id`, `device_id`, `sync_hlc_wall`, `sync_hlc_counter`, `created_at`, `updated_at`, dan `deleted_at`. Database viewer tetap terpisah per owner. | `schemaVersion = 1`. Instalasi lama harus memasang ulang; ini disengaja. |
 | 2 | Selesai (Android/iOS/macOS) | `app_database.dart`: `_usesSqlCipher`, `_databasePassword`, `_open`; `pubspec.yaml`: `sqflite_sqlcipher`; `settings_screen.dart` | Database dibuka dengan SQLCipher dan kunci 256-bit acak yang disimpan di SecureStore. Platform tanpa dukungan memakai SQLite biasa dan menampilkan `encryptionNote`. | Kunci tidak pernah ditulis ke database atau log. Windows/Linux/web belum terenkripsi. |
-| 3 | Selesai | `lib/data/price_rules.dart`; `app_database.dart`: `createTransaction`, `saveStockItem`, `saveCatalog`; `lib/data/approval_service.dart`; `lib/ui/screens/pos_screen.dart`; `stock_screen.dart`; `store_settings_screen.dart` | Harga modal menjadi batas bawah. Harga jual, modal, dan tarif hanya dapat diubah pemilik. Setiap baris nota dan estimasi menyimpan `harga_jual_terdaftar`, `harga_batas_saat_transaksi`, `harga_final`, `diskon_alokasi`, `alasan_diskon`, dan `disetujui_oleh`. Di bawah modal dicatat di `permission_audits` sebagai `harga_bawah_modal`. Kasir tidak melihat kolom modal. | Saklar owner `approval_below_cost` default mati: kasir bebas menerbitkan nota dan selisih tetap diaudit. |
+| 3 | Selesai | `lib/data/price_rules.dart`; `app_database.dart`: `createTransaction`, `saveStockItem`, `saveCatalog`; `lib/data/order_service.dart`; `lib/data/approval_service.dart`; `lib/ui/screens/pos_screen.dart`; `stock_screen.dart`; `store_settings_screen.dart` | Harga modal menjadi batas bawah mutlak bagi selain pemilik. Diskon kasir maksimal sebesar selisih harga jual terdaftar dan modal per baris (contoh 70.000 - 50.000 = 20.000). Harga jasa katalog diverifikasi ulang dari `harga_jasa` saat nota/estimasi dibuat. Harga jual, modal, dan tarif hanya dapat diubah pemilik. Setiap baris menyimpan `harga_jual_terdaftar`, `harga_batas_saat_transaksi`, `harga_final`, `diskon_alokasi`, `alasan_diskon`, dan `disetujui_oleh`. Penjualan pemilik di bawah modal dicatat sebagai `harga_bawah_modal`. Kasir tidak melihat kolom modal, hanya batas diskon rupiah. | Persetujuan tidak dapat membuka harga di bawah modal atau diskon melebihi margin. Gate persen `diskon.maks_persen` dihapus. |
 | 4 | Selesai | `app_database.dart`: `nota_adjustments`; `lib/data/nota_adjustment_service.dart`; `history_screen.dart`; `reports_screen.dart` | Koreksi adalah baris baru yang merujuk `nota_sync_id` asli; nota tidak pernah diubah atau dihapus. Nilai baru divalidasi terhadap total modal baris asli. Izin `koreksi` diperlukan untuk karyawan. | Koreksi ikut disinkronkan sebagai entity `nota_adjustment`. |
 | 5 | Selesai | `lib/data/store_settings.dart`; `store_settings_screen.dart`; `pos_screen.dart` | Lima jenis transaksi (`jual_sparepart`, `servis_langsung`, `order_kerja`, `estimasi_saja`, `pelunasan_order`), lima tahap order, tiga preset (`layanan_langsung`, `order_lengkap`, `manual`), izin per peran (`setujui`, `jenis_<tipe>`, `buat_nota`, `ubah_status`, `koreksi`, `diskon`, `void`, `ubah_pengaturan`), dan snapshot mode saat transaksi dibuat (`mode_saat_dibuat_json`). | Preset "layanan langsung" mematikan order kerja dan status pengerjaan. |
 | 6 | Selesai | `lib/data/order_service.dart`; `lib/ui/screens/estimates_screen.dart` (baru); `pos_screen.dart` | Estimasi append-only: revisi membuat baris baru dengan `revisi_dari_sync_id` dan `versi + 1`. Estimasi aktif dapat dikonversi menjadi nota; nota menyimpan `estimate_sync_id` dan `total_estimasi_terakhir`. Layar Estimasi menampilkan filter aktif/semua, rincian, status kedaluwarsa, dan konversi ke nota. | Laporan variansi 30 hari ditampilkan di layar Estimasi. |
 | 7 | Selesai | `app_database.dart`: `allocateQueueNumber`, `work_orders`, `work_order_status_log`; `order_service.dart`; `lib/ui/screens/orders_screen.dart` (baru) | Order kerja mendapat nomor order dan nomor antrian harian per perangkat. Status memiliki log append-only berisi status, waktu, dan pembuat. Status minimal (`dibuka`, `selesai`, `diambil`, `batal`) dipakai bila tahap status pengerjaan dimatikan. | Owner dapat memaksa transisi di luar alur; perubahan dicatat sebagai konflik. |
 | 8 | Selesai | `lib/sync/sync_scheduler.dart`; `sync_service.dart`; `relay/lib/server.dart`; `lib/data/reconciliation_service.dart` | Sinkron otomatis 15 menit (dapat 10–20 menit) dengan jitter, plus saat aplikasi resume/tutup. Outbox dikirim per batch adaptif (`sync.batch_size`, `sync.batch_bytes`). Relay menghapus amplop yang sudah diakui semua perangkat aktif, mengembalikan `used_bytes`/`limit_bytes`/`warning`, dan klien menampilkan peringatan penyimpanan. Ringkasan harian (`day_digests`) dibandingkan antarperangkat; selisih membuat `reconciliation_requests` dan konflik `rekonsiliasi_beda`. | Relay tidak menyimpan tanggal transaksi; rekonsiliasi dihitung dari SQLite masing-masing perangkat. |
 | 9 | Selesai | `relay/lib/auth_rules.dart`; `relay/lib/server.dart`; `lib/sync/protocol.dart`; `lib/sync/sync_service.dart`; `lib/data/pairing_service.dart`; `lib/ui/onboarding.dart`; `lib/ui/screens/premium_screen.dart` | `hints_signature` wajib dan diverifikasi relay. Peran dasar (`KASIR`, `MEKANIK`, `KEDUANYA`) ditambah `extra_permissions` membatasi entity yang boleh dikirim karyawan. Kode pairing karyawan enam karakter berlaku 10 menit, sekali pakai; kode pairing perangkat owner berlaku 5–20 menit (default 15). Karyawan dapat mengklaim kode dari layar masuk. | Token enroll 365 hari tidak lagi dipakai untuk alur karyawan. Relay menyimpan dan mengembalikan `entity`, `action`, `entity_id`, dan `hints_signature` agar penerima dapat memverifikasi petunjuk yang ditandatangani. |
-| A1 | Selesai | `store_settings.dart`: `approvalBelowCost`; `store_settings_screen.dart` | Saklar "Kasir wajib persetujuan di bawah modal". Default mati: kasir tidak perlu persetujuan untuk menerbitkan nota, dan selisih di bawah modal tetap dicatat sebagai anomali. | Sesuai arahan pemilik; perilaku lama yang selalu meminta persetujuan dihapus. |
-| A2 | Selesai | `approval_service.dart`; `store_settings.dart`: `approverMode`, `approverEmployeeSyncId`; `store_settings_screen.dart`; `pos_screen.dart`; `estimates_screen.dart` | Pemilik memilih penyetuju: `owner` (PIN pemilik) atau `penanggung_jawab` (akun karyawan aktif dengan izin `setujui`, diverifikasi PIN/password akun). Bila pengaturan memakai penanggung jawab tetapi belum dipilih, persetujuan ditolak dengan pesan yang jelas. | Kunci percobaan persetujuan memakai `LoginGuard` terpisah per akun. |
+| A1 | Selesai | `store_settings.dart`: `approvalDiscount` (kolom DB lama `approval_below_cost`); `store_settings_screen.dart` | Saklar "Kasir wajib persetujuan untuk diskon". Default mati: kasir boleh memberi diskon sampai selisih harga jual dan modal tanpa persetujuan. Hidup: setiap diskon kasir meminta persetujuan, tetap dibatasi margin dan pantangan di bawah modal. | Aturan modal tidak dapat dimatikan; saklar hanya mengatur kebutuhan persetujuan diskon. |
+| A2 | Selesai | `approval_service.dart`; `store_settings.dart`: `approverMode`, `approverEmployeeSyncId`; `store_settings_screen.dart`; `pos_screen.dart`; `estimates_screen.dart` | Pemilik memilih penyetuju: `owner` (PIN pemilik) atau `penanggung_jawab` (akun karyawan aktif dengan izin `setujui`, diverifikasi PIN/password akun). Persetujuan sah hanya untuk diskon dalam batas margin; harga di bawah modal dan diskon melebihi margin tetap ditolak. | Kunci percobaan persetujuan memakai `LoginGuard` terpisah per akun. |
 
 ## 3. Skema Akhir (versi 1)
 
@@ -101,24 +103,32 @@ sejenisnya) memakai kunci idempotensi sendiri, bukan `sync_id` entity.
 ### 4.1 Nota dan harga
 
 1. Kasir memilih jenis transaksi dan barang/jasa. POS memuat daftar barang
-   beserta harga jual; harga modal tidak ditampilkan kepada kasir.
+   beserta harga jual; harga modal tidak ditampilkan kepada kasir. Untuk jasa
+   dari daftar tarif, harga di kunci mengikuti master dan diverifikasi ulang
+   dari `harga_jasa` saat penyimpanan.
 2. `PriceRules.allocate` menghitung harga final per baris dan alokasi diskon.
-   Harga di bawah modal hanya diterima bila transaksi disetujui, atau bila
-   saklar `approval_below_cost` dimatikan.
-3. Nota, baris jasa/part, pembayaran, pergerakan stok, audit, dan baris outbox
+   Untuk selain pemilik: harga terdaftar tidak boleh di bawah modal, harga
+   akhir tidak boleh di bawah modal, dan total diskon tidak boleh melebihi
+   `Σ (harga jual - modal) × jumlah`. Contoh 70.000/50.000: diskon 20.000
+   diterima (harga akhir 50.000), 20.001 ditolak.
+3. Pemilik tetap dapat menjual di bawah modal; baris tersebut ditandai
+   `disetujui_oleh` dan dicatat sebagai `harga_bawah_modal` untuk audit.
+4. Nota, baris jasa/part, pembayaran, pergerakan stok, audit, dan baris outbox
    ditulis dalam satu transaksi SQLite.
 
 ### 4.2 Persetujuan
 
-- `approval_below_cost = true`: karyawan yang menekan tombol simpan menerima
-  dialog persetujuan. Mode `owner` meminta PIN pemilik; mode
+- Batas modal dan margin tidak dapat dibuka oleh persetujuan siapa pun selain
+  transaksi yang dibuat pemilik sendiri.
+- `approvalDiscount = true` (kolom DB `approval_below_cost`): setiap diskon
+  kasir meminta persetujuan. Mode `owner` meminta PIN pemilik; mode
   `penanggung_jawab` meminta PIN akun yang ditunjuk dan memeriksa izin
-  `setujui`.
-- `approval_below_cost = false` (default): nota langsung tersimpan. Jika ada
-  baris di bawah modal, `permission_audits` mencatat `harga_bawah_modal` beserta
-  nomor nota, selisih, dan pembuatnya.
-- Diskon di atas batas persen yang dikonfigurasi tetap meminta persetujuan,
-  terlepas dari saklar di atas.
+  `setujui`. Persetujuan hanya meloloskan diskon yang masih dalam margin.
+- `approvalDiscount = false` (default): diskon kasir sampai margin langsung
+  tersimpan tanpa dialog. `permission_audits` mencatat aksi `diskon` beserta
+  nominal, nomor nota, dan penyetuju bila ada.
+- Estimasi dan konversinya memakai aturan margin yang sama. Gate persen
+  `diskon.maks_persen` tidak dipakai lagi.
 
 ### 4.3 Koreksi nota
 
@@ -184,9 +194,11 @@ sejenisnya) memakai kunci idempotensi sendiri, bukan `sync_id` entity.
 
 ## 5. Keputusan dan Alasan
 
-- **Saklar persetujuan default mati.** Pemilik menginginkan kasir dapat
-  menerbitkan nota tanpa menunggu owner. Keamanan dijaga dengan audit
-  `harga_bawah_modal`, bukan dengan memblokir transaksi.
+- **Batas modal dipisahkan dari persetujuan.** Pemilik menetapkan harga jual
+  70.000 dengan modal 50.000; kasir bebas memberi diskon sampai 20.000 tanpa
+  menunggu owner, tetapi tidak pernah boleh menjual di bawah 50.000. Karena
+  batas ini mutlak, persetujuan tidak boleh menjadi jalan pintas; saklar hanya
+  menentukan apakah setiap diskon perlu persetujuan.
 - **Penanggung jawab terpisah dari owner.** PIN owner tidak perlu dibagikan saat
   owner sibuk; akun yang ditunjuk tetap harus aktif dan memiliki izin
   `setujui`, dan percobaan PIN-nya dibatasi `LoginGuard`.
@@ -251,9 +263,9 @@ proses per fase. Pada tahap ini harness disesuaikan dengan skema dan alur baru:
 7. **Cakupan fase.** Peer test menjalankan init, A1, B1, A2, B2, A3, A4, B3,
    M1, E1, A6, E2, R1, V1, A7, V2: sinkron nota, void, snapshot, key wrap,
    pairing karyawan, penolakan klaim kedua, pencabutan perangkat, dan viewer.
-   Estimasi, work order, koreksi, dan rekonsiliasi diuji di
-   `stage3_rules_test.dart` (termasuk saklar persetujuan, PIN owner, dan
-   penanggung jawab); aturan entity relay diuji di
+   Estimasi, work order, koreksi, rekonsiliasi, batas modal, margin diskon,
+   saklar persetujuan, PIN owner, dan penanggung jawab diuji di
+   `stage3_rules_test.dart`; aturan entity relay diuji di
    `relay/test/auth_rules_test.dart`.
 
 Tidak ada gate produksi yang dilonggarkan untuk test. `tool/smoke.dart` tidak
@@ -277,10 +289,14 @@ Semua perintah dijalankan pada 5 November 2026 setelah perubahan terakhir.
 Relay E2E memakai PostgreSQL `pusatkupos_relay_e2e_stage3` yang dibuat ulang
 dari nol dan relay pada port 8120.
 
-- [x] `flutter analyze` (pusatkupos) — **No issues found! (ran in 6.3s)**.
-- [x] `flutter test` (pusatkupos) — **104 lulus, 1 dilewati**
-  (`01:00 +104 ~1: All tests passed!`). Yang dilewati adalah fase peer tanpa
-  `PEER_PHASE`/`PEER_CONFIG`.
+- [x] `flutter analyze` (pusatkupos) — **No issues found! (ran in 6.4s)**.
+- [x] `flutter test` (pusatkupos) — **105 lulus, 2 dilewati**
+  (`01:18 +105 ~2: All tests passed!`). Yang dilewati adalah fase peer tanpa
+  `PEER_PHASE`/`PEER_CONFIG` dan tes login dummy tanpa
+  `--dart-define=PUSATKU_DUMMY_SEED=true`.
+- [x] `flutter test test/stage3_rules_test.dart test/business_rules_test.dart`
+  — **21 lulus** setelah aturan modal/margin diterapkan, termasuk kasus
+  70.000/50.000 (20.000 diterima, 20.001 ditolak, di bawah modal ditolak).
 - [x] `dart analyze` (relay) — **No issues found!**.
 - [x] `dart test` (relay) — **25 lulus** (`00:00 +25: All tests passed!`).
 - [x] `sync_peer_test` — **16 dari 16 fase lulus** pada relay + PostgreSQL
@@ -297,8 +313,9 @@ snapshot penuh.
 - Harness peer menjalankan alur nyata lewat database dan HTTP: sinkron nota,
   void, snapshot, key wrap, pairing karyawan, pencabutan perangkat, dan
   viewer.
-- Aturan peran relay dan aturan bisnis lokal (harga, persetujuan, estimasi,
-  order, koreksi, rekonsiliasi) diuji unit dengan database sungguhan.
+- Aturan peran relay dan aturan bisnis lokal (harga, batas modal, margin
+  diskon, persetujuan, estimasi, order, koreksi, rekonsiliasi) diuji unit
+  dengan database sungguhan.
 - Layar Flutter (POS, Estimasi, Order, Riwayat, Premium) belum dijalankan di
   emulator/perangkat pada tahap ini. Klaim tampilan UI belum diverifikasi
   lewat runtime.
@@ -344,3 +361,8 @@ snapshot penuh.
    Ini hanya berlaku untuk test; produksi tetap memakai secure storage.
 8. **`tool/smoke.dart` belum dijalankan.** Verifikasi pada database
    pengembangan dan perangkat fisik masih diperlukan sebelum rilis.
+9. **Jasa manual tanpa tarif master tidak punya modal acuan.** Baris jasa yang
+   tidak dipilih dari daftar tarif memakai modal 0, sehingga aturan margin tidak
+   bermakna untuk baris itu dan kasir dapat mengetik harga sendiri. Untuk
+   transaksi yang tunduk pada aturan modal, gunakan jasa dari daftar tarif
+   (harga dan modal master diverifikasi ulang di server lokal).

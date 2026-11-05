@@ -393,6 +393,37 @@ class AccountService {
     return _operator(account);
   }
 
+  /// Login akun lokal untuk build uji tanpa layanan akun. PIN perangkat
+  /// diatur terpisah setelah sesi dibuka.
+  Future<Operator?> loginLocal({
+    required String username,
+    required String password,
+  }) async {
+    final clean = username.trim().toLowerCase();
+    final guardScope = 'local:$clean';
+    await LoginGuard.check(guardScope);
+    final account = await _accountByUsername(clean);
+    if (account == null ||
+        account['aktif'] != 1 ||
+        !await _verify(
+          password,
+          account['password_hash'] as String,
+          account['password_salt'] as String,
+          account['password_iterations'] as int? ?? _iterations,
+        )) {
+      await LoginGuard.fail(guardScope);
+      return null;
+    }
+    await LoginGuard.clear(guardScope);
+    await _upgradePassword(
+      account['id'] as int,
+      password,
+      account['password_iterations'] as int? ?? 0,
+    );
+    await _touchLogin(account['id'] as int);
+    return _operator(account);
+  }
+
   Future<Operator?> loginDevice({
     required String ownerId,
     required String username,

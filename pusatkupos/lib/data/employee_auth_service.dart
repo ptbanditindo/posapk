@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../dev/dummy_seed.dart';
 import '../sync/crypto.dart';
 import '../sync/relay_client.dart';
 import 'account_service.dart';
@@ -59,9 +60,45 @@ class EmployeeAuthService {
     String deviceName = 'Perangkat karyawan',
   }) async {
     if (!serviceConfigured) {
-      throw EmployeeAuthException(
-        'Layanan akun belum siap. Hubungi penjual.',
-        code: 'service_unavailable',
+      if (!dummySeedEnabled) {
+        throw EmployeeAuthException(
+          'Layanan akun belum siap. Hubungi penjual.',
+          code: 'service_unavailable',
+        );
+      }
+      final localOwner = await LicenseService.instance.ensureOwner();
+      final entered = ownerId.trim();
+      if (entered.isNotEmpty && entered != localOwner) {
+        throw EmployeeAuthException(
+          'ID owner untuk build uji ini: $localOwner.',
+          code: 'local_owner',
+        );
+      }
+      final operator = await AccountService.instance.loginLocal(
+        username: username,
+        password: password,
+      );
+      if (operator == null) {
+        throw EmployeeAuthException(
+          'Nama pengguna atau password salah.',
+          code: 'invalid_credentials',
+        );
+      }
+      return EmployeeLoginResult(
+        profile: SessionProfile(
+          mode: 'employee',
+          ownerId: localOwner,
+          nama: operator.label,
+          role: operator.role,
+          employeeSyncId: operator.employeeSyncId,
+          username: operator.username,
+          permissions: operator.permissions.toList(),
+          storeIds: operator.storeIds,
+          plan: 'free',
+        ),
+        password: password,
+        deviceToken: null,
+        deviceId: null,
       );
     }
     final signing = await generateSigningKey();

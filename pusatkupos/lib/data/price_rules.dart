@@ -1,8 +1,14 @@
+import '../core/money.dart';
+
 /// Aturan harga minimum dan alokasi diskon tingkat nota.
 ///
 /// Harga batas transaksi selalu sama dengan harga modal yang tersimpan pada
 /// baris saat transaksi dibuat. Tidak ada kolom batas terpisah: pemilik tidak
 /// dapat menurunkan batas tanpa menurunkan modal.
+///
+/// Untuk selain pemilik, batas modal bersifat mutlak dan diskon maksimal
+/// adalah selisih harga jual terdaftar dengan modal. Contoh: jual 70.000,
+/// modal 50.000, maka diskon maksimal 20.000 dan harga akhir minimal 50.000.
 class PriceLine {
   PriceLine({
     required this.jenis,
@@ -61,8 +67,8 @@ class PriceAllocation {
   final int diskon;
   final int total;
 
-  /// Ada baris yang harga finalnya di bawah modal. Data lapisan pemanggil
-  /// wajib sudah meminta persetujuan owner sebelum memakai hasil ini.
+  /// Ada baris yang harga finalnya di bawah modal. Hanya mungkin terjadi
+  /// pada transaksi pemilik; selain pemilik selalu ditolak.
   final bool belowMinimum;
 }
 
@@ -75,7 +81,6 @@ class PriceRules {
   static PriceAllocation allocate(
     List<PriceLine> source, {
     required int diskonCents,
-    bool ownerApproved = false,
     bool allowBelowMinimum = false,
     String? alasanDiskon,
     String? disetujuiOleh,
@@ -126,6 +131,27 @@ class PriceRules {
         'Diskon melebihi total tagihan.',
       );
     }
+    final modalTotal = lines.fold<int>(0, (sum, line) => sum + line.batasTotal);
+    final marginTotal = bruto - modalTotal;
+    if (!allowBelowMinimum) {
+      for (final line in lines) {
+        if (line.hargaTerdaftar < line.hargaModal) {
+          throw PriceRuleViolation(
+            'di_bawah_batas_minimal',
+            'Harga ${line.label} ${formatRupiah(line.hargaTerdaftar)} '
+                'di bawah modal ${formatRupiah(line.hargaModal)}.',
+          );
+        }
+      }
+      if (diskonCents > marginTotal) {
+        throw PriceRuleViolation(
+          'diskon_melebihi_margin',
+          'Diskon ${formatRupiah(diskonCents)} melebihi batas '
+              '${formatRupiah(marginTotal)} '
+              '(selisih harga jual dan modal).',
+        );
+      }
+    }
     var remaining = diskonCents;
     var allocated = 0;
     for (var index = 0; index < lines.length; index++) {
@@ -158,12 +184,13 @@ class PriceRules {
         belowMinimum = true;
       }
     }
-    if (belowMinimum && !ownerApproved && !allowBelowMinimum) {
+    if (belowMinimum && !allowBelowMinimum) {
       final line = lines.firstWhere((item) => item.finalTotal < item.batasTotal);
       throw PriceRuleViolation(
         'di_bawah_batas_minimal',
-        'Harga ${line.label} di bawah batas minimal. '
-            'Minta persetujuan pemilik untuk melanjutkan.',
+        'Diskon membuat harga ${line.label} '
+            '${formatRupiah(line.hargaFinal)} di bawah modal '
+            '${formatRupiah(line.hargaModal)}.',
       );
     }
     if (belowMinimum) {

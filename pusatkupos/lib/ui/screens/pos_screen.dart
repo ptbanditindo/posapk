@@ -10,7 +10,6 @@ import '../../data/employee_service.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
 import '../../data/order_service.dart';
-import '../../data/price_rules.dart';
 import '../../data/store_settings.dart';
 import '../../printer/printer_config.dart';
 import '../../printer/printer_service.dart';
@@ -48,7 +47,6 @@ class _PosScreenState extends State<PosScreen> {
   String _requestId = newSyncId();
   String _jenis = transactionServisLangsung;
   StoreSettings? _settings;
-  double _maxDiscountPercent = 10;
   bool _loading = true;
   bool _saving = false;
   bool _bergaransi = true;
@@ -103,6 +101,27 @@ class _PosScreenState extends State<PosScreen> {
   bool get _diskonInvalid =>
       _diskon.text.trim().isNotEmpty &&
       tryParseRupiahToCents(_diskon.text) == null;
+
+  /// Selisih harga jual dan modal seluruh baris. Diskon kasir tidak boleh
+  /// melewati nilai ini dan harga akhir tidak boleh di bawah modal.
+  int get _maxDiscountCents {
+    final margin = _jobs.fold<int>(
+          0,
+          (sum, job) =>
+              sum + (job.hargaCents - job.modalCents) * job.jumlah,
+        ) +
+        _parts.fold<int>(
+          0,
+          (sum, part) =>
+              sum + (part.hargaCents - part.modalCents) * part.jumlah,
+        );
+    return margin < 0 ? 0 : margin;
+  }
+
+  bool get _diskonMelebihiMargin =>
+      !AppState.instance.isOwner &&
+      !_diskonInvalid &&
+      _diskonCents > _maxDiscountCents;
   int get _total => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
   int get _bayarCents => tryParseRupiahToCents(_bayar.text) ?? 0;
   bool get _bayarInvalid =>
@@ -130,7 +149,6 @@ class _PosScreenState extends State<PosScreen> {
     final stock = await db.listStock();
     final catalog = await db.listCatalog();
     final accounts = await AccountService.instance.listAccounts();
-    final maxDiscount = await db.getSetting('diskon.maks_persen');
     final defaultGaransi = await db.getSetting('garansi.default_bulan');
     var units = <VehicleUnit>[];
     var customerId = _customerId;
@@ -159,7 +177,6 @@ class _PosScreenState extends State<PosScreen> {
                     account['role_base'] == 'KEDUANYA'),
           )
           .toList();
-      _maxDiscountPercent = double.tryParse(maxDiscount ?? '') ?? 10;
       _garansiDefaultBulan = int.tryParse(defaultGaransi ?? '') ?? 1;
       if (_garansiBulan.text == '1' && _garansiDefaultBulan != 1) {
         _garansiBulan.text = '$_garansiDefaultBulan';
@@ -284,6 +301,15 @@ class _PosScreenState extends State<PosScreen> {
     }
     if (_diskonInvalid) {
       showSnack(context, 'Format diskon tidak valid.', error: true);
+      return;
+    }
+    if (_diskonMelebihiMargin) {
+      showSnack(
+        context,
+        'Diskon maksimal ${formatRupiah(_maxDiscountCents)} '
+        '(selisih harga jual dan modal).',
+        error: true,
+      );
       return;
     }
     if (_bayarInvalid) {
@@ -420,8 +446,8 @@ class _PosScreenState extends State<PosScreen> {
             txn: txn,
           ),
         );
-      } on PriceRuleViolation catch (error) {
-        if (asked || error.code != 'di_bawah_batas_minimal') rethrow;
+      } on StateError catch (error) {
+        if (asked || !error.message.contains('persetujuan')) rethrow;
         final secret = await _askApproval(settings);
         if (secret == null) return null;
         asked = true;
@@ -577,16 +603,6 @@ class _PosScreenState extends State<PosScreen> {
           enqueue: (txn, recordId) =>
               SyncService.instance.enqueueNote(recordId, txn: txn),
         );
-      } on PriceRuleViolation catch (error) {
-        if (asked || error.code != 'di_bawah_batas_minimal') rethrow;
-        final secret = await _askApproval(settings);
-        if (secret == null) return null;
-        asked = true;
-        if (settings?.approverMode == approverEmployee) {
-          approverSecret = secret;
-        } else {
-          ownerPin = secret;
-        }
       } on StateError catch (error) {
         if (asked || !error.message.contains('persetujuan')) rethrow;
         final secret = await _askApproval(settings);
@@ -1036,10 +1052,15 @@ class _PosScreenState extends State<PosScreen> {
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
                         labelText: 'Diskon (Rp)',
-                        errorText: _diskonInvalid ? 'Format tidak valid' : null,
+                        errorText: _diskonInvalid
+                            ? 'Format tidak valid'
+                            : _diskonMelebihiMargin
+                            ? 'Maks. ${formatRupiah(_maxDiscountCents)}'
+                            : null,
                         helperText: AppState.instance.isOwner
                             ? null
-                            : 'Batas ${_maxDiscountPercent.toStringAsFixed(0)}%',
+                            : 'Maks. ${formatRupiah(_maxDiscountCents)} '
+                                  '(selisih modal)',
                       ),
                       onChanged: (_) => setState(() {}),
                     ),
@@ -1400,9 +1421,13 @@ class _JobDialogState extends State<_JobDialog> {
                 child: TextField(
                   controller: _harga,
                   keyboardType: TextInputType.number,
+                  readOnly: _catalogId != null,
                   decoration: InputDecoration(
                     labelText: 'Harga',
                     errorText: _error,
+                    helperText: _catalogId == null
+                        ? null
+                        : 'Harga dari daftar tarif',
                   ),
                 ),
               ),
@@ -1438,6 +1463,9 @@ class _JobDialogState extends State<_JobDialog> {
               if (!ok || !context.mounted) return;
             }
             if (!context.mounted) return;
+            final selected = widget.catalog
+                .where((item) => item.id == _catalogId)
+                .firstOrNull;
             Navigator.pop(
               context,
               JobDraft(
@@ -1445,13 +1473,8 @@ class _JobDialogState extends State<_JobDialog> {
                 jumlah: qty,
                 hargaCents: harga,
                 jasaId: _catalogId,
-                intervalBulan: _catalogId == null
-                    ? 0
-                    : widget.catalog
-                            .where((item) => item.id == _catalogId)
-                            .firstOrNull
-                            ?.intervalBulan ??
-                        0,
+                modalCents: selected?.hargaModalCents ?? 0,
+                intervalBulan: selected?.intervalBulan ?? 0,
               ),
             );
           },

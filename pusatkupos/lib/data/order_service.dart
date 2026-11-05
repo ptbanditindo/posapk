@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../core/money.dart';
 import 'app_database.dart';
 import 'approval_service.dart';
 import 'models.dart';
@@ -223,13 +224,55 @@ class OrderService {
       if (item.jumlah <= 0) {
         throw ArgumentError('Jumlah ${item.deskripsi} harus lebih dari nol.');
       }
+      var modal = item.modalCents < 0 ? 0 : item.modalCents;
+      if (item.jenis == 'jasa' && item.jasaId != null) {
+        final rows = await AppDatabase.instance.db.query(
+          'harga_jasa',
+          columns: ['harga_jual', 'harga_modal', 'deleted_at'],
+          where: 'id = ?',
+          whereArgs: [item.jasaId],
+          limit: 1,
+        );
+        if (rows.isEmpty || rows.first['deleted_at'] != null) {
+          throw StateError(
+            'Jasa ${item.deskripsi} tidak ditemukan di daftar tarif.',
+          );
+        }
+        final hargaJual = (rows.first['harga_jual'] as num?)?.toInt() ?? 0;
+        if (item.hargaCents != hargaJual) {
+          throw StateError(
+            'Harga jasa ${item.deskripsi} berubah menjadi '
+            '${formatRupiah(hargaJual)}. Muat ulang kasir lalu ulangi.',
+          );
+        }
+        modal = (rows.first['harga_modal'] as num?)?.toInt() ?? 0;
+      } else if (item.stockItemId != null) {
+        final rows = await AppDatabase.instance.db.query(
+          'stock_items',
+          where: 'id = ?',
+          whereArgs: [item.stockItemId],
+          limit: 1,
+        );
+        if (rows.isEmpty) {
+          throw StateError('Barang ${item.deskripsi} tidak ditemukan.');
+        }
+        final stock = StockItem.fromRow(rows.first);
+        if (stock.hargaJualCents != item.hargaCents) {
+          throw StateError(
+            'Harga jual ${stock.nama} berubah menjadi '
+            '${formatRupiah(stock.hargaJualCents)}. '
+            'Muat ulang kasir lalu ulangi.',
+          );
+        }
+        modal = stock.hargaModalCents;
+      }
       lines.add(
         PriceLine(
           jenis: item.jenis,
           label: item.deskripsi,
           jumlah: item.jumlah,
           hargaTerdaftar: item.hargaCents,
-          hargaModal: item.modalCents,
+          hargaModal: modal,
           stockItemId: item.stockItemId,
           jasaId: item.jasaId,
           intervalBulan: item.intervalBulan,
@@ -237,43 +280,33 @@ class OrderService {
       );
     }
     final isOwner = actor?.isOwner ?? true;
-    final requiresApproval = !isOwner && settings.approvalBelowCost;
-    var ownerApproved = isOwner;
     String? approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
-    final hasApprovalInput =
-        (ownerPin ?? '').trim().isNotEmpty ||
-        (approverSecret ?? '').trim().isNotEmpty;
-    PriceAllocation allocation;
-    try {
-      allocation = PriceRules.allocate(
-        lines,
-        diskonCents: diskonCents,
-        ownerApproved: ownerApproved,
-        allowBelowMinimum: !requiresApproval,
-        alasanDiskon: alasanDiskon,
-        disetujuiOleh: approver,
-      );
-    } on PriceRuleViolation catch (error) {
-      if (error.code != 'di_bawah_batas_minimal') rethrow;
-      if (!hasApprovalInput) rethrow;
+    final allocation = PriceRules.allocate(
+      lines,
+      diskonCents: diskonCents,
+      allowBelowMinimum: isOwner,
+      alasanDiskon: alasanDiskon,
+      disetujuiOleh: approver,
+    );
+    if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
+      final hasApprovalInput =
+          (ownerPin ?? '').trim().isNotEmpty ||
+          (approverSecret ?? '').trim().isNotEmpty;
+      if (!hasApprovalInput) {
+        throw StateError(
+          'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
+        );
+      }
       try {
         final approval = await ApprovalService.instance.verify(
           settings: settings,
           ownerPin: ownerPin,
           approverSecret: approverSecret,
         );
-        ownerApproved = true;
         approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
       } on ApprovalException catch (failure) {
         throw PriceRuleViolation('persetujuan_gagal', failure.message);
       }
-      allocation = PriceRules.allocate(
-        lines,
-        diskonCents: diskonCents,
-        ownerApproved: true,
-        alasanDiskon: alasanDiskon,
-        disetujuiOleh: approver,
-      );
     }
     return AppDatabase.instance.db.transaction((txn) async {
       String nomor;
@@ -361,7 +394,7 @@ class OrderService {
             .toIso8601String(),
         'total': allocation.total,
         'status': 'aktif',
-        'disetujui_oleh': ownerApproved ? approver : null,
+        'disetujui_oleh': approver,
         'mode_saat_dibuat_json': jsonEncode(
           modeSaatDibuat ??
               settings.modeSnapshot(jenisTransaksi: transactionEstimasiSaja),
@@ -391,9 +424,9 @@ class OrderService {
           'deskripsi': item.deskripsi,
           'jumlah': item.jumlah,
           'harga_jual_terdaftar': item.hargaCents,
-          'harga_batas_saat_transaksi': item.modalCents,
+          'harga_batas_saat_transaksi': line.hargaModal,
           'harga_final': line.hargaFinal,
-          'harga_modal': item.modalCents,
+          'harga_modal': line.hargaModal,
           'diskon_alokasi': line.diskonAlokasi,
           'interval_servis_bulan': item.intervalBulan,
           'subtotal': item.jumlah * line.hargaFinal,

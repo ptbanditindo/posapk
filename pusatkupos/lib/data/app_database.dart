@@ -1151,6 +1151,30 @@ class AppDatabase {
       final lines = <PriceLine>[];
       for (final job in jobs) {
         job.modalCents = job.modalCents < 0 ? 0 : job.modalCents;
+        if (job.jasaId != null) {
+          final catalog = await txn.query(
+            'harga_jasa',
+            columns: ['harga_jual', 'harga_modal', 'deleted_at'],
+            where: 'id = ?',
+            whereArgs: [job.jasaId],
+            limit: 1,
+          );
+          if (catalog.isEmpty || catalog.first['deleted_at'] != null) {
+            throw StateError(
+              'Jasa ${job.deskripsi} tidak ditemukan di daftar tarif.',
+            );
+          }
+          final hargaJual =
+              (catalog.first['harga_jual'] as num?)?.toInt() ?? 0;
+          if (job.hargaCents != hargaJual) {
+            throw StateError(
+              'Harga jasa ${job.deskripsi} berubah menjadi '
+              '${formatRupiah(hargaJual)}. Muat ulang kasir lalu ulangi.',
+            );
+          }
+          job.modalCents =
+              (catalog.first['harga_modal'] as num?)?.toInt() ?? 0;
+        }
         lines.add(
           PriceLine(
             jenis: 'jasa',
@@ -1208,76 +1232,34 @@ class AppDatabase {
         );
       }
       final isOwner = actor?.isOwner ?? true;
-      // Saklar pemilik: bila mati (default), kasir tidak perlu persetujuan
-      // untuk mengeluarkan nota, termasuk saat harga di bawah modal.
-      // Selisihnya tetap dicatat sebagai anomali saat sinkronisasi.
-      final requiresApproval = !isOwner && settings.approvalBelowCost;
-      var ownerApproved = isOwner;
       String? approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
-      final hasApprovalInput =
-          (ownerPin ?? '').trim().isNotEmpty ||
-          (approverSecret ?? '').trim().isNotEmpty;
-      ApprovalResult? approvalUsed;
-      Future<ApprovalResult> approve() async {
-        approvalUsed ??= await ApprovalService.instance.verify(
-          settings: settings,
-          ownerPin: ownerPin,
-          approverSecret: approverSecret,
-          executor: txn,
-        );
-        return approvalUsed!;
-      }
-
-      final brutoAwal = lines.fold<int>(0, (sum, line) => sum + line.subtotal);
-      if (!isOwner && diskonCents > 0 && brutoAwal > 0) {
-        final limit = await _maxDiscountPercent(txn);
-        final percent = diskonCents / brutoAwal * 100;
-        if (percent > limit) {
-          if (!hasApprovalInput) {
-            throw StateError(
-              'Diskon ${percent.toStringAsFixed(1)}% melebihi batas $limit%. '
-              'Minta persetujuan pemilik atau penanggung jawab.',
-            );
-          }
-          await approve();
+      final allocation = PriceRules.allocate(
+        lines,
+        diskonCents: diskonCents,
+        allowBelowMinimum: isOwner,
+        alasanDiskon: alasanDiskon,
+        disetujuiOleh: approver,
+      );
+      if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
+        final hasApprovalInput =
+            (ownerPin ?? '').trim().isNotEmpty ||
+            (approverSecret ?? '').trim().isNotEmpty;
+        if (!hasApprovalInput) {
+          throw StateError(
+            'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
+          );
         }
-      }
-      PriceAllocation? preliminary;
-      try {
-        preliminary = PriceRules.allocate(
-          lines,
-          diskonCents: diskonCents,
-          ownerApproved: ownerApproved,
-          allowBelowMinimum: !requiresApproval,
-          alasanDiskon: alasanDiskon,
-          disetujuiOleh: approver,
-        );
-      } on PriceRuleViolation catch (error) {
-        if (error.code != 'di_bawah_batas_minimal') rethrow;
-        if (!hasApprovalInput) rethrow;
         try {
-          final approval = await approve();
-          ownerApproved = true;
+          final approval = await ApprovalService.instance.verify(
+            settings: settings,
+            ownerPin: ownerPin,
+            approverSecret: approverSecret,
+            executor: txn,
+          );
           approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
         } on ApprovalException catch (failure) {
           throw PriceRuleViolation('persetujuan_gagal', failure.message);
         }
-      }
-      final allocation =
-          preliminary ??
-          PriceRules.allocate(
-            lines,
-            diskonCents: diskonCents,
-            ownerApproved: ownerApproved,
-            allowBelowMinimum: !requiresApproval,
-            alasanDiskon: alasanDiskon,
-            disetujuiOleh: approver,
-          );
-      if (allocation.belowMinimum && requiresApproval && !ownerApproved) {
-        throw PriceRuleViolation(
-          'di_bawah_batas_minimal',
-          'Harga di bawah batas minimal. Persetujuan pemilik diperlukan.',
-        );
       }
       for (var index = 0; index < jobs.length; index++) {
         final line = allocation.lines[index];
@@ -1676,19 +1658,6 @@ class AppDatabase {
   static int _splitShare(int total, int index, int count) {
     if (count <= 0) return 0;
     return total ~/ count + (index < total % count ? 1 : 0);
-  }
-
-  Future<double> _maxDiscountPercent([DatabaseExecutor? executor]) async {
-    final db = executor ?? this.db;
-    final rows = await db.query(
-      'app_settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: ['diskon.maks_persen'],
-      limit: 1,
-    );
-    final raw = rows.isEmpty ? null : rows.first['value'] as String?;
-    return double.tryParse(raw ?? '') ?? 10;
   }
 
   /// Nomor dokumen selalu ada dan unik tanpa koordinasi server.

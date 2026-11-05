@@ -22,7 +22,7 @@ const _kasir = Operator(
   kind: 'employee',
   role: 'KASIR',
   label: 'Kasir Uji',
-  permissions: {},
+  permissions: {'diskon'},
 );
 
 const _mekanik = Operator(
@@ -65,7 +65,7 @@ void main() {
   }
 
   Future<StoreSettings> saveSettings({
-    bool? approvalBelowCost,
+    bool? approvalDiscount,
     String? approverMode,
     String? approverEmployeeSyncId,
     bool? simpanEstimasiLepas,
@@ -79,7 +79,7 @@ void main() {
         types: current.types,
         stages: current.stages,
         simpanEstimasiLepas: simpanEstimasiLepas ?? current.simpanEstimasiLepas,
-        approvalBelowCost: approvalBelowCost ?? current.approvalBelowCost,
+        approvalDiscount: approvalDiscount ?? current.approvalDiscount,
         vehicleRequired: current.vehicleRequired,
         approverMode: approverMode ?? current.approverMode,
         approverEmployeeSyncId:
@@ -136,34 +136,48 @@ void main() {
     },
   );
 
-  test('harga di bawah modal ditolak tanpa persetujuan atau izin pemilik', () {
-    PriceLine line() => PriceLine(
+  test('batas modal mutlak dan diskon maksimal selisih modal', () {
+    PriceLine line({int harga = 7000000, int modal = 5000000}) => PriceLine(
       jenis: 'jasa',
       label: 'Jasa',
       jumlah: 1,
-      hargaTerdaftar: 7000,
-      hargaModal: 10000,
+      hargaTerdaftar: harga,
+      hargaModal: modal,
+    );
+
+    final fullMargin = PriceRules.allocate(
+      [line()],
+      diskonCents: 2000000,
+    );
+    expect(fullMargin.total, 5000000);
+    expect(fullMargin.lines.single.hargaFinal, 5000000);
+    expect(fullMargin.belowMinimum, isFalse);
+
+    expect(
+      () => PriceRules.allocate([line()], diskonCents: 2000001),
+      throwsA(_violation('diskon_melebihi_margin')),
     );
     expect(
-      () => PriceRules.allocate([line()], diskonCents: 0),
+      () => PriceRules.allocate([line()], diskonCents: 3000000),
+      throwsA(_violation('diskon_melebihi_margin')),
+    );
+    expect(
+      () => PriceRules.allocate(
+        [line(harga: 4999999)],
+        diskonCents: 0,
+      ),
       throwsA(_violation('di_bawah_batas_minimal')),
     );
-    final allowed = PriceRules.allocate(
-      [line()],
-      diskonCents: 0,
-      allowBelowMinimum: true,
-    );
-    expect(allowed.belowMinimum, isTrue);
-    expect(allowed.total, 7000);
 
-    final approved = PriceRules.allocate(
+    final owner = PriceRules.allocate(
       [line()],
-      diskonCents: 0,
-      ownerApproved: true,
+      diskonCents: 3000000,
+      allowBelowMinimum: true,
       disetujuiOleh: 'Pemilik (PIN)',
     );
-    expect(approved.belowMinimum, isTrue);
-    expect(approved.lines.single.disetujuiOleh, 'Pemilik (PIN)');
+    expect(owner.belowMinimum, isTrue);
+    expect(owner.total, 4000000);
+    expect(owner.lines.single.disetujuiOleh, 'Pemilik (PIN)');
 
     expect(
       () => PriceRules.validateCorrection(
@@ -189,92 +203,119 @@ void main() {
   });
 
   test(
-    'saklar persetujuan mati: kasir bebas membuat nota di bawah modal',
+    'kasir tidak dapat melewati modal dan diskon maksimal selisih modal',
     () async {
       final unitId = await seedUnit();
       final settings = await StoreSettingsService.instance.ensure();
-      expect(settings.approvalBelowCost, isFalse);
+      expect(settings.approvalDiscount, isFalse);
 
-      final recordId = await db.createTransaction(
+      Future<int> create({
+        int harga = 7000000,
+        int modal = 5000000,
+        int diskon = 0,
+        String? ownerPin,
+      }) => db.createTransaction(
         unitId: unitId,
-        keluhan: 'Jual di bawah modal',
+        keluhan: 'Aturan modal',
         jobs: [
           JobDraft(
-            deskripsi: 'Jasa cepat',
+            deskripsi: 'Jasa',
             jumlah: 1,
-            hargaCents: 10000000,
-            modalCents: 20000000,
+            hargaCents: harga,
+            modalCents: modal,
           ),
         ],
         parts: const [],
-        diskonCents: 0,
+        diskonCents: diskon,
         metodeBayar: 'CASH',
-        bayarCents: 10000000,
+        bayarCents: harga - diskon,
         actor: _kasir,
+        ownerPin: ownerPin,
       );
 
+      await expectLater(
+        create(harga: 4999999),
+        throwsA(_violation('di_bawah_batas_minimal')),
+      );
+      await expectLater(
+        create(diskon: 2000001),
+        throwsA(_violation('diskon_melebihi_margin')),
+      );
+
+      final recordId = await create(diskon: 2000000);
       final job = (await db.db.query('service_jobs')).single;
-      expect(job['harga_jual_terdaftar'], 10000000);
-      expect(job['harga_batas_saat_transaksi'], 20000000);
-      expect(job['harga_final'], 10000000);
-      expect(job['diskon_alokasi'], 0);
+      expect(job['harga_jual_terdaftar'], 7000000);
+      expect(job['harga_batas_saat_transaksi'], 5000000);
+      expect(job['harga_final'], 5000000);
+      expect(job['diskon_alokasi'], 2000000);
+      final record = await db.recordDetail(recordId);
+      expect(record!.record.totalCents, 5000000);
 
       final audits = await db.db.query(
         'permission_audits',
         where: 'action = ?',
-        whereArgs: ['harga_bawah_modal'],
+        whereArgs: ['diskon'],
       );
       expect(audits, hasLength(1));
       final detail = jsonDecode(audits.single['detail_json']! as String) as Map;
-      expect(detail['di_bawah_modal'], isTrue);
-      expect(detail['no_nota'], isNotEmpty);
-      expect(detail['disetujui_oleh'], isNull);
-      final record = await db.recordDetail(recordId);
-      expect(record!.record.totalCents, 10000000);
+      expect(detail['diskon'], 2000000);
+      expect(detail['di_bawah_modal'], isFalse);
+
+      await saveSettings(approvalDiscount: true);
+      await PinService.instance.setup('123456');
+      await expectLater(
+        create(diskon: 2000001, ownerPin: '123456'),
+        throwsA(_violation('diskon_melebihi_margin')),
+      );
+      await expectLater(
+        create(harga: 4500000, ownerPin: '123456'),
+        throwsA(_violation('di_bawah_batas_minimal')),
+      );
     },
   );
 
   test(
-    'saklar persetujuan hidup: PIN pemilik wajib untuk harga bawah modal',
+    'saklar persetujuan hidup: PIN pemilik wajib untuk setiap diskon kasir',
     () async {
-      await saveSettings(approvalBelowCost: true);
+      await saveSettings(approvalDiscount: true);
       await PinService.instance.setup('123456');
       final unitId = await seedUnit();
 
-      Future<int> create({String? ownerPin}) => db.createTransaction(
+      Future<int> create({
+        String? ownerPin,
+        int diskon = 2000000,
+        int harga = 7000000,
+      }) => db.createTransaction(
         unitId: unitId,
         keluhan: 'Butuh persetujuan',
         jobs: [
           JobDraft(
             deskripsi: 'Jasa mahal',
             jumlah: 1,
-            hargaCents: 10000000,
-            modalCents: 20000000,
+            hargaCents: harga,
+            modalCents: 5000000,
           ),
         ],
         parts: const [],
-        diskonCents: 0,
+        diskonCents: diskon,
         metodeBayar: 'CASH',
-        bayarCents: 10000000,
+        bayarCents: harga - diskon,
         actor: _kasir,
         ownerPin: ownerPin,
       );
 
-      await expectLater(
-        create(),
-        throwsA(_violation('di_bawah_batas_minimal')),
-      );
+      await expectLater(create(), throwsA(isA<StateError>()));
       await expectLater(
         create(ownerPin: '000000'),
         throwsA(_violation('persetujuan_gagal')),
       );
       final recordId = await create(ownerPin: '123456');
       final job = (await db.db.query('service_jobs')).single;
-      expect(job['disetujui_oleh'], 'Pemilik (PIN)');
+      expect(job['harga_final'], 5000000);
       final audit = await db.db.query(
         'permission_audits',
         where: 'action = ?',
-        whereArgs: ['harga_bawah_modal'],
+        whereArgs: ['diskon'],
       );
       expect(audit, hasLength(1));
       final detail = jsonDecode(audit.single['detail_json']! as String) as Map;
@@ -284,7 +325,7 @@ void main() {
   );
 
   test(
-    'penanggung jawab yang ditunjuk dapat menyetujui harga bawah modal',
+    'penanggung jawab yang ditunjuk dapat menyetujui diskon dalam batas modal',
     () async {
       const approverSyncId = 'akun-penanggung-jawab-1';
       const pin = '246810';
@@ -324,7 +365,7 @@ void main() {
         },
       };
       final saved = await saveSettings(
-        approvalBelowCost: true,
+        approvalDiscount: true,
         approverMode: approverEmployee,
         approverEmployeeSyncId: approverSyncId,
         rolePermissions: rolePermissions,
@@ -332,32 +373,36 @@ void main() {
       expect(saved.roleAllows('KASIR', 'setujui'), isTrue);
 
       final unitId = await seedUnit();
-      Future<int> create({required String secret}) => db.createTransaction(
+      Future<int> create({
+        required String secret,
+        int harga = 7000000,
+        int diskon = 2000000,
+      }) => db.createTransaction(
         unitId: unitId,
         keluhan: 'Persetujuan penanggung jawab',
         jobs: [
           JobDraft(
             deskripsi: 'Jasa khusus',
             jumlah: 1,
-            hargaCents: 9000000,
-            modalCents: 15000000,
+            hargaCents: harga,
+            modalCents: 5000000,
           ),
         ],
         parts: const [],
-        diskonCents: 0,
+        diskonCents: diskon,
         metodeBayar: 'CASH',
-        bayarCents: 9000000,
+        bayarCents: harga - diskon,
         actor: _kasir,
         approverSecret: secret,
       );
 
       final recordId = await create(secret: pin);
       final job = (await db.db.query('service_jobs')).single;
-      expect(job['disetujui_oleh'], 'Siti (Penanggung jawab)');
+      expect(job['harga_final'], 5000000);
       final audit = await db.db.query(
         'permission_audits',
         where: 'action = ?',
-        whereArgs: ['harga_bawah_modal'],
+        whereArgs: ['diskon'],
       );
       final detail = jsonDecode(audit.single['detail_json']! as String) as Map;
       expect(detail['disetujui_oleh'], 'Siti (Penanggung jawab)');
@@ -366,6 +411,14 @@ void main() {
       await expectLater(
         create(secret: '999999'),
         throwsA(_violation('persetujuan_gagal')),
+      );
+      await expectLater(
+        create(secret: pin, harga: 4500000, diskon: 0),
+        throwsA(_violation('di_bawah_batas_minimal')),
+      );
+      await expectLater(
+        create(secret: pin, diskon: 2000001),
+        throwsA(_violation('diskon_melebihi_margin')),
       );
     },
   );
@@ -399,6 +452,7 @@ void main() {
         diskonCents: 9000000,
         metodeBayar: 'CASH',
         bayarCents: 11000000,
+        actor: Operator.owner,
       );
       final part = (await db.db.query('service_parts')).single;
       expect(part['harga_jual_terdaftar'], 10000000);
@@ -607,6 +661,48 @@ void main() {
       actor: _kasir,
     );
     expect(unsaved, isNull);
+  });
+
+  test('estimasi memakai batas modal dan margin yang sama', () async {
+    await enableFullPreset();
+    final unitId = await seedUnit();
+
+    Future<EstimateRecord?> create({
+      int harga = 7000000,
+      int diskon = 0,
+      String? ownerPin,
+    }) => OrderService.instance.createEstimate(
+      unitId: unitId,
+      items: [
+        EstimateItemInput(
+          jenis: 'jasa',
+          deskripsi: 'Servis',
+          jumlah: 1,
+          hargaCents: harga,
+          modalCents: 5000000,
+        ),
+      ],
+      diskonCents: diskon,
+      actor: _kasir,
+      ownerPin: ownerPin,
+    );
+
+    await expectLater(
+      create(harga: 4500000),
+      throwsA(_violation('di_bawah_batas_minimal')),
+    );
+    await expectLater(
+      create(diskon: 2000001),
+      throwsA(_violation('diskon_melebihi_margin')),
+    );
+    final estimate = await create(diskon: 2000000);
+    expect(estimate!.totalCents, 5000000);
+
+    await saveSettings(approvalDiscount: true);
+    await PinService.instance.setup('123456');
+    await expectLater(create(diskon: 2000000), throwsA(isA<StateError>()));
+    final approved = await create(diskon: 2000000, ownerPin: '123456');
+    expect(approved!.totalCents, 5000000);
   });
 
   test(

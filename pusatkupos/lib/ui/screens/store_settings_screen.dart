@@ -70,7 +70,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     Map<String, bool>? types,
     Map<String, bool>? stages,
     bool? simpanEstimasiLepas,
-    bool? approvalBelowCost,
+    bool? approvalDiscount,
     bool? vehicleRequired,
     String? approverMode,
     String? approverEmployeeSyncId,
@@ -85,7 +85,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
       stages: stages ?? current.stages,
       simpanEstimasiLepas:
           simpanEstimasiLepas ?? current.simpanEstimasiLepas,
-      approvalBelowCost: approvalBelowCost ?? current.approvalBelowCost,
+      approvalDiscount: approvalDiscount ?? current.approvalDiscount,
       vehicleRequired: vehicleRequired ?? current.vehicleRequired,
       approverMode: approverMode ?? current.approverMode,
       approverEmployeeSyncId: approverEmployeeSyncId ??
@@ -285,15 +285,16 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Kasir wajib persetujuan di bawah modal'),
+                  title: const Text('Kasir wajib persetujuan untuk diskon'),
                   subtitle: const Text(
-                    'Mati: kasir tetap bisa mengeluarkan nota; selisih dicatat '
-                    'sebagai anomali untuk ditinjau pemilik.',
+                    'Mati: diskon kasir sampai selisih harga jual dan modal '
+                    'langsung dipakai. Hidup: setiap diskon kasir perlu '
+                    'persetujuan. Harga tetap tidak boleh di bawah modal.',
                   ),
-                  value: settings.approvalBelowCost,
+                  value: settings.approvalDiscount,
                   onChanged: (value) => _update(
                     (current) => _copy(
-                      approvalBelowCost: value,
+                      approvalDiscount: value,
                       preset: presetManual,
                     ),
                   ),

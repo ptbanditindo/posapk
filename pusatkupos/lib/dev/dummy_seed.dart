@@ -6,17 +6,33 @@ import 'package:cryptography/cryptography.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../data/app_database.dart';
+import '../data/secure_store.dart';
+import '../sync/crypto.dart';
 
 /// Data uji hanya aktif bila dibangun dengan
 /// `--dart-define=PUSATKU_DUMMY_SEED=true`.
 const bool dummySeedEnabled = bool.fromEnvironment('PUSATKU_DUMMY_SEED');
 const String dummyRole = String.fromEnvironment('PUSATKU_DUMMY_ROLE');
 
+/// ID owner tetap untuk build uji agar akun karyawan lokal dapat dipakai tanpa
+/// menebak ID hasil `ensureOwner`.
+const dummyOwnerId = 'OWNERDUMMY';
+
 const dummyKasir = (username: 'kasir', password: 'kasir123456', pin: '111111');
 const dummyMekanik = (
   username: 'mekanik',
   password: 'mekanik123456',
   pin: '222222',
+);
+const dummyKeduanya = (
+  username: 'keduanya',
+  password: 'keduanya123456',
+  pin: '333333',
+);
+const dummyPenanggungJawab = (
+  username: 'penanggung',
+  password: 'penanggung123456',
+  pin: '444444',
 );
 
 const _seedIterations = 10000;
@@ -25,8 +41,7 @@ int _rp(int rupiah) => rupiah * 100;
 
 Future<void> seedDummyDataIfEnabled() async {
   if (!dummySeedEnabled) return;
-  if (await AppDatabase.instance.getSetting('dev.dummy_seed') == '1') return;
-
+  await _seedOwner();
   await _seedAccounts();
   await _seedBusinessData();
   if (dummyRole == 'owner' || dummyRole == 'employee') {
@@ -35,12 +50,23 @@ Future<void> seedDummyDataIfEnabled() async {
   await AppDatabase.instance.setSetting('dev.dummy_seed', '1');
 }
 
-Future<void> _seedAccounts() async {
+Future<void> _seedOwner() async {
   final db = AppDatabase.instance.db;
-  final rows = await db.rawQuery(
-    'SELECT COUNT(*) AS total FROM employee_accounts',
-  );
-  if (((rows.first['total'] as int?) ?? 0) > 0) return;
+  final rows = await db.query('owner_identity', limit: 1);
+  if (rows.isNotEmpty) return;
+  final keys = await generateSigningKey();
+  await SecureStore.instance.write('owner.signing.private', keys.privateKey);
+  await db.insert('owner_identity', {
+    'id': 1,
+    'owner_id': dummyOwnerId,
+    'public_key': keys.publicKey,
+    'recovery_hash': '',
+    'recovery_salt': '',
+    'created_at': nowIso(),
+  });
+}
+
+Future<void> _seedAccounts() async {
   await _insertAccount(
     username: dummyKasir.username,
     nama: 'Kasir Demo',
@@ -56,6 +82,22 @@ Future<void> _seedAccounts() async {
     password: dummyMekanik.password,
     pin: dummyMekanik.pin,
   );
+  await _insertAccount(
+    username: dummyKeduanya.username,
+    nama: 'Kasir & Mekanik Demo',
+    role: 'KEDUANYA',
+    password: dummyKeduanya.password,
+    pin: dummyKeduanya.pin,
+    extraPermissions: const ['lihat_laporan'],
+  );
+  await _insertAccount(
+    username: dummyPenanggungJawab.username,
+    nama: 'Penanggung Jawab Demo',
+    role: 'KEDUANYA',
+    password: dummyPenanggungJawab.password,
+    pin: dummyPenanggungJawab.pin,
+    extraPermissions: const ['setujui', 'koreksi', 'lihat_laporan'],
+  );
 }
 
 Future<void> _insertAccount({
@@ -66,10 +108,19 @@ Future<void> _insertAccount({
   required String pin,
   List<String> extraPermissions = const [],
 }) async {
+  final db = AppDatabase.instance.db;
+  final existing = await db.query(
+    'employee_accounts',
+    columns: ['id'],
+    where: 'username = ?',
+    whereArgs: [username],
+    limit: 1,
+  );
+  if (existing.isNotEmpty) return;
   final now = nowIso();
   final (passwordHash, passwordSalt) = await _hash(password);
   final (pinHash, pinSalt) = await _hash(pin);
-  await AppDatabase.instance.db.insert('employee_accounts', {
+  await db.insert('employee_accounts', {
     'sync_id': newSyncId(),
     'username': username,
     'nama': nama,

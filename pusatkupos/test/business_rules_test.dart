@@ -8,6 +8,7 @@ import 'package:pusatkupos/data/app_database.dart';
 import 'package:pusatkupos/data/models.dart';
 import 'package:pusatkupos/data/note_sync.dart';
 import 'package:pusatkupos/data/pin_service.dart';
+import 'package:pusatkupos/data/price_rules.dart';
 import 'package:pusatkupos/data/secure_store.dart';
 
 Future<(Directory, AppDatabase)> _open(String prefix) async {
@@ -525,7 +526,7 @@ void main() {
     }
   });
 
-  test('diskon di atas batas hanya boleh untuk pemilik', () async {
+  test('diskon kasir maksimal selisih modal; pemilik boleh melewati', () async {
     final (dir, db) = await _open('pusatkupos_diskon_');
     try {
       final unitId = await _seedUnit(db);
@@ -535,20 +536,37 @@ void main() {
         label: 'Kasir',
         permissions: {'diskon'},
       );
-      Future<int> create(Operator? actor) => db.createTransaction(
+      Future<int> create(Operator? actor, {int diskon = 200000}) =>
+          db.createTransaction(
             unitId: unitId,
             keluhan: 'Diskon',
             jobs: [
-              JobDraft(deskripsi: 'Jasa', jumlah: 1, hargaCents: 1000000),
+              JobDraft(
+                deskripsi: 'Jasa',
+                jumlah: 1,
+                hargaCents: 1000000,
+                modalCents: 600000,
+              ),
             ],
             parts: const [],
-            diskonCents: 200000,
+            diskonCents: diskon,
             metodeBayar: 'CASH',
-            bayarCents: 800000,
+            bayarCents: 1000000 - diskon,
             actor: actor,
           );
-      await expectLater(create(kasir), throwsA(isA<StateError>()));
-      final ownerRecord = await create(Operator.owner);
+      await expectLater(
+        create(kasir, diskon: 400001),
+        throwsA(
+          isA<PriceRuleViolation>().having(
+            (error) => error.code,
+            'kode',
+            'diskon_melebihi_margin',
+          ),
+        ),
+      );
+      final kasirRecord = await create(kasir);
+      expect(kasirRecord, isPositive);
+      final ownerRecord = await create(Operator.owner, diskon: 500000);
       expect(ownerRecord, isPositive);
       final audit = await db.db.query(
         'permission_audits',

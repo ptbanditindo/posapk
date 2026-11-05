@@ -4,7 +4,6 @@ import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/app_database.dart';
 import '../../data/order_service.dart';
-import '../../data/price_rules.dart';
 import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -110,19 +109,6 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
         );
         await showReceiptPreview(context, recordId, title: 'Nota konversi');
         return;
-      } on PriceRuleViolation catch (error) {
-        if (asked || error.code != 'di_bawah_batas_minimal') {
-          if (mounted) showSnack(context, '$error', error: true);
-          return;
-        }
-        final secret = await _askApproval(settings);
-        if (secret == null) return;
-        asked = true;
-        if (settings.approverMode == approverEmployee) {
-          approverSecret = secret;
-        } else {
-          ownerPin = secret;
-        }
       } on StateError catch (error) {
         if (asked || !error.message.contains('persetujuan')) {
           if (mounted) showSnack(context, '$error', error: true);
