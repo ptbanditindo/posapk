@@ -113,6 +113,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
       final label = order.nomorOrder ??
           (order.nomorAntrian == null ? 'baru' : '#${order.nomorAntrian}');
       showSnack(context, 'Order $label dibuat.');
+      AppState.instance.touch();
       _load();
     } catch (error) {
       if (mounted) showSnack(context, '$error', error: true);
@@ -684,6 +685,7 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
       setState(() {
         _status = status;
         _log = OrderService.instance.statusLog(widget.order.syncId);
+        AppState.instance.touch();
       });
       widget.onChanged();
       showSnack(context, 'Status order: ${_statusLabel(status)}.');

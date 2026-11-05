@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../sync/crypto.dart';
+import '../sync/sync_secrets.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 import 'secure_store.dart';
@@ -34,7 +35,7 @@ class DeviceService {
   }
 
   Future<String?> currentToken() =>
-      SecureStore.instance.read('device.current_token');
+      SyncSecrets.instance.read('device.current_token');
 
   Future<Map<String, Object?>> registerDevice({
     required String nama,
@@ -73,7 +74,7 @@ class DeviceService {
     await SecureStore.instance.write('device.$id.token', token);
     if (makeCurrent) {
       await AppDatabase.instance.setSetting('device.current_id', id);
-      await SecureStore.instance.write('device.current_token', token);
+      await SyncSecrets.instance.write('device.current_token', token);
     }
     return {
       'id': id,
@@ -92,10 +93,27 @@ class DeviceService {
       where: 'id = ?',
       whereArgs: [id],
     );
-    if (await AppDatabase.instance.getSetting('device.current_id') == id) {
-      await AppDatabase.instance.deleteSetting('device.current_id');
-      await SecureStore.instance.delete('device.current_token');
+    if (await AppDatabase.instance.getSetting('device.current_id') != id) {
+      return;
     }
+    // Perangkat lokal yang dicabut tidak boleh menyimpan token maupun kunci
+    // untuk sinkronisasi berikutnya.
+    final db = AppDatabase.instance;
+    final relayId = await db.getSetting('sync.relay_device_id');
+    await db.deleteSetting('device.current_id');
+    await db.deleteSetting('sync.local_device_id');
+    await db.deleteSetting('sync.relay_device_id');
+    await SyncSecrets.instance.delete('device.current_token');
+    await SecureStore.instance.delete('device.$id.sign');
+    await SecureStore.instance.delete('device.$id.encrypt');
+    await SecureStore.instance.delete('device.$id.token');
+    await SyncSecrets.instance.delete('sync.relay_device_token');
+    await SyncSecrets.instance.delete('sync.store_key');
+    await db.db.delete(
+      'sync_cursor',
+      where: 'device_id IN (?, ?)',
+      whereArgs: [id, relayId ?? ''],
+    );
   }
 
   Future<Map<String, Object?>?> authenticateToken(String token) async {

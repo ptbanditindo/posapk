@@ -151,6 +151,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           txn: txn,
         ),
       );
+      AppState.instance.touch();
       if (!mounted) return;
       showSnack(context, 'Aturan transaksi disimpan.');
       await _load();

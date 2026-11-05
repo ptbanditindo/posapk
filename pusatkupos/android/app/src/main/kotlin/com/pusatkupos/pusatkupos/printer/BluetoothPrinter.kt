@@ -122,7 +122,7 @@ class BluetoothPrinter(private val activity: Activity) {
         return mapOf("name" to activeName, "address" to normalized)
     }
 
-    fun send(bytes: ByteArray) {
+    fun send(address: String, bytes: ByteArray) {
         if (bytes.isEmpty()) {
             throw PrinterFailure("INVALID_PAYLOAD", "Data cetak kosong.")
         }
@@ -132,6 +132,14 @@ class BluetoothPrinter(private val activity: Activity) {
                 "Data cetak terlalu besar untuk printer Bluetooth.",
             )
         }
+        val normalized = normalizeAddress(address)
+            ?: throw PrinterFailure(
+                "INVALID_ADDRESS",
+                "Alamat Bluetooth printer tidak valid (contoh AA:BB:CC:DD:EE:FF).",
+            )
+        if (socket?.isConnected != true || activeAddress != normalized) {
+            connect(normalized)
+        }
         val current = socket
         if (current == null || current.isConnected != true) {
             closeSocket()
@@ -140,8 +148,11 @@ class BluetoothPrinter(private val activity: Activity) {
                 "Printer Bluetooth belum terhubung. Hubungkan lalu coba lagi.",
             )
         }
+        val chunks = (bytes.size + WRITE_CHUNK_BYTES - 1) / WRITE_CHUNK_BYTES
+        val timeout = (PRINT_TIMEOUT_MS + chunks * (WRITE_GAP_MS + 20L))
+            .coerceAtMost(MAX_PRINT_TIMEOUT_MS)
         try {
-            withTimeout(PRINT_TIMEOUT_MS) {
+            withTimeout(timeout) {
                 val output = current.outputStream
                 var offset = 0
                 while (offset < bytes.size) {
@@ -342,6 +353,7 @@ class BluetoothPrinter(private val activity: Activity) {
             Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val PRINT_TIMEOUT_MS = 20_000L
+        private const val MAX_PRINT_TIMEOUT_MS = 120_000L
         private const val DISCOVERY_WINDOW_MS = 8_000L
         private const val WRITE_CHUNK_BYTES = 128
         private const val WRITE_GAP_MS = 20L

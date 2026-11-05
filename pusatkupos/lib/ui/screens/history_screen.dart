@@ -6,6 +6,7 @@ import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
+import '../../data/sale_return_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../receipt_dialog.dart';
@@ -165,7 +166,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           '${_jenisLabels[row.jenisTransaksi] ?? row.jenisTransaksi}'
                           '${row.unitLabel.isEmpty ? '' : ' · ${row.unitLabel}'}\n'
                           '${dateTimeId.format(row.waktu)}'
-                          '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}',
+                          '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}'
+                          '${row.jatuhTempoLewat ? ' · JATUH TEMPO' : ''}',
                         ),
                         isThreeLine: true,
                         trailing: Column(
@@ -234,6 +236,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 } catch (error) {
                   if (context.mounted) {
                     showSnack(context, 'Gagal void: $error', error: true);
+                  }
+                }
+              },
+        onReturn: detail.record.isVoid || !AppState.instance.can('void')
+            ? null
+            : () async {
+                final request = await showDialog<_ReturnRequest>(
+                  context: context,
+                  builder: (context) => _ReturnDialog(detail: detail),
+                );
+                if (request == null || request.items.isEmpty) return;
+                try {
+                  await SaleReturnService.instance.createReturn(
+                    recordId: id,
+                    items: request.items,
+                    alasan: request.alasan,
+                    actor: AppState.instance.operator,
+                    enqueue: (txn, _) => SyncService.instance.enqueueNote(
+                      id,
+                      txn: txn,
+                    ),
+                  );
+                  AppState.instance.touch();
+                  FollowupService.instance.scheduleSync();
+                  if (context.mounted) Navigator.pop(context);
+                  if (mounted) _load();
+                  if (mounted) {
+                    showSnack(this.context, 'Retur dicatat.');
+                  }
+                } catch (error) {
+                  if (context.mounted) {
+                    showSnack(context, 'Gagal retur: $error', error: true);
                   }
                 }
               },
@@ -447,31 +481,44 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<String?> _askVoidReason(BuildContext context) async {
     final controller = TextEditingController();
+    String? error;
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Void nota'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Alasan',
-            hintText: 'Contoh: salah input',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Batal'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = controller.text.trim();
-              Navigator.pop(context, value.length < 3 ? null : value);
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Void nota'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Alasan',
+              hintText: 'Contoh: salah input',
+              errorText: error,
+            ),
+            onChanged: (_) {
+              if (error != null) setDialogState(() => error = null);
             },
-            child: const Text('Void'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.length < 3) {
+                  setDialogState(
+                    () => error = 'Alasan minimal 3 karakter.',
+                  );
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Void'),
+            ),
+          ],
+        ),
       ),
     );
     controller.dispose();
@@ -483,6 +530,7 @@ class _RecordDetailSheet extends StatelessWidget {
   const _RecordDetailSheet({
     required this.detail,
     this.onVoid,
+    this.onReturn,
     this.onSettle,
     this.onClaim,
     this.onUnitTaken,
@@ -491,6 +539,7 @@ class _RecordDetailSheet extends StatelessWidget {
 
   final RecordDetail detail;
   final Future<void> Function()? onVoid;
+  final Future<void> Function()? onReturn;
   final Future<void> Function()? onSettle;
   final Future<void> Function()? onClaim;
   final Future<void> Function()? onUnitTaken;
@@ -556,6 +605,13 @@ class _RecordDetailSheet extends StatelessWidget {
                   ),
                   _row(context, 'Dibayar', formatRupiah(detail.totalDibayarCents)),
                   _row(context, 'Sisa', formatRupiah(detail.sisaCents)),
+                  if (record.jatuhTempo != null)
+                    _row(
+                      context,
+                      'Jatuh tempo',
+                      '${dateId.format(record.jatuhTempo!)}'
+                      '${record.jatuhTempoLewat ? ' (lewat)' : ''}',
+                    ),
                   _row(context, 'Metode', record.metodeBayar),
                   if ((detail.createdBy ?? '').isNotEmpty)
                     _row(context, 'Dibuat oleh', detail.createdBy!),
@@ -638,8 +694,9 @@ class _RecordDetailSheet extends StatelessWidget {
                       .map(
                         (job) => _line(
                           context,
-                          '${job.deskripsi} × ${job.jumlah}',
-                          formatRupiah(job.subtotalCents),
+                          '${job.deskripsi} × ${job.jumlah}'
+                          '${job.diskonAlokasiCents > 0 ? ' · diskon ${formatRupiah(job.diskonAlokasiCents)}' : ''}',
+                          formatRupiah(job.lineTotalCents),
                         ),
                       )
                       .toList(),
@@ -655,8 +712,9 @@ class _RecordDetailSheet extends StatelessWidget {
                         .map(
                           (part) => _line(
                             context,
-                            '${part.nama} × ${part.jumlah}',
-                            formatRupiah(part.subtotalCents),
+                            '${part.nama} × ${part.jumlah}'
+                            '${part.diskonAlokasiCents > 0 ? ' · diskon ${formatRupiah(part.diskonAlokasiCents)}' : ''}',
+                            formatRupiah(part.lineTotalCents),
                           ),
                         )
                         .toList(),
@@ -703,6 +761,35 @@ class _RecordDetailSheet extends StatelessWidget {
                           ),
                         )
                         .toList(),
+                  ),
+                ),
+              ),
+            if (detail.returns.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: SectionCard(
+                  title: 'Retur',
+                  subtitle: 'Total retur dikurangkan dari penjualan neto.',
+                  child: Column(
+                    children: [
+                      for (final retur in detail.returns) ...[
+                        _row(
+                          context,
+                          '${retur.noRetur} · ${dateId.format(retur.waktu)}',
+                          '-${formatRupiah(retur.totalCents)}',
+                          bold: true,
+                        ),
+                        for (final item in retur.items)
+                          _line(
+                            context,
+                            '  ${item.deskripsi} × ${item.jumlah}',
+                            formatRupiah(item.subtotalCents),
+                          ),
+                        if (retur.alasan.trim().isNotEmpty)
+                          _line(context, '  Alasan', retur.alasan),
+                        const Divider(),
+                      ],
+                    ],
                   ),
                 ),
               ),
@@ -780,12 +867,19 @@ class _RecordDetailSheet extends StatelessWidget {
             const SizedBox(height: 12),
             if (record.isVoid)
               const Center(child: Text('Nota ini sudah di-void.'))
-            else
+            else ...[
+              FilledButton.tonalIcon(
+                onPressed: onReturn == null ? null : () => onReturn!(),
+                icon: const Icon(Icons.assignment_return_outlined),
+                label: const Text('Retur penjualan'),
+              ),
+              const SizedBox(height: 8),
               FilledButton.tonalIcon(
                 onPressed: onVoid == null ? null : () => onVoid!(),
                 icon: const Icon(Icons.block_outlined),
                 label: const Text('Void nota'),
               ),
+            ],
           ],
         );
       },
@@ -919,3 +1013,227 @@ class _SettlementInput {
   final int nominalCents;
   final String metode;
 }
+
+class _ReturnRequest {
+  const _ReturnRequest(this.items, this.alasan);
+
+  final List<ReturnLineInput> items;
+  final String alasan;
+}
+
+class _ReturnLineState {
+  _ReturnLineState({
+    required this.lineType,
+    required this.lineSyncId,
+    required this.label,
+    required this.remaining,
+    required this.unitNetCents,
+  });
+
+  final String lineType;
+  final String lineSyncId;
+  final String label;
+  final int remaining;
+  final int unitNetCents;
+  bool selected = false;
+  final qty = TextEditingController(text: '1');
+
+  void dispose() => qty.dispose();
+}
+
+class _ReturnDialog extends StatefulWidget {
+  const _ReturnDialog({required this.detail});
+
+  final RecordDetail detail;
+
+  @override
+  State<_ReturnDialog> createState() => _ReturnDialogState();
+}
+
+class _ReturnDialogState extends State<_ReturnDialog> {
+  late final List<_ReturnLineState> _lines;
+  final _alasan = TextEditingController();
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final returned = <String, int>{};
+    for (final retur in widget.detail.returns) {
+      for (final item in retur.items) {
+        final key = '${item.lineType}:${item.lineSyncId}';
+        returned[key] = (returned[key] ?? 0) + item.jumlah;
+      }
+    }
+    _lines = [];
+    for (final job in widget.detail.jobs) {
+      final syncId = job.syncId ?? '';
+      if (syncId.isEmpty) continue;
+      final sisa = job.jumlah - (returned['jasa:$syncId'] ?? 0);
+      if (sisa <= 0) continue;
+      _lines.add(
+        _ReturnLineState(
+          lineType: 'jasa',
+          lineSyncId: syncId,
+          label: job.deskripsi,
+          remaining: sisa,
+          unitNetCents:
+              job.jumlah == 0 ? 0 : job.lineTotalCents ~/ job.jumlah,
+        ),
+      );
+    }
+    for (final part in widget.detail.parts) {
+      final syncId = part.syncId ?? '';
+      if (syncId.isEmpty) continue;
+      final sisa = part.jumlah - (returned['part:$syncId'] ?? 0);
+      if (sisa <= 0) continue;
+      _lines.add(
+        _ReturnLineState(
+          lineType: 'part',
+          lineSyncId: syncId,
+          label: part.nama,
+          remaining: sisa,
+          unitNetCents:
+              part.jumlah == 0 ? 0 : part.lineTotalCents ~/ part.jumlah,
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final line in _lines) {
+      line.dispose();
+    }
+    _alasan.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final items = <ReturnLineInput>[];
+    for (final line in _lines) {
+      if (!line.selected) continue;
+      final qty = int.tryParse(line.qty.text.trim());
+      if (qty == null || qty <= 0) {
+        setState(() => _error = 'Jumlah retur ${line.label} tidak valid.');
+        return;
+      }
+      if (qty > line.remaining) {
+        setState(
+          () => _error = 'Jumlah retur ${line.label} melebihi sisa '
+              '${line.remaining}.',
+        );
+        return;
+      }
+      items.add(
+        ReturnLineInput(
+          lineType: line.lineType,
+          lineSyncId: line.lineSyncId,
+          jumlah: qty,
+        ),
+      );
+    }
+    if (items.isEmpty) {
+      setState(() => _error = 'Pilih minimal satu baris yang diretur.');
+      return;
+    }
+    final alasan = _alasan.text.trim();
+    if (alasan.length < 3) {
+      setState(() => _error = 'Alasan retur minimal 3 karakter.');
+      return;
+    }
+    Navigator.pop(context, _ReturnRequest(items, alasan));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Retur penjualan'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_lines.isEmpty)
+                const Text('Semua baris nota sudah diretur.')
+              else
+                for (final line in _lines)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        Checkbox(
+                          value: line.selected,
+                          onChanged: (value) =>
+                              setState(() => line.selected = value ?? false),
+                        ),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${line.lineType == 'jasa' ? 'Jasa' : 'Part'}'
+                                ' · ${line.label}',
+                              ),
+                              Text(
+                                'Sisa ${line.remaining} · '
+                                '${formatRupiah(line.unitNetCents)}/unit',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(
+                          width: 72,
+                          child: TextField(
+                            controller: line.qty,
+                            enabled: line.selected,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            decoration: const InputDecoration(
+                              labelText: 'Qty',
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _alasan,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Alasan retur',
+                  isDense: true,
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: _lines.isEmpty ? null : _save,
+          child: const Text('Simpan retur'),
+        ),
+      ],
+    );
+  }
+}
+

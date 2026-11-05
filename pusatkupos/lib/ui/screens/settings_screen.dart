@@ -113,11 +113,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _backupNow() async {
     setState(() => _backupBusy = true);
-    final result = await BackupService.instance.createAutomaticBackup();
-    await _loadBackup();
-    if (!mounted) return;
-    setState(() => _backupBusy = false);
-    showSnack(context, result.message, error: !result.ok);
+    try {
+      final result = await BackupService.instance.createAutomaticBackup();
+      await _loadBackup();
+      if (!mounted) return;
+      showSnack(context, result.message, error: !result.ok);
+    } catch (error) {
+      if (mounted) showSnack(context, 'Backup gagal: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
   }
 
   String _friendlyTime(String? iso) {
@@ -175,16 +180,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showSnack(context, 'Identitas toko disimpan.');
   }
 
+  /// Mengembalikan `null` bila dialog dibatalkan, string kosong bila pemilik
+  /// memilih backup tanpa passphrase.
+  Future<String?> _askBackupPassphrase({
+    required String title,
+    required String help,
+    bool requiredPass = false,
+  }) async {
+    final controller = TextEditingController();
+    String? error;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                help,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Passphrase',
+                  errorText: error,
+                  helperText: requiredPass
+                      ? 'Wajib, minimal 6 karakter.'
+                      : 'Kosongkan untuk backup khusus perangkat ini.',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (requiredPass && value.length < 6) {
+                  setLocal(() => error = 'Passphrase minimal 6 karakter.');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Lanjut'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
   Future<void> _backup() async {
     if (!AppState.instance.can('backup')) {
       showSnack(context, 'Izin backup tidak tersedia.', error: true);
       return;
     }
+    final passphrase = await _askBackupPassphrase(
+      title: 'Backup manual',
+      help:
+          'Isi passphrase agar backup dapat dipulihkan di perangkat lain. '
+          'Tanpa passphrase, backup tetap terenkripsi dengan kunci perangkat '
+          'ini dan hanya bisa dipulihkan di sini.',
+    );
+    if (passphrase == null) return;
     setState(() => _busy = true);
-    final result = await BackupService.instance.createBackup();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    showSnack(context, result.message, error: !result.ok);
+    try {
+      final result = await BackupService.instance.createBackup(
+        passphrase: passphrase,
+      );
+      if (!mounted) return;
+      showSnack(context, result.message, error: !result.ok);
+    } catch (error) {
+      if (mounted) showSnack(context, 'Backup gagal: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _restore() async {
@@ -192,29 +272,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showSnack(context, 'Izin restore tidak tersedia.', error: true);
       return;
     }
+    final path = await BackupService.instance.pickBackupArchive();
+    if (path == null || !mounted) return;
     final ok = await confirmAction(
       context,
       title: 'Pulihkan backup',
       message:
           'Seluruh data lokal akan diganti dengan isi backup. Restore ke '
           'perangkat kedua atau perangkat lama dapat menyebabkan nomor nota '
-          'dan antrean sinkron bentrok. Prefix nota baru akan dibuat; jalankan '
-          'bootstrap sebelum sinkronisasi. Buat backup terbaru dulu bila ragu.',
+          'dan antrean sinkron bentrok. Kode perangkat baru akan dibuat; '
+          'jalankan bootstrap sebelum sinkronisasi. Buat backup terbaru dulu '
+          'bila ragu.',
       confirmLabel: 'Pulihkan',
     );
-    if (!ok) return;
+    if (!ok || !mounted) return;
+    final needsPass = await BackupService.instance.needsPassphrase(path);
+    if (!mounted) return;
+    final passphrase = await _askBackupPassphrase(
+      title: 'Passphrase backup',
+      help: needsPass
+          ? 'Backup ini terkunci passphrase yang dibuat saat backup.'
+          : 'Kosongkan bila backup dibuat tanpa passphrase pemilik.',
+      requiredPass: needsPass,
+    );
+    if (passphrase == null) return;
     setState(() => _busy = true);
-    final result = await BackupService.instance.restoreBackup();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    if (result.ok) {
-      await AppState.instance.load();
-      AppState.instance.touch();
-      _nama.text = AppState.instance.storeName;
-      _alamat.text = AppState.instance.storeAddress;
+    try {
+      final result = await BackupService.instance.restoreBackup(
+        path: path,
+        passphrase: passphrase.isEmpty ? null : passphrase,
+      );
+      if (!mounted) return;
+      if (result.ok) {
+        await AppState.instance.load();
+        AppState.instance.touch();
+        _nama.text = AppState.instance.storeName;
+        _alamat.text = AppState.instance.storeAddress;
+      }
+      if (!mounted) return;
+      showSnack(context, result.message, error: !result.ok);
+    } catch (error) {
+      if (mounted) showSnack(context, 'Restore gagal: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    if (!mounted) return;
-    showSnack(context, result.message, error: !result.ok);
   }
 
   Future<void> _changePin() async {

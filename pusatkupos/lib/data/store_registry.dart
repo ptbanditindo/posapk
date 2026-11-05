@@ -156,6 +156,32 @@ class StoreRegistry {
     });
   }
 
+  /// Mengganti seluruh isi registry setelah restore backup multi-toko.
+  Future<void> replaceAll(
+    List<StoreRecord> stores, {
+    required String activeStoreId,
+  }) async {
+    await _database.transaction((txn) async {
+      await txn.delete('stores');
+      await txn.delete('registry_meta');
+      for (final store in stores) {
+        await txn.insert('stores', {
+          'store_id': store.storeId,
+          'database_id': store.databaseId,
+          'nama': store.nama,
+          'alamat': store.alamat,
+          'database_path': store.databasePath,
+          'created_at':
+              store.createdAt.isEmpty ? nowIso() : store.createdAt,
+        });
+      }
+      await txn.insert('registry_meta', {
+        'key': 'active_store_id',
+        'value': activeStoreId,
+      });
+    });
+  }
+
   Future<void> updateName(
     String storeId, {
     required String nama,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../auth/operator.dart';
+import '../sync/sync_secrets.dart';
 import 'app_database.dart';
 import 'secure_store.dart';
 
@@ -202,7 +203,7 @@ class SessionService {
   Future<void> saveDeviceToken(String? token, String? deviceId) async {
     if (token == null || token.isEmpty) return;
     await SecureStore.instance.write('session.device_token', token);
-    await SecureStore.instance.write('sync.relay_device_token', token);
+    await SyncSecrets.instance.write('sync.relay_device_token', token);
     // Hapus salinan lama di app_settings agar token tidak tersimpan polos.
     await AppDatabase.instance.deleteSetting('sync.relay_device_token');
     if (deviceId != null && deviceId.isNotEmpty) {

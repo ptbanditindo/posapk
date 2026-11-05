@@ -8,6 +8,7 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/relay_url.dart';
 import '../sync/crypto.dart';
+import 'license_service.dart';
 import 'secure_store.dart';
 
 class OwnerApiException implements Exception {
@@ -187,19 +188,22 @@ class OwnerApi {
         : <String, Object?>{};
   }
 
+  /// Izin akun wajib ditandatangani kunci owner yang terdaftar di relay.
+  /// Perangkat ringkasan hanya memegang kunci publik sehingga tidak dapat
+  /// mengubah akun.
   Future<KeyMaterial> _accessKeys() async {
-    final private = await SecureStore.instance.read('owner.access.private');
-    final public = await SecureStore.instance.read('owner.access.public');
-    if (private != null &&
-        private.isNotEmpty &&
-        public != null &&
-        public.isNotEmpty) {
-      return KeyMaterial(privateKey: private, publicKey: public);
+    final private = await SecureStore.instance.read('owner.signing.private');
+    final public = await LicenseService.instance.ownerPublicKey();
+    if (private == null ||
+        private.isEmpty ||
+        public == null ||
+        public.isEmpty) {
+      throw OwnerApiException(
+        'Perubahan akun hanya dapat dilakukan dari perangkat pemilik.',
+        code: 'owner_device_required',
+      );
     }
-    final keys = await generateSigningKey();
-    await SecureStore.instance.write('owner.access.private', keys.privateKey);
-    await SecureStore.instance.write('owner.access.public', keys.publicKey);
-    return keys;
+    return KeyMaterial(privateKey: private, publicKey: public);
   }
 
   String _newSalt() {

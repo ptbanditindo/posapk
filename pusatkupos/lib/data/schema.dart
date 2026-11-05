@@ -1,5 +1,95 @@
 import 'package:sqflite/sqflite.dart';
 
+/// Migrasi aditif untuk database yang dibuat sebelum versi 2.
+Future<void> migrateSchemaV2(Database db) async {
+  final columns = await db.rawQuery('PRAGMA table_info(service_records)');
+  final hasJatuhTempo = columns.any((row) => row['name'] == 'jatuh_tempo');
+  if (!hasJatuhTempo) {
+    await db.execute('ALTER TABLE service_records ADD COLUMN jatuh_tempo TEXT');
+  }
+  await createReturnTables(db);
+  await _addColumnIfMissing(
+    db,
+    'sale_returns',
+    'no_retur',
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  await _addColumnIfMissing(
+    db,
+    'sale_return_items',
+    'modal_satuan',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+}
+
+Future<void> _addColumnIfMissing(
+  Database db,
+  String table,
+  String column,
+  String definition,
+) async {
+  final info = await db.rawQuery('PRAGMA table_info($table)');
+  if (info.isEmpty) return;
+  if (info.any((row) => row['name'] == column)) return;
+  await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
+}
+
+Future<void> createReturnTables(Database db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS sale_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      service_record_id INTEGER NOT NULL,
+      nota_sync_id TEXT NOT NULL,
+      no_nota TEXT NOT NULL,
+      no_retur TEXT NOT NULL DEFAULT '',
+      total INTEGER NOT NULL DEFAULT 0,
+      alasan TEXT NOT NULL,
+      dibuat_oleh TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY (service_record_id) REFERENCES service_records(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_sale_returns_nota '
+    'ON sale_returns(service_record_id)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS sale_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      return_id INTEGER NOT NULL,
+      line_type TEXT NOT NULL,
+      line_sync_id TEXT NOT NULL DEFAULT '',
+      deskripsi TEXT NOT NULL,
+      jumlah INTEGER NOT NULL,
+      harga_satuan INTEGER NOT NULL DEFAULT 0,
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      modal_satuan INTEGER NOT NULL DEFAULT 0,
+      stock_item_id INTEGER,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_sale_return_items_return '
+    'ON sale_return_items(return_id)',
+  );
+}
+
 /// Skema awal versi 1.
 ///
 /// Sebelum rilis pertama ke pengguna, seluruh riwayat migrasi digabung di sini.
@@ -357,6 +447,7 @@ Future<void> createCleanSchema(Database db) async {
       jenis_bayar TEXT NOT NULL DEFAULT 'LUNAS',
       total_dibayar INTEGER NOT NULL DEFAULT 0,
       sisa_bayar INTEGER NOT NULL DEFAULT 0,
+      jatuh_tempo TEXT,
       status TEXT NOT NULL DEFAULT 'AKTIF',
       void_reason TEXT,
       voided_at TEXT,
@@ -517,6 +608,10 @@ Future<void> createCleanSchema(Database db) async {
   await db.execute(
     'CREATE INDEX ix_adjustments_nota ON nota_adjustments(nota_sync_id)',
   );
+
+  // Retur append-only. Nota asal tidak diubah; omzet neto dihitung dengan
+  // mengurangi baris retur pada rentang tanggal.
+  await createReturnTables(db);
 
   await db.execute('''
     CREATE TABLE service_record_mechanics (

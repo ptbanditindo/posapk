@@ -11,6 +11,7 @@ import 'package:pusatkupos/data/receipt_settings.dart';
 import 'package:pusatkupos/printer/escpos_builder.dart';
 import 'package:pusatkupos/printer/printer_config.dart';
 import 'package:pusatkupos/printer/printer_storage.dart';
+import 'package:pusatkupos/printer/receipt_builder.dart';
 
 void main() {
   late Directory dir;
@@ -103,16 +104,19 @@ void main() {
   });
 
   test('matikan bagian struk menghilangkan baris terkait', () async {
-    await ReceiptSettings.instance.save('part', false);
-    await ReceiptSettings.instance.save('hp', false);
+    final template = await ReceiptSettings.instance.load();
+    template.showPart = false;
+    template.metaFields['hp'] = false;
+    await ReceiptSettings.instance.save(template);
     try {
       final text = (await ReceiptService.instance.build(recordId)).text;
       expect(text, isNot(contains('SPAREPART')));
       expect(text, isNot(contains('081200000555')));
       expect(text, contains('JASA'));
     } finally {
-      await ReceiptSettings.instance.save('part', true);
-      await ReceiptSettings.instance.save('hp', true);
+      template.showPart = true;
+      template.metaFields['hp'] = true;
+      await ReceiptSettings.instance.save(template);
     }
   });
 
@@ -152,6 +156,32 @@ void main() {
     expect(wrapText('', 10), isEmpty);
   });
 
+  test('template v2 tersimpan sebagai satu JSON', () async {
+    await ReceiptSettings.instance.reset();
+    final raw = await db.getSetting(ReceiptSettings.templateKey);
+    expect(raw, isNotNull);
+    final decoded = jsonDecode(raw!) as Map;
+    expect(decoded['version'], 2);
+    expect(decoded['blocks'], isA<List<Object?>>());
+  });
+
+  test('ESC/POS menulis baris bergaya', () {
+    final builder = EscPosBuilder(width: 32)
+      ..init()
+      ..writeLines(const [
+        ReceiptLine(
+          'TENGAH',
+          align: ReceiptAlign.center,
+          bold: true,
+          double: true,
+        ),
+      ])
+      ..cut();
+    expect(builder.bytes, containsAllInOrder([0x1b, 0x61, 0x01]));
+    expect(builder.bytes, containsAllInOrder([0x1b, 0x45, 0x01]));
+    expect(builder.bytes, containsAllInOrder([0x1d, 0x21, 0x11]));
+  });
+
   test('ESC/POS memakai init, Latin-1, dan perintah potong', () {
     final builder = EscPosBuilder(width: 32)
       ..init()
@@ -160,7 +190,7 @@ void main() {
       ..cut();
     final bytes = builder.bytes;
     expect(bytes.take(2).toList(), [0x1b, 0x40]);
-    expect(bytes, containsAllInOrder(latin1.encode('Halo é ? Rp')));
+    expect(bytes, containsAllInOrder(latin1.encode('Halo é - Rp')));
     expect(bytes.sublist(bytes.length - 4), [0x1d, 0x56, 0x42, 0x00]);
   });
 

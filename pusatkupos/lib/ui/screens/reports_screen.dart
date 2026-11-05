@@ -185,8 +185,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Omzet',
-                            value: formatRupiah(summary.totalCents),
+                            label: 'Omzet neto',
+                            value: formatRupiah(summary.totalNetCents),
                             icon: Icons.payments_outlined,
                             tone: Theme.of(context).colorScheme.tertiary,
                           ),
@@ -227,6 +227,21 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         formatRupiah(summary.totalCents),
                         bold: true,
                       ),
+                      if (summary.returCents > 0) ...[
+                        _line(
+                          'Retur jasa',
+                          '-${formatRupiah(summary.returJasaCents)}',
+                        ),
+                        _line(
+                          'Retur part',
+                          '-${formatRupiah(summary.returPartCents)}',
+                        ),
+                        _line(
+                          'Penjualan neto',
+                          formatRupiah(summary.totalNetCents),
+                          bold: true,
+                        ),
+                      ],
                       const SizedBox(height: 8),
                       _line(
                         'Modal part',
@@ -236,14 +251,21 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         'Laba kotor part (sebelum diskon)',
                         formatRupiah(summary.labaKotorPartCents),
                       ),
+                      _line(
+                        'Modal jasa',
+                        formatRupiah(summary.totalModalJasaCents),
+                      ),
+                      _line(
+                        'Laba kotor jasa (sebelum diskon)',
+                        formatRupiah(summary.labaKotorJasaCents),
+                      ),
                       const Divider(),
                       _line('Komisi', formatRupiah(summary.komisiCents)),
                       _line('Gaji dibayar', formatRupiah(summary.gajiCents)),
                       _line(
                         'Laba setelah komisi & gaji',
                         formatRupiah(
-                          summary.totalCents -
-                              summary.totalModalPartCents -
+                          summary.labaKotorNetCents -
                               summary.komisiCents -
                               summary.gajiCents,
                         ),

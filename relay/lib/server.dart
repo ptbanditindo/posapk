@@ -207,11 +207,13 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
 
   /// Kelola akun/perangkat memakai token perangkat pemilik, bukan token
   /// pendaftaran yang hanya dipakai sekali saat pairing. Perangkat ringkasan
-  /// milik pemilik memakai kind `viewer`, jadi keduanya diterima di sini.
+  /// (`viewer`) hanya boleh membaca; semua perubahan wajib dari perangkat
+  /// `owner` agar tidak ada eskalasi hak akses.
   Future<Map<String, Object?>?> _manageAuth(
     Request request,
-    String ownerId,
-  ) async {
+    String ownerId, {
+    bool allowViewer = false,
+  }) async {
     if (ownerId.isEmpty) return null;
     if (_admin(request)) {
       return {'kind': 'admin', 'owner_id': ownerId};
@@ -220,8 +222,9 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     if (device == null) return null;
     if (device['owner_id'] != ownerId) return null;
     final kind = '${device['kind'] ?? ''}';
-    if (kind != 'owner' && kind != 'viewer') return null;
-    return device;
+    if (kind == 'owner') return device;
+    if (allowViewer && kind == 'viewer') return device;
+    return null;
   }
 
   /// Batas kasar untuk amplop dari perangkat karyawan. Isi amplop tetap
@@ -345,11 +348,41 @@ RETURNING used
     }
     final deviceId = _id('dev');
     final token = _token();
-    final storeIds = (body['store_ids'] as List? ?? const ['utama'])
-        .map((item) => '$item')
-        .toList();
+    final requestedStores = body['store_ids'];
+    final storeIds = requestedStores is List
+        ? requestedStores
+            .map((item) => '$item'.trim())
+            .where((item) => item.isNotEmpty)
+            .toSet()
+            .toList()
+        : <String>['utama'];
+    if (storeIds.isEmpty) storeIds.add('utama');
+    if (storeIds.any(
+      (item) => !RegExp(r'^[A-Za-z0-9._:-]{1,64}$').hasMatch(item),
+    )) {
+      return _error(400, 'ID toko tidak valid.');
+    }
+    final storeLimit =
+        max(1, (owner['license_store_limit'] as num?)?.toInt() ?? 1);
+    if (storeIds.length > storeLimit) {
+      return _error(
+        403,
+        'Lisensi hanya mengizinkan $storeLimit toko per perangkat.',
+        code: 'store_limit',
+      );
+    }
     final kind = '${body['kind'] ?? 'owner'}';
-    final employeeAccountId = body['employee_account_id']?.toString();
+    if (kind != 'owner' && kind != 'viewer') {
+      return _error(
+        400,
+        'Perangkat karyawan hanya dapat didaftarkan lewat kode undangan.',
+        code: 'invalid_device_kind',
+      );
+    }
+    if (body['employee_account_id'] != null) {
+      return _error(400, 'Perangkat owner/viewer tidak boleh memakai akun.');
+    }
+    const String? employeeAccountId = null;
     await db.execute(
       '''
 INSERT INTO devices (id, owner_id, nama, kind, employee_account_id, public_key,
@@ -428,11 +461,22 @@ VALUES (@token, @owner, @expires)
       return _error(400, 'Data key-wrap tidak lengkap.');
     }
     final targetRow = await db.one(
-      'SELECT id, owner_id FROM devices WHERE id = @id',
+      'SELECT id, owner_id, store_ids FROM devices WHERE id = @id',
       {'id': target},
     );
     if (targetRow == null || targetRow['owner_id'] != device['owner_id']) {
       return _error(404, 'Perangkat tujuan tidak ditemukan.');
+    }
+    final senderStores = stringList(device['store_ids']);
+    if (!senderStores.contains(store)) {
+      return _error(403, 'Perangkat pengirim tidak terdaftar pada toko $store.');
+    }
+    final targetStores = stringList(targetRow['store_ids']);
+    if (!targetStores.contains(store)) {
+      return _error(
+        403,
+        'Perangkat tujuan tidak terdaftar pada toko $store.',
+      );
     }
     final ownerPublic =
         device['owner_public_key_registered'] as String? ?? '';
@@ -555,6 +599,10 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
         'Perangkat tidak terdaftar pada toko $store.',
       );
     }
+    final entity = '${body['entity'] ?? ''}';
+    final action = '${body['action'] ?? ''}';
+    final entityId = '${body['entity_id'] ?? ''}';
+    final keyId = '${body['key_id'] ?? ''}';
     final fields = {
       'v': 1,
       'store_id': store,
@@ -566,16 +614,18 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
       'idempotency_key': '${body['idempotency_key'] ?? ''}',
       'ciphertext': '${body['ciphertext'] ?? ''}',
       'nonce': '${body['nonce'] ?? ''}',
+      'key_id': keyId,
+      'entity': entity,
+      'action': action,
+      'entity_id': entityId,
     };
     final signature = '${body['signature'] ?? ''}';
-    final entity = '${body['entity'] ?? ''}';
-    final action = '${body['action'] ?? ''}';
-    final entityId = '${body['entity_id'] ?? ''}';
     final hintsSignature = '${body['hints_signature'] ?? ''}';
     if (store.isEmpty ||
         fields['idempotency_key'] == '' ||
         fields['ciphertext'] == '' ||
         fields['nonce'] == '' ||
+        keyId.isEmpty ||
         (fields['seq'] as int) <= 0 ||
         signature.isEmpty) {
       throw _EnvelopeRejection(400, 'Amplop tidak lengkap.');
@@ -660,9 +710,11 @@ WHERE owner_id = @owner
       '''
 INSERT INTO envelopes (id, owner_id, store_id, sender_device_id,
   recipient_device_id, seq, hlc_wall, hlc_counter, idempotency_key,
-  ciphertext, nonce, signature, entity, action, entity_id, hints_signature)
+  ciphertext, nonce, signature, entity, action, entity_id, hints_signature,
+  key_id)
 VALUES (@id, @owner, @store, @sender, @recipient, @seq, @wall, @counter, @key,
-  @ciphertext, @nonce, @signature, @entity, @action, @entityId, @hints)
+  @ciphertext, @nonce, @signature, @entity, @action, @entityId, @hints,
+  @keyId)
 ON CONFLICT DO NOTHING
 ''',
       {
@@ -682,6 +734,7 @@ ON CONFLICT DO NOTHING
         'action': action,
         'entityId': entityId,
         'hints': hintsSignature,
+        'keyId': keyId,
       },
     );
     final saved = await tx.one(
@@ -813,11 +866,18 @@ WHERE owner_id = @owner AND store_id = @store AND relay_seq <= @seq
       {'owner': device['owner_id'], 'device': device['id'], 'store': store},
     );
     final cursor = (cursorRow?['last_seq'] as num?)?.toInt() ?? since;
+    final firstRow = await db.one(
+      'SELECT COALESCE(MIN(relay_seq), 0) AS first '
+      'FROM envelopes WHERE owner_id = @owner AND store_id = @store',
+      {'owner': device['owner_id'], 'store': store},
+    );
+    final logStart = (firstRow?['first'] as num?)?.toInt() ?? 0;
     if (snapshot != null && cursor < snapSeq) {
       return _json(200, {
         'envelopes': [],
         'next_seq': cursor,
         'latest_seq': latest,
+        'log_start_seq': logStart,
         'snapshot_required': true,
       });
     }
@@ -855,6 +915,7 @@ ORDER BY relay_seq ASC LIMIT @limit
             'action': row['action'],
             'entity_id': row['entity_id'],
             'hints_signature': row['hints_signature'],
+            'key_id': row['key_id'] ?? '',
             'relay_seq': (row['relay_seq'] as num?)?.toInt() ?? 0,
           },
         )
@@ -866,6 +927,7 @@ ORDER BY relay_seq ASC LIMIT @limit
       'envelopes': envelopes,
       'next_seq': next,
       'latest_seq': latest,
+      'log_start_seq': logStart,
       'snapshot_required': false,
     });
   }
@@ -934,6 +996,10 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final store = request.url.queryParameters['store_id'] ?? '';
+    if (store.isEmpty ||
+        !stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
     final wrap = await db.one(
       'SELECT wrapped_key, signature FROM store_keys WHERE owner_id = @owner AND store_id = @store AND device_id = @device',
       {'owner': device['owner_id'], 'store': store, 'device': device['id']},
@@ -1406,28 +1472,40 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
       },
       'token': token,
       'store_id': storeId,
-      'account': _accountJson(account),
+      'account': _accountJson(account, secrets: true),
       'permission': _permissionJson(account),
       'owner_public_key': owner['owner_public_key'],
       'license_token': await _licenseFor(owner),
     });
   }
 
-  Map<String, Object?> _accountJson(Map<String, Object?> row) => {
-        'owner_id': row['owner_id'],
-        'sync_id': row['sync_id'],
-        'username': row['username'],
-        'nama': row['nama'],
-        'role_base': row['role_base'],
-        'extra_permissions': stringList(row['extra_permissions']),
-        'store_ids': stringList(row['store_ids']),
-        'password_hash': row['password_hash'],
-        'password_salt': row['password_salt'],
-        'password_iterations': (row['password_iterations'] as num?)?.toInt() ?? 600000,
-        'must_change_password': row['must_change_password'] == true ? 1 : 0,
-        'aktif': row['aktif'] == true ? 1 : 0,
-        'permission_version': (row['permission_version'] as num?)?.toInt() ?? 1,
-      };
+  /// Data akun untuk perangkat yang berhak. Hash password hanya dikirim ke
+  /// pemanggil yang membutuhkannya untuk login offline (klaim undangan).
+  Map<String, Object?> _accountJson(
+    Map<String, Object?> row, {
+    bool secrets = false,
+  }) {
+    final json = <String, Object?>{
+      'owner_id': row['owner_id'],
+      'sync_id': row['sync_id'],
+      'username': row['username'],
+      'nama': row['nama'],
+      'role_base': row['role_base'],
+      'extra_permissions': stringList(row['extra_permissions']),
+      'store_ids': stringList(row['store_ids']),
+      'has_password': '${row['password_hash'] ?? ''}'.isNotEmpty,
+      'must_change_password': row['must_change_password'] == true ? 1 : 0,
+      'aktif': row['aktif'] == true ? 1 : 0,
+      'permission_version': (row['permission_version'] as num?)?.toInt() ?? 1,
+    };
+    if (secrets) {
+      json['password_hash'] = row['password_hash'];
+      json['password_salt'] = row['password_salt'];
+      json['password_iterations'] =
+          (row['password_iterations'] as num?)?.toInt() ?? 600000;
+    }
+    return json;
+  }
 
   Map<String, Object?> _permissionJson(Map<String, Object?> row) => {
         'payload': jsonMap(row['permission_payload']) ?? const {},
@@ -1681,13 +1759,13 @@ WHERE owner_id = @owner AND sync_id = @sync
 
   Future<Response> _manageAccounts(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _manageAuth(request, ownerId);
+    final auth = await _manageAuth(request, ownerId, allowViewer: true);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       'SELECT * FROM accounts WHERE owner_id = @owner ORDER BY username',
       {'owner': ownerId},
     );
-    return _json(200, rows.map(_accountJson).toList());
+    return _json(200, rows.map((row) => _accountJson(row)).toList());
   }
 
   Future<Response> _saveAccount(Request request) async {
@@ -1703,55 +1781,90 @@ WHERE owner_id = @owner AND sync_id = @sync
       return _error(400, 'sync_id dan username wajib.');
     }
     final payload = jsonMap(body['permission_payload']);
-    var signature = '${body['permission_signature'] ?? ''}';
-    var signer = '${body['permission_signer_public_key'] ?? ''}';
+    final signature = '${body['permission_signature'] ?? ''}';
+    final signer = '${body['permission_signer_public_key'] ?? ''}';
     final ownerPublic = owner['owner_public_key'] as String? ?? '';
-    if (payload == null) {
-      return _error(400, 'Izin akun harus membawa payload.');
+    if (ownerPublic.isEmpty) {
+      return _error(409, 'Kunci owner belum terdaftar.');
     }
-    if (signer.isNotEmpty && signer == ownerPublic) {
-      if (signature.isEmpty) {
-        return _error(400, 'Tanda tangan izin owner tidak ada.');
-      }
-      final valid = await license.verifyPayload(
-        publicKey: ownerPublic,
-        payload: canonicalJson(payload),
-        signature: signature,
+    if (payload == null || signature.isEmpty) {
+      return _error(400, 'Izin akun harus ditandatangani owner.');
+    }
+    if (signer != ownerPublic) {
+      return _error(
+        403,
+        'Perubahan akun hanya boleh ditandatangani kunci owner.',
+        code: 'owner_signature_required',
       );
-      if (!valid) return _error(400, 'Tanda tangan izin tidak valid.');
-    } else {
-      // Perangkat ringkasan tidak memegang kunci privat owner. Permintaan
-      // sudah lolos token owner, jadi layanan menandatangani izin dengan
-      // kunci lisensi yang juga dipercaya perangkat.
-      final signed = await license.signSummary(payload);
-      signer = '${signed['public_key']}';
-      signature = '${signed['signature']}';
+    }
+    if ('${payload['owner_id'] ?? ''}' != ownerId ||
+        '${payload['account_sync_id'] ?? ''}' != syncId) {
+      return _error(400, 'Payload izin tidak cocok dengan akun.');
+    }
+    final valid = await license.verifyPayload(
+      publicKey: ownerPublic,
+      payload: canonicalJson(payload),
+      signature: signature,
+    );
+    if (!valid) return _error(400, 'Tanda tangan izin tidak valid.');
+    final role = '${payload['role_base'] ?? 'KASIR'}';
+    final permissions = payload['extra_permissions'];
+    final storeIds = payload['store_ids'];
+    if (permissions is! List || storeIds is! List) {
+      return _error(400, 'Payload izin tidak lengkap.');
+    }
+    final stores = storeIds.map((item) => '$item'.trim()).toSet().toList();
+    if (stores.isEmpty ||
+        stores.any(
+          (item) => !RegExp(r'^[A-Za-z0-9._:-]{1,64}$').hasMatch(item),
+        )) {
+      return _error(400, 'Daftar toko pada izin tidak valid.');
+    }
+    final version =
+        (payload['permission_version'] as num?)?.toInt() ?? 0;
+    if (version <= 0) {
+      return _error(400, 'Versi izin tidak valid.');
     }
     final existing = await db.one(
       'SELECT password_hash, password_salt, password_iterations, must_change_password FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': syncId},
     );
     final hash = '${body['password_hash'] ?? ''}';
+    final salt = '${body['password_salt'] ?? ''}';
+    final iterations =
+        (body['password_iterations'] as num?)?.toInt() ??
+            (existing?['password_iterations'] as num?)?.toInt() ??
+            600000;
+    final resolvedHash =
+        hash.isEmpty ? (existing?['password_hash'] as String? ?? '') : hash;
+    final resolvedSalt =
+        hash.isEmpty ? (existing?['password_salt'] as String? ?? '') : salt;
+    if (resolvedHash.isEmpty || resolvedSalt.isEmpty) {
+      return _error(
+        400,
+        'Password awal akun wajib dikirim untuk akun baru.',
+        code: 'password_required',
+      );
+    }
+    if (iterations < 120000 || iterations > 2000000) {
+      return _error(400, 'Jumlah iterasi password tidak wajar.');
+    }
     final values = {
       'owner': ownerId,
       'sync': syncId,
-      'username': username,
-      'nama': '${body['nama'] ?? username}',
-      'role': '${body['role_base'] ?? 'KASIR'}',
-      'permissions': jsonEncode(body['extra_permissions'] ?? const []),
-      'stores': jsonEncode(body['store_ids'] ?? const []),
-      'hash': hash.isEmpty
-          ? (existing?['password_hash'] as String? ?? '')
-          : hash,
-      'salt': '${body['password_salt'] ?? existing?['password_salt'] ?? ''}',
-      'iterations': (body['password_iterations'] as num?)?.toInt() ??
-          (existing?['password_iterations'] as num?)?.toInt() ??
-          600000,
+      'username': '${payload['username'] ?? username}'.trim().toLowerCase(),
+      'nama': '${payload['nama'] ?? username}',
+      'role': role,
+      'permissions': jsonEncode(permissions),
+      'stores': jsonEncode(stores),
+      'hash': resolvedHash,
+      'salt': resolvedSalt,
+      'iterations': iterations,
       'aktif': body['aktif'] != false,
       'must_change': hash.isEmpty
           ? (existing?['must_change_password'] == true)
           : true,
-      'version': (body['permission_version'] as num?)?.toInt() ?? 1,
+      'version': version,
       'payload': jsonEncode(payload),
       'signature': signature,
       'signer': signer,
@@ -1792,7 +1905,7 @@ ON CONFLICT (owner_id, sync_id) DO UPDATE SET
 
   Future<Response> _manageInvites(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _manageAuth(request, ownerId);
+    final auth = await _manageAuth(request, ownerId, allowViewer: true);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       '''
@@ -1865,7 +1978,7 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
 
   Future<Response> _manageDevices(Request request) async {
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final auth = await _manageAuth(request, ownerId);
+    final auth = await _manageAuth(request, ownerId, allowViewer: true);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       '''

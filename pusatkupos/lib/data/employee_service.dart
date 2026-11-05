@@ -367,7 +367,7 @@ class EmployeeService {
     Operator? actor,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
-    if (actor != null && !actor.isOwner) {
+    if (actor == null || !actor.isOwner) {
       throw StateError('Hanya pemilik yang dapat mengubah komisi.');
     }
     if (overrideCents != null && overrideCents < 0) {

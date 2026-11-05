@@ -28,8 +28,11 @@ class PrinterChannel {
     return _map(result);
   }
 
-  Future<void> sendBluetoothClassic(List<int> bytes) =>
-      _invoke('sendBluetoothClassic', {'bytes': Uint8List.fromList(bytes)});
+  Future<void> sendBluetoothClassic(String address, List<int> bytes) =>
+      _invoke('sendBluetoothClassic', {
+        'address': address,
+        'bytes': Uint8List.fromList(bytes),
+      });
 
   Future<void> disconnectBluetoothClassic() =>
       _invoke('disconnectBluetoothClassic');

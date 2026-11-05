@@ -17,8 +17,33 @@ String formatQuantity(int milli, int desimal, {String satuan = ''}) {
 }
 
 int? parseQuantityToMilli(String raw, {int desimal = 0}) {
-  final clean = raw.trim().replaceAll('.', '').replaceAll(',', '.');
+  var clean = raw.trim().replaceAll(' ', '');
   if (clean.isEmpty) return null;
+  final digits = desimal.clamp(0, 3);
+  if (clean.contains(',')) {
+    if (','.allMatches(clean).length > 1) return null;
+    clean = clean.replaceAll('.', '').replaceAll(',', '.');
+  } else {
+    final dots = '.'.allMatches(clean).length;
+    if (dots > 1) {
+      clean = clean.replaceAll('.', '');
+    } else if (dots == 1) {
+      final parts = clean.split('.');
+      final fraction = parts[1];
+      if (fraction.isEmpty) {
+        clean = parts[0];
+      } else if (digits > 0 && fraction.length <= digits) {
+        // Satu titik dengan 1-3 digit di belakang dibaca sebagai desimal.
+      } else if (digits == 0 && fraction.length == 3) {
+        clean = clean.replaceAll('.', '');
+      } else {
+        return null;
+      }
+    }
+  }
+  if (!RegExp(r'^-?\d+(\.\d+)?$').hasMatch(clean)) return null;
+  final fraction = clean.split('.').length > 1 ? clean.split('.')[1] : '';
+  if (fraction.length > digits) return null;
   final value = double.tryParse(clean);
   if (value == null || value.isNaN || value.isInfinite) return null;
   return (value * 1000).round();

@@ -12,6 +12,8 @@ Future<List<int>> readFile(String path) async {
 
 Future<bool> fileExists(String path) async => false;
 
+Future<void> ensureParentDirectory(String path) async {}
+
 Future<String?> backupExistingDatabase(String path) async {
   throw UnsupportedError('Restore file tidak tersedia di platform ini.');
 }
@@ -23,6 +25,12 @@ Future<void> deleteDatabaseSidecars(String path) async {
 Future<void> replaceDatabase(String path, String tempPath) async {
   throw UnsupportedError('Restore file tidak tersedia di platform ini.');
 }
+
+Future<String> temporaryPath(String name) async {
+  throw UnsupportedError('Berkas sementara tidak tersedia di platform ini.');
+}
+
+Future<void> deleteFile(String path) async {}
 
 Future<String> autoBackupFolder() async {
   throw UnsupportedError('Backup otomatis tidak tersedia di platform ini.');

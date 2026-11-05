@@ -28,7 +28,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 
   Database? _db;
   String? _path;
@@ -184,6 +184,7 @@ class AppDatabase {
           await db.execute('PRAGMA foreign_keys = ON');
         },
         onCreate: _createSchema,
+        onUpgrade: _upgrade,
       ),
     );
     try {
@@ -255,6 +256,12 @@ class AppDatabase {
     );
   }
 
+  Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await migrateSchemaV2(db);
+    }
+  }
+
   Future<void> _open() async {
     final password = await _databasePassword();
     if (_usesSqlCipher) {
@@ -274,6 +281,7 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
+        onUpgrade: _upgrade,
         onDowngrade: _rejectIncompatibleVersion,
       ),
     );
@@ -291,6 +299,130 @@ class AppDatabase {
 
   Future<void> checkpoint() async {
     await db.rawQuery('PRAGMA wal_checkpoint(FULL)');
+  }
+
+  /// Menulis salinan database aktif sebagai SQLite polos ke [targetPath].
+  /// Dipakai backup agar berkas dapat dipulihkan di perangkat lain, bukan
+  /// bergantung pada kunci SQLCipher perangkat asal.
+  Future<void> exportPortableCopy(String targetPath) async {
+    await checkpoint();
+    if (!_usesSqlCipher) return;
+    final escaped = targetPath.replaceAll("'", "''");
+    await db.rawQuery("ATTACH DATABASE '$escaped' AS portable_copy KEY ''");
+    try {
+      await db.rawQuery("SELECT sqlcipher_export('portable_copy')");
+    } finally {
+      await db.rawQuery('DETACH DATABASE portable_copy');
+    }
+  }
+
+  /// Menulis salinan polos database toko lain (tidak sedang terbuka) ke
+  /// [targetPath]. Dipakai backup multi-toko di perangkat SQLCipher.
+  Future<void> exportPlainDatabaseAt(
+    String sourcePath,
+    String targetPath,
+  ) async {
+    final password = await _databasePassword();
+    if (password == null) {
+      throw StateError('Ekspor database polos hanya untuk SQLCipher.');
+    }
+    final source = await sqlcipher.openDatabase(
+      sourcePath,
+      password: password,
+    );
+    try {
+      await source.rawQuery('PRAGMA wal_checkpoint(FULL)');
+      final escaped = targetPath.replaceAll("'", "''");
+      await source.rawQuery(
+        "ATTACH DATABASE '$escaped' AS portable_copy KEY ''",
+      );
+      try {
+        await source.rawQuery("SELECT sqlcipher_export('portable_copy')");
+      } finally {
+        await source.rawQuery('DETACH DATABASE portable_copy');
+      }
+    } finally {
+      await source.close();
+    }
+  }
+
+  /// Membuat database terenkripsi baru dari salinan SQLite polos.
+  Future<void> createEncryptedCopy(String plainPath, String targetPath) async {
+    final password = await _databasePassword();
+    if (password == null) {
+      throw StateError('Kunci database tidak tersedia.');
+    }
+    final target = await sqlcipher.openDatabase(targetPath, password: password);
+    try {
+      final escaped = plainPath.replaceAll("'", "''");
+      await target.rawQuery("ATTACH DATABASE '$escaped' AS plain_copy KEY ''");
+      try {
+        await target.rawQuery("SELECT sqlcipher_export('main', 'plain_copy')");
+      } finally {
+        await target.rawQuery('DETACH DATABASE plain_copy');
+      }
+      await target.execute('PRAGMA user_version = $schemaVersion');
+    } finally {
+      await target.close();
+    }
+  }
+
+  /// Memeriksa integritas berkas terenkripsi memakai kunci perangkat ini.
+  Future<void> validateEncryptedCopy(
+    String path, {
+    List<String> requiredTables = const [],
+  }) async {
+    final password = await _databasePassword();
+    if (password == null) {
+      throw StateError('Kunci database tidak tersedia.');
+    }
+    final probe = await sqlcipher.openDatabase(path, password: password);
+    try {
+      await _validateProbe(probe, requiredTables);
+    } finally {
+      await probe.close();
+    }
+  }
+
+  Future<void> validatePlainCopy(
+    String path, {
+    List<String> requiredTables = const [],
+  }) async {
+    if (_usesSqlCipher) {
+      throw StateError('Validasi salinan polos tidak tersedia di perangkat '
+          'terenkripsi.');
+    }
+    final probe = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: true),
+    );
+    try {
+      await _validateProbe(probe, requiredTables);
+    } finally {
+      await probe.close();
+    }
+  }
+
+  Future<void> _validateProbe(
+    Database probe,
+    List<String> requiredTables,
+  ) async {
+    final integrity = await probe.rawQuery('PRAGMA integrity_check');
+    final result =
+        integrity.isEmpty ? '' : '${integrity.first.values.first}';
+    if (result.toLowerCase() != 'ok') {
+      throw StateError('Integritas database gagal: $result');
+    }
+    if (requiredTables.isEmpty) return;
+    final tableRows = await probe.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    );
+    final tables = tableRows.map((row) => '${row['name']}').toSet();
+    for (final required in requiredTables) {
+      if (!tables.contains(required)) {
+        throw StateError('Tabel wajib "$required" tidak ditemukan.');
+      }
+    }
   }
 
   Future<void> _createSchema(Database db, int version) async {
@@ -1078,6 +1210,7 @@ class AppDatabase {
     String? estimateSyncId,
     int? totalEstimasiTerakhir,
     String? alasanDiskon,
+    DateTime? jatuhTempo,
     String? ownerPin,
     String? approverSecret,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
@@ -1419,6 +1552,9 @@ class AppDatabase {
         'jenis_bayar': statusBayar,
         'total_dibayar': dibayar,
         'sisa_bayar': sisa,
+        'jatuh_tempo': sisa > 0 && jatuhTempo != null
+            ? jatuhTempo.toIso8601String()
+            : null,
         'created_by': actor?.label ?? 'Pemilik',
         'created_by_employee_id': actor?.employeeSyncId,
         'cashier_employee_id': actor?.employeeSyncId,
@@ -2057,6 +2193,39 @@ class AppDatabase {
       whereArgs: [row['sync_id']],
       orderBy: 'created_at',
     );
+    final returnRows = await db.query(
+      'sale_returns',
+      where: 'service_record_id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      orderBy: 'created_at DESC',
+    );
+    final returns = <SaleReturnRow>[];
+    for (final returnRow in returnRows) {
+      final itemRows = await db.query(
+        'sale_return_items',
+        where: 'return_id = ? AND deleted_at IS NULL',
+        whereArgs: [returnRow['id']],
+        orderBy: 'id',
+      );
+      returns.add(
+        SaleReturnRow.fromRow(
+          returnRow,
+          items: itemRows
+              .map(
+                (item) => SaleReturnItemRow(
+                  lineType: item['line_type'] as String? ?? 'part',
+                  lineSyncId: item['line_sync_id'] as String? ?? '',
+                  deskripsi: item['deskripsi'] as String? ?? '',
+                  jumlah: (item['jumlah'] as num?)?.toInt() ?? 0,
+                  hargaSatuanCents:
+                      (item['harga_satuan'] as num?)?.toInt() ?? 0,
+                  subtotalCents: (item['subtotal'] as num?)?.toInt() ?? 0,
+                ),
+              )
+              .toList(),
+        ),
+      );
+    }
     final noNota = row['no_nota'] as String? ?? '';
     return RecordDetail(
       record: ServiceRecordSummary.fromRow(row),
@@ -2066,6 +2235,16 @@ class AppDatabase {
               deskripsi: item['deskripsi'] as String,
               jumlah: item['jumlah'] as int,
               hargaCents: item['harga'] as int,
+              jasaId: item['harga_jasa_id'] as int?,
+              modalCents: item['harga_batas_saat_transaksi'] as int? ?? 0,
+              intervalBulan: item['interval_servis_bulan'] as int? ?? 0,
+              syncId: item['sync_id'] as String?,
+              hargaTerdaftarCents:
+                  item['harga_jual_terdaftar'] as int? ?? item['harga'] as int,
+              hargaFinalCents: item['harga_final'] as int? ?? 0,
+              diskonAlokasiCents: item['diskon_alokasi'] as int? ?? 0,
+              alasanDiskon: item['alasan_diskon'] as String?,
+              disetujuiOleh: item['disetujui_oleh'] as String?,
             ),
           )
           .toList(),
@@ -2076,7 +2255,17 @@ class AppDatabase {
               nama: item['nama_part'] as String,
               jumlah: item['jumlah'] as int,
               hargaCents: item['harga_satuan'] as int,
-              modalCents: item['harga_modal'] as int? ?? 0,
+              modalCents: item['harga_batas_saat_transaksi'] as int? ??
+                  item['harga_modal'] as int? ??
+                  0,
+              intervalBulan: item['interval_servis_bulan'] as int? ?? 0,
+              syncId: item['sync_id'] as String?,
+              hargaTerdaftarCents: item['harga_jual_terdaftar'] as int? ??
+                  item['harga_satuan'] as int,
+              hargaFinalCents: item['harga_final'] as int? ?? 0,
+              diskonAlokasiCents: item['diskon_alokasi'] as int? ?? 0,
+              alasanDiskon: item['alasan_diskon'] as String?,
+              disetujuiOleh: item['disetujui_oleh'] as String?,
             ),
           )
           .toList(),
@@ -2125,6 +2314,7 @@ class AppDatabase {
             ),
           )
           .toList(),
+      returns: returns,
     );
   }
 
@@ -2340,6 +2530,16 @@ class AppDatabase {
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
+    final jobs = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(sj.subtotal), 0) AS omzet,
+        COALESCE(SUM(sj.harga_batas_saat_transaksi * sj.jumlah), 0) AS modal
+      FROM service_jobs sj
+      JOIN service_records r ON r.id = sj.service_record_id
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to)],
+    );
     final cashRows = await db.rawQuery(
       '''
       SELECT metode, COALESCE(SUM(nominal), 0) AS total
@@ -2378,6 +2578,25 @@ class AppDatabase {
     );
     final omzetPart = parts.first['omzet'] as int? ?? 0;
     final modalPart = parts.first['modal'] as int? ?? 0;
+    final omzetJasa = jobs.first['omzet'] as int? ?? 0;
+    final modalJasa = jobs.first['modal'] as int? ?? 0;
+    final returnRows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(CASE WHEN i.line_type = 'jasa'
+          THEN i.subtotal ELSE 0 END), 0) AS retur_jasa,
+        COALESCE(SUM(CASE WHEN i.line_type = 'part'
+          THEN i.subtotal ELSE 0 END), 0) AS retur_part,
+        COALESCE(SUM(CASE WHEN i.line_type = 'part'
+          THEN i.modal_satuan * i.jumlah ELSE 0 END), 0) AS retur_modal
+      FROM sale_return_items i
+      JOIN sale_returns r ON r.id = i.return_id
+      WHERE r.created_at BETWEEN ? AND ?
+        AND r.deleted_at IS NULL AND i.deleted_at IS NULL
+      ''',
+      [isoStartOfDay(from), isoEndOfDay(to)],
+    );
+    final returRow = returnRows.first;
     return ReportSummary(
       transaksi: row['transaksi'] as int? ?? 0,
       totalJasaCents: row['total_jasa'] as int? ?? 0,
@@ -2388,6 +2607,8 @@ class AppDatabase {
       piutangCents: row['piutang'] as int? ?? 0,
       totalModalPartCents: modalPart,
       labaKotorPartCents: omzetPart - modalPart,
+      totalModalJasaCents: modalJasa,
+      labaKotorJasaCents: omzetJasa - modalJasa,
       komisiCents: commissionRows.first['total'] as int? ?? 0,
       gajiCents: salaryRows.first['total'] as int? ?? 0,
       cashByMethod: {
@@ -2404,6 +2625,9 @@ class AppDatabase {
           (type['jenis_transaksi'] as String? ?? 'servis_langsung'):
               (type['total'] as num?)?.toInt() ?? 0,
       },
+      returJasaCents: (returRow['retur_jasa'] as num?)?.toInt() ?? 0,
+      returPartCents: (returRow['retur_part'] as num?)?.toInt() ?? 0,
+      returModalCents: (returRow['retur_modal'] as num?)?.toInt() ?? 0,
     );
   }
 

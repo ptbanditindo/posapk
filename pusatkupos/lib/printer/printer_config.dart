@@ -53,6 +53,9 @@ const printerStatuses = <String>{
 
 const printerEncodings = <String, String>{
   'LATIN1': 'Latin-1',
+  'CP437': 'CP437 (Epson)',
+  'CP850': 'CP850 (Latin-1 multilingual)',
+  'CP1252': 'CP1252 (Windows)',
   'ASCII': 'ASCII',
 };
 
@@ -345,6 +348,24 @@ class PrinterStore {
       }
       return legacy;
     }
+    final parsed = _decode(raw);
+    if (parsed != null) return parsed;
+    final backup = await _storage.readBackup();
+    if (backup != null && backup.trim().isNotEmpty) {
+      final restored = _decode(backup);
+      if (restored != null) {
+        try {
+          await _storage.write(backup);
+        } catch (_) {
+          // Pemulihan tetap dipakai walau penulisan ulang gagal.
+        }
+        return restored;
+      }
+    }
+    return const [];
+  }
+
+  List<PrinterConfig>? _decode(String raw) {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
@@ -358,10 +379,10 @@ class PrinterStore {
           null,
         );
       }
-      if (decoded is! Map) return const [];
+      if (decoded is! Map) return null;
       final primaryId = decoded['primary_id'] as String?;
       final printers = decoded['printers'];
-      if (printers is! List) return const [];
+      if (printers is! List) return null;
       return _normalize(
         printers
             .whereType<Map>()
@@ -370,7 +391,7 @@ class PrinterStore {
         primaryId,
       );
     } catch (_) {
-      return const [];
+      return null;
     }
   }
 

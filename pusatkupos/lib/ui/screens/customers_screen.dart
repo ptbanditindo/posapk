@@ -211,6 +211,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
+              if (snapshot.hasError) {
+                return EmptyState(
+                  title: 'Gagal memuat pelanggan',
+                  subtitle: '${snapshot.error}',
+                  icon: Icons.error_outline,
+                  action: FilledButton(
+                    onPressed: _load,
+                    child: const Text('Coba lagi'),
+                  ),
+                );
+              }
               final rows = snapshot.data ?? const [];
               if (rows.isEmpty) {
                 return EmptyState(
@@ -432,6 +443,7 @@ class _UnitsSheetState extends State<_UnitsSheet> {
   }
 
   void _load() {
+    if (!mounted) return;
     setState(() {
       _future = AppDatabase.instance.listUnits(widget.customer.id);
     });
@@ -443,18 +455,24 @@ class _UnitsSheetState extends State<_UnitsSheet> {
       builder: (_) => const _UnitDialog(),
     );
     if (input == null) return;
-    await AppDatabase.instance.addUnit(
-      customerId: widget.customer.id,
-      unitType: input.unitType,
-      nopol: input.nopol,
-      jenisMobil: input.jenisMobil,
-      tahunMobil: input.tahunMobil,
-      tipeRadiator: input.tipeRadiator,
-      labelRadiator: input.labelRadiator,
-      enqueue: (txn, id) => SyncService.instance.enqueueUnit(id, txn: txn),
-    );
-    AppState.instance.touch();
-    _load();
+    try {
+      await AppDatabase.instance.addUnit(
+        customerId: widget.customer.id,
+        unitType: input.unitType,
+        nopol: input.nopol,
+        jenisMobil: input.jenisMobil,
+        tahunMobil: input.tahunMobil,
+        tipeRadiator: input.tipeRadiator,
+        labelRadiator: input.labelRadiator,
+        enqueue: (txn, id) => SyncService.instance.enqueueUnit(id, txn: txn),
+      );
+      AppState.instance.touch();
+      _load();
+    } catch (error) {
+      if (mounted) {
+        showSnack(context, 'Gagal menyimpan unit: $error', error: true);
+      }
+    }
   }
 
   @override
@@ -499,6 +517,17 @@ class _UnitsSheetState extends State<_UnitsSheet> {
                 return const Padding(
                   padding: EdgeInsets.all(24),
                   child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snapshot.hasError) {
+                return EmptyState(
+                  title: 'Gagal memuat unit',
+                  subtitle: '${snapshot.error}',
+                  icon: Icons.error_outline,
+                  action: FilledButton(
+                    onPressed: _load,
+                    child: const Text('Coba lagi'),
+                  ),
                 );
               }
               final rows = snapshot.data ?? const [];

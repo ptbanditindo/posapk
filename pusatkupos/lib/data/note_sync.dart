@@ -49,6 +49,56 @@ extension NoteSyncDatabase on AppDatabase {
       where: 'service_record_id = ?',
       whereArgs: [id],
     );
+    final returnRows = await target.query(
+      'sale_returns',
+      where: 'service_record_id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+    );
+    final returnPayloads = <Map<String, Object?>>[];
+    for (final retur in returnRows) {
+      final items = await target.query(
+        'sale_return_items',
+        where: 'return_id = ? AND deleted_at IS NULL',
+        whereArgs: [retur['id']],
+      );
+      final itemPayloads = <Map<String, Object?>>[];
+      for (final item in items) {
+        String? stockSync;
+        final stockId = item['stock_item_id'] as int?;
+        if (stockId != null) {
+          final stock = await target.query(
+            'stock_items',
+            columns: ['sync_id'],
+            where: 'id = ?',
+            whereArgs: [stockId],
+            limit: 1,
+          );
+          if (stock.isNotEmpty) {
+            stockSync = stock.first['sync_id'] as String?;
+          }
+        }
+        itemPayloads.add({
+          'sync_id': item['sync_id'],
+          'line_type': item['line_type'],
+          'line_sync_id': item['line_sync_id'],
+          'deskripsi': item['deskripsi'],
+          'jumlah': item['jumlah'],
+          'harga_satuan': item['harga_satuan'],
+          'subtotal': item['subtotal'],
+          'modal_satuan': item['modal_satuan'] ?? 0,
+          'stock_sync_id': stockSync,
+        });
+      }
+      returnPayloads.add({
+        'sync_id': retur['sync_id'],
+        'no_retur': retur['no_retur'],
+        'total': retur['total'],
+        'alasan': retur['alasan'],
+        'dibuat_oleh': retur['dibuat_oleh'],
+        'created_at': retur['created_at'],
+        'items': itemPayloads,
+      });
+    }
     final partPayloads = <Map<String, Object?>>[];
     for (final part in parts) {
       final stockId = part['stock_item_id'] as int?;
@@ -147,6 +197,7 @@ extension NoteSyncDatabase on AppDatabase {
         'jenis_bayar': row['jenis_bayar'],
         'total_dibayar': row['total_dibayar'],
         'sisa_bayar': row['sisa_bayar'],
+        'jatuh_tempo': row['jatuh_tempo'],
         'status': row['status'],
         'void_reason': row['void_reason'],
         'voided_at': row['voided_at'],
@@ -204,6 +255,7 @@ extension NoteSyncDatabase on AppDatabase {
             },
           )
           .toList(),
+      'returns': returnPayloads,
     };
   }
 
@@ -236,6 +288,9 @@ extension NoteSyncDatabase on AppDatabase {
         .map((row) => Map<String, Object?>.from(row as Map))
         .toList();
     final payments = (payload['payments'] as List? ?? const [])
+        .map((row) => Map<String, Object?>.from(row as Map))
+        .toList();
+    final returns = (payload['returns'] as List? ?? const [])
         .map((row) => Map<String, Object?>.from(row as Map))
         .toList();
     final recordSync = record['sync_id'] as String? ?? '';
@@ -358,15 +413,60 @@ extension NoteSyncDatabase on AppDatabase {
       return 'taken';
     }
     if (existingRecord.isNotEmpty) {
-      // Nota final tidak ditulis ulang. Hanya pembayaran tambahan dan
-      // status pasca-jual (garansi, unit diambil) yang boleh menyusul.
-      var changed = await _applyPostSaleFields(
-        txn,
-        existingRecord.first,
-        record,
-        warranty: true,
-        taken: true,
-      );
+      // Nota final tidak ditulis ulang. Hanya nomor nota koreksi, pembayaran
+      // tambahan, dan status pasca-jual (garansi, unit diambil) yang boleh
+      // menyusul.
+      var changed = false;
+      final incomingNoNota = '${record['no_nota'] ?? ''}'.trim();
+      final localNoNota = '${existingRecord.first['no_nota'] ?? ''}';
+      if (incomingNoNota.isNotEmpty && incomingNoNota != localNoNota) {
+        final used = await txn.query(
+          'service_records',
+          columns: ['id'],
+          where: 'no_nota = ? AND sync_id != ?',
+          whereArgs: [incomingNoNota, recordSync],
+          limit: 1,
+        );
+        if (used.isEmpty) {
+          await txn.update(
+            'service_records',
+            {'no_nota': incomingNoNota, 'updated_at': nowIso()},
+            where: 'sync_id = ?',
+            whereArgs: [recordSync],
+          );
+          existingRecord.first['no_nota'] = incomingNoNota;
+          changed = true;
+        } else {
+          final next = await allocateNextNota(txn);
+          await txn.update(
+            'service_records',
+            {'no_nota': next, 'updated_at': nowIso()},
+            where: 'sync_id = ?',
+            whereArgs: [recordSync],
+          );
+          existingRecord.first['no_nota'] = next;
+          await txn.insert('sync_conflicts', {
+            'entity': 'nota',
+            'entity_id': recordSync,
+            'reason': 'no_nota_bentrok',
+            'detail_json': jsonEncode({
+              'no_nota_asal': incomingNoNota,
+              'no_nota_baru': next,
+            }),
+            'status': 'review',
+            'created_at': nowIso(),
+          });
+          changed = true;
+        }
+      }
+      changed = changed ||
+          await _applyPostSaleFields(
+            txn,
+            existingRecord.first,
+            record,
+            warranty: true,
+            taken: true,
+          );
       var paymentAdded = false;
       for (final payment in payments) {
         final inserted = await _upsertPayment(
@@ -380,6 +480,17 @@ extension NoteSyncDatabase on AppDatabase {
       if (paymentAdded) {
         await _recalculateRecordTotals(txn, existingRecord.first['id'] as int);
       }
+      var returnAdded = false;
+      for (final retur in returns) {
+        final inserted = await _upsertReturn(
+          txn,
+          existingRecord.first['id'] as int,
+          recordSync,
+          retur,
+        );
+        returnAdded = returnAdded || inserted;
+      }
+      changed = changed || returnAdded;
       return changed ? 'updated' : 'duplicate';
     }
     final customerSync = customer['sync_id'] as String? ?? '';
@@ -508,6 +619,7 @@ extension NoteSyncDatabase on AppDatabase {
           'no_nota_asal': noNotaAsal,
           'no_nota_baru': noNota,
         }),
+        'status': 'review',
         'created_at': nowIso(),
       });
     }
@@ -536,6 +648,7 @@ extension NoteSyncDatabase on AppDatabase {
       'jenis_bayar': record['jenis_bayar'] ?? 'LUNAS',
       'total_dibayar': record['total_dibayar'] ?? 0,
       'sisa_bayar': record['sisa_bayar'] ?? 0,
+      'jatuh_tempo': record['jatuh_tempo'],
       'status': record['status'] ?? 'AKTIF',
       'bergaransi': record['bergaransi'] ?? 1,
       'garansi_bulan': record['garansi_bulan'] ?? 1,
@@ -687,6 +800,9 @@ extension NoteSyncDatabase on AppDatabase {
     for (final payment in payments) {
       await _upsertPayment(txn, recordId, payment);
     }
+    for (final retur in returns) {
+      await _upsertReturn(txn, recordId, recordSync, retur);
+    }
     return 'applied';
   }
 
@@ -764,6 +880,122 @@ extension NoteSyncDatabase on AppDatabase {
       'created_at': nowIso(),
       'updated_at': nowIso(),
     });
+    return true;
+  }
+
+  Future<bool> _upsertReturn(
+    DatabaseExecutor txn,
+    int recordId,
+    String recordSync,
+    Map<String, Object?> retur,
+  ) async {
+    final syncId = '${retur['sync_id'] ?? ''}';
+    if (syncId.isEmpty) return false;
+    final existing = await txn.query(
+      'sale_returns',
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) return false;
+    final recordRows = await txn.query(
+      'service_records',
+      columns: ['no_nota'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    final noNota = recordRows.isEmpty
+        ? ''
+        : '${recordRows.first['no_nota'] ?? ''}';
+    final createdAt = retur['created_at'] ?? nowIso();
+    final returnId = await txn.insert('sale_returns', {
+      'sync_id': syncId,
+      'service_record_id': recordId,
+      'nota_sync_id': recordSync,
+      'no_nota': noNota,
+      'no_retur': retur['no_retur'] ?? '',
+      'total': retur['total'] ?? 0,
+      'alasan': retur['alasan'] ?? 'Retur dari perangkat lain',
+      'dibuat_oleh': retur['dibuat_oleh'],
+      'created_at': createdAt,
+      'updated_at': nowIso(),
+    });
+    final items = (retur['items'] as List? ?? const [])
+        .map((row) => Map<String, Object?>.from(row as Map))
+        .toList();
+    for (final item in items) {
+      final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
+      final lineType = '${item['line_type'] ?? 'part'}';
+      int? stockId;
+      final stockSync = '${item['stock_sync_id'] ?? ''}';
+      if (stockSync.isNotEmpty) {
+        final stock = await txn.query(
+          'stock_items',
+          columns: ['id'],
+          where: 'sync_id = ?',
+          whereArgs: [stockSync],
+          limit: 1,
+        );
+        if (stock.isNotEmpty) stockId = stock.first['id'] as int;
+      }
+      await txn.insert('sale_return_items', {
+        'sync_id': '${item['sync_id'] ?? ''}'.isEmpty
+            ? newSyncId()
+            : '${item['sync_id']}',
+        'return_id': returnId,
+        'line_type': lineType,
+        'line_sync_id': item['line_sync_id'] ?? '',
+        'deskripsi': item['deskripsi'] ?? '',
+        'jumlah': jumlah,
+        'harga_satuan': item['harga_satuan'] ?? 0,
+        'subtotal': item['subtotal'] ?? 0,
+        'modal_satuan': item['modal_satuan'] ?? 0,
+        'stock_item_id': stockId,
+        'created_at': createdAt,
+        'updated_at': nowIso(),
+      });
+      if (lineType != 'part' || stockId == null) continue;
+      final stockRows = await txn.query(
+        'stock_items',
+        where: 'id = ?',
+        whereArgs: [stockId],
+        limit: 1,
+      );
+      if (stockRows.isEmpty) continue;
+      final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ??
+          ((stockRows.first['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+      final nextMilli = before + jumlah * 1000;
+      await txn.update(
+        'stock_items',
+        {'jumlah': nextMilli ~/ 1000, 'jumlah_milli': nextMilli},
+        where: 'id = ?',
+        whereArgs: [stockId],
+      );
+      final movementKey = 'retur-$syncId-${item['sync_id'] ?? ''}';
+      final movement = await txn.query(
+        'stock_movements',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [movementKey],
+        limit: 1,
+      );
+      if (movement.isEmpty) {
+        await txn.insert('stock_movements', {
+          'sync_id': movementKey,
+          'stock_item_id': stockId,
+          'nama_item': item['deskripsi'] ?? '',
+          'jenis': 'MASUK',
+          'jumlah': jumlah,
+          'jumlah_milli': jumlah * 1000,
+          'alasan': 'Retur $noNota',
+          'service_record_id': recordId,
+          'created_at': nowIso(),
+          'updated_at': nowIso(),
+        });
+      }
+    }
     return true;
   }
 

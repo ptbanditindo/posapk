@@ -171,9 +171,10 @@ class UsbPrinter(private val activity: Activity) {
     }
 
     private fun findDevice(identity: String): UsbDevice? {
-        return manager?.deviceList?.values?.firstOrNull {
-            identityOf(it) == identity
-        }
+        val devices = manager?.deviceList?.values.orEmpty()
+        devices.firstOrNull { identityOf(it) == identity }?.let { return it }
+        val base = baseIdentity(identity)
+        return devices.firstOrNull { baseIdentity(identityOf(it)) == base }
     }
 
     private fun describe(device: UsbDevice): Map<String, Any?> {
@@ -195,8 +196,28 @@ class UsbPrinter(private val activity: Activity) {
         )
     }
 
-    private fun identityOf(device: UsbDevice): String =
+    private fun identityOf(device: UsbDevice): String {
+        val base = baseIdentityOf(device)
+        val serial = runCatching { device.serialNumber }
+            .getOrNull()
+            ?.trim()
+            ?.replace(NON_SERIAL_PATTERN, "")
+            ?.take(MAX_SERIAL_LENGTH)
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.isNotEmpty() }
+        if (serial != null) return "$base:s$serial"
+        return "$base:d${device.deviceId}"
+    }
+
+    private fun baseIdentityOf(device: UsbDevice): String =
         String.format(Locale.ROOT, "usb:%04x:%04x", device.vendorId, device.productId)
+
+    private fun baseIdentity(identity: String): String =
+        if (identity.length > BASE_IDENTITY_LENGTH) {
+            identity.substring(0, BASE_IDENTITY_LENGTH)
+        } else {
+            identity
+        }
 
     private fun selectInterface(device: UsbDevice): Pair<UsbInterface, UsbEndpoint>? {
         var fallback: Pair<UsbInterface, UsbEndpoint>? = null
@@ -220,7 +241,9 @@ class UsbPrinter(private val activity: Activity) {
         val match = IDENTITY_PATTERN.matchEntire(value.trim()) ?: return null
         val vendor = match.groupValues[1].toInt(16)
         val product = match.groupValues[2].toInt(16)
-        return String.format(Locale.ROOT, "usb:%04x:%04x", vendor, product)
+        val base = String.format(Locale.ROOT, "usb:%04x:%04x", vendor, product)
+        val suffix = match.groupValues[3].lowercase(Locale.ROOT)
+        return if (suffix.isEmpty()) base else "$base:$suffix"
     }
 
     private fun requestPermission(device: UsbDevice): PermissionResult {
@@ -302,8 +325,13 @@ class UsbPrinter(private val activity: Activity) {
     private enum class PermissionResult { GRANTED, DENIED, TIMEOUT }
 
     companion object {
-        private val IDENTITY_PATTERN =
-            Regex("^usb:([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})$", RegexOption.IGNORE_CASE)
+        private val IDENTITY_PATTERN = Regex(
+            "^usb:([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})(?::([a-z][a-z0-9._-]{0,39}))?$",
+            RegexOption.IGNORE_CASE,
+        )
+        private val NON_SERIAL_PATTERN = Regex("[^A-Za-z0-9._-]")
+        private const val BASE_IDENTITY_LENGTH = 13
+        private const val MAX_SERIAL_LENGTH = 32
         private const val PERMISSION_TIMEOUT_MS = 60_000L
         private const val WRITE_CHUNK_BYTES = 8 * 1024
         private const val WRITE_TIMEOUT_MS = 5_000

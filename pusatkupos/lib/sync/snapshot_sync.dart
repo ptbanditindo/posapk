@@ -18,6 +18,8 @@ const snapshotTables = [
   'service_jobs',
   'service_parts',
   'service_payments',
+  'sale_returns',
+  'sale_return_items',
   'service_record_mechanics',
   'service_record_commissions',
   'employee_debts',
@@ -41,6 +43,8 @@ const snapshotTables = [
 
 const snapshotDeleteOrder = [
   'service_payments',
+  'sale_return_items',
+  'sale_returns',
   'service_jobs',
   'service_parts',
   'service_record_mechanics',
@@ -169,6 +173,21 @@ extension SnapshotDatabase on AppDatabase {
     if (existing.isNotEmpty) {
       return {'applied': false, 'duplicate': true, 'store_seq': storeSeq};
     }
+    final cursorRows = await db.rawQuery(
+      'SELECT COALESCE(MAX(last_seq), 0) AS last_seq FROM sync_cursor '
+      'WHERE store_id = ?',
+      [storeId],
+    );
+    final localSeq = (cursorRows.first['last_seq'] as num?)?.toInt() ?? 0;
+    if (storeSeq < localSeq) {
+      return {
+        'applied': false,
+        'duplicate': false,
+        'stale': true,
+        'store_seq': storeSeq,
+        'local_seq': localSeq,
+      };
+    }
     final pending = await db.rawQuery(
       "SELECT COUNT(*) AS total FROM sync_outbox WHERE status = 'pending'",
     );
@@ -211,6 +230,9 @@ extension SnapshotDatabase on AppDatabase {
       tables: snapshotTables,
       deleteOrder: snapshotDeleteOrder,
     );
+    // Snapshot adalah titik awal baru: kunci idempotensi lama tidak boleh
+    // menahan amplop yang tidak lagi termuat di dalam snapshot.
+    await db.delete('applied_deltas');
     await db.insert(
       'sync_cursor',
       {

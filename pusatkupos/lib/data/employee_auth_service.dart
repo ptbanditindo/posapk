@@ -8,6 +8,7 @@ import '../core/ids.dart';
 import '../dev/dummy_seed.dart';
 import '../sync/crypto.dart';
 import '../sync/relay_client.dart';
+import '../sync/sync_secrets.dart';
 import 'account_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
@@ -176,7 +177,7 @@ class EmployeeAuthService {
         .write('device.$localId.encrypt', encryption.privateKey);
     if (token.isNotEmpty) {
       await SecureStore.instance.write('device.$localId.token', token);
-      await SecureStore.instance.write('sync.relay_device_token', token);
+      await SyncSecrets.instance.write('sync.relay_device_token', token);
     }
     await AppDatabase.instance.setSetting('sync.local_device_id', localId);
     final relayDeviceId = '${device['id'] ?? ''}';

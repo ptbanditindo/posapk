@@ -12,6 +12,10 @@ Map<String, Object?> envelopeFields({
   required String idempotencyKey,
   required String ciphertext,
   required String nonce,
+  required String keyId,
+  required String entity,
+  required String action,
+  required String entityId,
 }) {
   return {
     'v': 1,
@@ -24,6 +28,10 @@ Map<String, Object?> envelopeFields({
     'idempotency_key': idempotencyKey,
     'ciphertext': ciphertext,
     'nonce': nonce,
+    'key_id': keyId,
+    'entity': entity,
+    'action': action,
+    'entity_id': entityId,
   };
 }
 
@@ -60,6 +68,7 @@ Future<Map<String, Object?>> buildEnvelope({
   required String entityId,
   required Map<String, Object?> payload,
 }) async {
+  final keyId = keyIdFor(storeKey);
   final plaintext = canonicalJson({
     'entity': entity,
     'action': action,
@@ -69,6 +78,7 @@ Future<Map<String, Object?>> buildEnvelope({
     'hlc_wall': hlcWall,
     'hlc_counter': hlcCounter,
     'idempotency_key': idempotencyKey,
+    'key_id': keyId,
   });
   final encrypted = await encryptPayload(storeKey, utf8.encode(plaintext));
   final fields = envelopeFields(
@@ -81,6 +91,10 @@ Future<Map<String, Object?>> buildEnvelope({
     idempotencyKey: idempotencyKey,
     ciphertext: encrypted.$1,
     nonce: encrypted.$2,
+    keyId: keyId,
+    entity: entity,
+    action: action,
+    entityId: entityId,
   );
   final signature = await signPayload(
     devicePrivateKey,
@@ -120,6 +134,18 @@ Future<Map<String, Object?>> verifyEnvelope({
   required String senderPublicKey,
   required List<int> storeKey,
 }) async {
+  final keyId = envelope['key_id'] as String? ?? '';
+  if (keyId.isEmpty) {
+    throw StateError('Amplop tanpa penanda kunci toko.');
+  }
+  if (keyId != keyIdFor(storeKey)) {
+    // Kunci toko lokal berbeda dengan kunci saat amplop dibuat. Jangan ack:
+    // perangkat harus menyegarkan kunci terlebih dahulu.
+    throw StateError(
+      'Kunci toko tidak cocok dengan amplop (key_id $keyId). Muat ulang '
+      'kunci toko sebelum melanjutkan sinkronisasi.',
+    );
+  }
   final fields = envelopeFields(
     storeId: envelope['store_id'] as String? ?? '',
     senderDeviceId: envelope['sender_device_id'] as String? ?? '',
@@ -130,6 +156,10 @@ Future<Map<String, Object?>> verifyEnvelope({
     idempotencyKey: envelope['idempotency_key'] as String? ?? '',
     ciphertext: envelope['ciphertext'] as String? ?? '',
     nonce: envelope['nonce'] as String? ?? '',
+    keyId: keyId,
+    entity: envelope['entity'] as String? ?? '',
+    action: envelope['action'] as String? ?? '',
+    entityId: envelope['entity_id'] as String? ?? '',
   );
   final valid = await verifyPayload(
     senderPublicKey,
@@ -169,6 +199,9 @@ Future<Map<String, Object?>> verifyEnvelope({
     envelope['nonce'] as String,
   );
   final data = jsonDecode(utf8.decode(clear)) as Map<String, Object?>;
+  if (keyId.isNotEmpty && keyId != '${data['key_id'] ?? ''}') {
+    throw StateError('Penanda kunci di dalam amplop tidak cocok.');
+  }
   if (outerEntity.isNotEmpty && outerEntity != '${data['entity'] ?? ''}') {
     throw StateError('Petunjuk entity tidak cocok dengan isi amplop.');
   }

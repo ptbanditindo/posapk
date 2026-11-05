@@ -40,6 +40,39 @@ class RelayClient {
           'X-Device-Token': deviceToken!,
       };
 
+  /// Batas waktu per permintaan agar socket yang menggantung tidak
+  /// memblokir sinkronisasi sampai aplikasi di-restart.
+  static const Duration _timeout = Duration(seconds: 30);
+
+  Future<http.Response> _get(
+    Uri uri, {
+    Map<String, String>? headers,
+  }) {
+    return http.get(uri, headers: headers).timeout(
+          _timeout,
+          onTimeout: () => throw RelayException(
+            408,
+            'Waktu permintaan relay habis.',
+            code: 'timeout',
+          ),
+        );
+  }
+
+  Future<http.Response> _post(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+  }) {
+    return http.post(uri, headers: headers, body: body).timeout(
+          _timeout,
+          onTimeout: () => throw RelayException(
+            408,
+            'Waktu permintaan relay habis.',
+            code: 'timeout',
+          ),
+        );
+  }
+
   Future<Map<String, Object?>> _json(http.Response response) async {
     Map<String, Object?> body = {};
     try {
@@ -67,7 +100,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> health() async {
-    return _json(await http.get(_uri('/relay/health')));
+    return _json(await _get(_uri('/relay/health')));
   }
 
   Future<Map<String, Object?>> followupQuota({
@@ -75,7 +108,7 @@ class RelayClient {
     required int used,
     bool consume = false,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/followup/quota'),
       headers: _headers,
       body: jsonEncode({'code': code, 'used': used, 'consume': consume}),
@@ -84,7 +117,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> googleLogin({required String idToken}) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/auth/google'),
       headers: _headers,
       body: jsonEncode({'id_token': idToken}),
@@ -101,7 +134,7 @@ class RelayClient {
     required String encryptionKey,
     List<String> storeIds = const [],
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/auth/employee'),
       headers: _headers,
       body: jsonEncode({
@@ -125,7 +158,7 @@ class RelayClient {
     required String oldPassword,
     required String newPassword,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/auth/employee/password'),
       headers: _headers,
       body: jsonEncode({
@@ -149,7 +182,7 @@ class RelayClient {
     String kind = 'owner',
     int? employeeAccountId,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/devices'),
       headers: {..._headers, 'X-Relay-Enroll-Token': enrollToken},
       body: jsonEncode({
@@ -172,7 +205,7 @@ class RelayClient {
     required String wrappedKey,
     required String signature,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/keys'),
       headers: _headers,
       body: jsonEncode({
@@ -188,7 +221,7 @@ class RelayClient {
   Future<Map<String, Object?>> submitEnvelope(
     Map<String, Object?> envelope,
   ) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/envelopes'),
       headers: _headers,
       body: jsonEncode(envelope),
@@ -202,7 +235,7 @@ class RelayClient {
     required String storeId,
     required List<Map<String, Object?>> envelopes,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/envelopes/batch'),
       headers: _headers,
       body: jsonEncode({'store_id': storeId, 'envelopes': envelopes}),
@@ -216,7 +249,7 @@ class RelayClient {
     required String ownerId,
     int ttlMinutes = 15,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/pairing'),
       headers: _headers,
       body: jsonEncode({'owner_id': ownerId, 'ttl_minutes': ttlMinutes}),
@@ -232,7 +265,7 @@ class RelayClient {
     required String storeId,
     int ttlMinutes = 10,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/manage/invites'),
       headers: _headers,
       body: jsonEncode({
@@ -249,7 +282,7 @@ class RelayClient {
     required String ownerId,
     required String deviceId,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/manage/devices/$deviceId/revoke', {'owner_id': ownerId}),
       headers: _headers,
       body: jsonEncode({'reason': 'dicabut owner'}),
@@ -262,7 +295,7 @@ class RelayClient {
     required int sinceSeq,
     int limit = 200,
   }) async {
-    final response = await http.get(
+    final response = await _get(
       _uri('/relay/feed', {
         'store_id': storeId,
         'since_seq': '$sinceSeq',
@@ -277,7 +310,7 @@ class RelayClient {
     required String storeId,
     required int lastSeq,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/feed/ack'),
       headers: _headers,
       body: jsonEncode({'store_id': storeId, 'last_seq': lastSeq}),
@@ -286,7 +319,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> createSyncRound(String storeId) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/sync/rounds'),
       headers: _headers,
       body: jsonEncode({'store_id': storeId}),
@@ -295,7 +328,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> syncRound(String roundId) async {
-    final response = await http.get(
+    final response = await _get(
       _uri('/relay/sync/rounds/$roundId'),
       headers: _headers,
     );
@@ -303,7 +336,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> openSyncRound(String storeId) async {
-    final response = await http.get(
+    final response = await _get(
       _uri('/relay/sync/rounds/open', {'store_id': storeId}),
       headers: _headers,
     );
@@ -316,7 +349,7 @@ class RelayClient {
     required int lastSeq,
     required int pending,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/sync/rounds/$roundId/ack'),
       headers: _headers,
       body: jsonEncode({
@@ -329,7 +362,7 @@ class RelayClient {
   }
 
   Future<List<Map<String, Object?>>> devices() async {
-    final response = await http.get(_uri('/relay/devices'), headers: _headers);
+    final response = await _get(_uri('/relay/devices'), headers: _headers);
     final decoded = jsonDecode(response.body);
     if (response.statusCode >= 400) {
       final detail = decoded is Map ? decoded['detail'] : null;
@@ -343,7 +376,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> bootstrap(String storeId) async {
-    final response = await http.get(
+    final response = await _get(
       _uri('/relay/bootstrap', {'store_id': storeId}),
       headers: _headers,
     );
@@ -353,7 +386,7 @@ class RelayClient {
   Future<Map<String, Object?>> createSnapshot(
     Map<String, Object?> payload,
   ) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/snapshots'),
       headers: _headers,
       body: jsonEncode(payload),
@@ -367,7 +400,7 @@ class RelayClient {
     required String publicKey,
     required String encryptionKey,
   }) async {
-    final response = await http.post(
+    final response = await _post(
       _uri('/relay/invites/claim'),
       headers: _headers,
       body: jsonEncode({
@@ -381,7 +414,7 @@ class RelayClient {
   }
 
   Future<Map<String, Object?>> permissionsMe() async {
-    final response = await http.get(
+    final response = await _get(
       _uri('/relay/permissions/me'),
       headers: _headers,
     );

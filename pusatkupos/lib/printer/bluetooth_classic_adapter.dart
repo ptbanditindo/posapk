@@ -36,5 +36,5 @@ class BluetoothClassicAdapter extends PrinterAdapter {
 
   @override
   Future<void> send(PrinterConfig printer, PrintPayload payload) =>
-      _channel.sendBluetoothClassic(payload.bytes);
+      _channel.sendBluetoothClassic(printer.address, payload.bytes);
 }

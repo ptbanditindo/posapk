@@ -10,6 +10,16 @@ String newNotaPrefix({int length = 6}) {
   ).join();
 }
 
+/// Kode perangkat 3 karakter untuk nomor nota/antrian lokal.
+String newDeviceCode({int length = 3}) {
+  final random = Random.secure();
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return List.generate(
+    length,
+    (_) => alphabet[random.nextInt(alphabet.length)],
+  ).join();
+}
+
 String newSyncId() {
   final random = Random.secure();
   var millis = DateTime.now().millisecondsSinceEpoch;

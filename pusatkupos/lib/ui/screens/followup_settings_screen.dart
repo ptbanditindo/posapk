@@ -24,6 +24,7 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
   final _maksBulan = TextEditingController();
   final _jedaProspek = TextEditingController();
   final _maksTidakRespons = TextEditingController();
+  final Map<TextEditingController, String> _errors = {};
   bool _aktif = true;
   String _jamMulai = '08:00';
   String _jamSelesai = '20:00';
@@ -65,6 +66,7 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
       _aktif = settings.aktif;
       _jamMulai = settings.jamMulai;
       _jamSelesai = settings.jamSelesai;
+      _errors.clear();
       _cooldown.text = '${settings.cooldownHari}';
       _garansiHari.text = '${settings.garansiAkanHabisHari}';
       _garansiArsip.text = '${settings.garansiArsipHari}';
@@ -82,8 +84,34 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
     });
   }
 
-  int _int(TextEditingController controller, int fallback) {
-    return int.tryParse(controller.text.trim()) ?? fallback;
+  int? _parse(
+    Map<TextEditingController, String> errors,
+    TextEditingController controller,
+    String label, {
+    int min = 0,
+    int max = 3650,
+  }) {
+    final text = controller.text.trim();
+    if (text.isEmpty) {
+      errors[controller] = '$label wajib diisi.';
+      return null;
+    }
+    final value = int.tryParse(text);
+    if (value == null) {
+      errors[controller] = '$label harus berupa angka.';
+      return null;
+    }
+    if (value < min) {
+      errors[controller] = min == 0
+          ? '$label tidak boleh negatif.'
+          : '$label minimal $min.';
+      return null;
+    }
+    if (value > max) {
+      errors[controller] = '$label maksimal $max.';
+      return null;
+    }
+    return value;
   }
 
   Future<void> _pickTime(bool start) async {
@@ -110,26 +138,102 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
   }
 
   Future<void> _save() async {
-    setState(() => _saving = true);
+    final errors = <TextEditingController, String>{};
+    final cooldown = _parse(errors, _cooldown, 'Jeda follow up', min: 1);
+    final maksHari = _parse(
+      errors,
+      _maksHari,
+      'Batas pesan per hari',
+      min: 1,
+      max: 100,
+    );
+    final maksBulan = _parse(
+      errors,
+      _maksBulan,
+      'Batas pesan per bulan',
+      min: 1,
+      max: 1000,
+    );
+    final jedaProspek = _parse(
+      errors,
+      _jedaProspek,
+      'Jeda prospek setelah servis',
+    );
+    final maksTidakRespons = _parse(
+      errors,
+      _maksTidakRespons,
+      'Arsip otomatis setelah tidak merespons',
+      min: 1,
+      max: 100,
+    );
+    final garansiHari = _parse(
+      errors,
+      _garansiHari,
+      'Garansi diingatkan H-',
+    );
+    final garansiArsip = _parse(
+      errors,
+      _garansiArsip,
+      'Arsip garansi setelah berakhir',
+    );
+    final servisAwal = _parse(
+      errors,
+      _servisAwal,
+      'Servis berkala tampil sebelum jatuh tempo',
+    );
+    final piutangJeda = _parse(
+      errors,
+      _piutangJeda,
+      'Jeda pengingat piutang',
+    );
+    final prospek1 = _parse(errors, _prospek1, 'Prospek tahap 1', min: 1);
+    final prospek2 = _parse(errors, _prospek2, 'Prospek tahap 2', min: 1);
+    final prospek3 = _parse(errors, _prospek3, 'Prospek tahap 3', min: 1);
+    final belumBisa = _parse(
+      errors,
+      _belumBisa,
+      'Tunda setelah masih kendala',
+      min: 1,
+    );
+    if (prospek1 != null &&
+        prospek2 != null &&
+        prospek3 != null &&
+        !(prospek1 < prospek2 && prospek2 < prospek3)) {
+      errors[_prospek3] =
+          'Tahap 3 harus lebih besar dari tahap 2, dan tahap 2 dari tahap 1.';
+    }
+    if (errors.isNotEmpty) {
+      setState(() {
+        _errors
+          ..clear()
+          ..addAll(errors);
+      });
+      showSnack(context, 'Periksa kembali isian yang ditandai.', error: true);
+      return;
+    }
+    setState(() {
+      _errors.clear();
+      _saving = true;
+    });
     try {
       await FollowupService.instance.saveSettings(
         FollowupSettings(
           aktif: _aktif,
           jamMulai: _jamMulai,
           jamSelesai: _jamSelesai,
-          cooldownHari: _int(_cooldown, 7),
-          garansiAkanHabisHari: _int(_garansiHari, 7),
-          garansiArsipHari: _int(_garansiArsip, 7),
-          servisBerkalaAwalHari: _int(_servisAwal, 14),
-          piutangJedaHari: _int(_piutangJeda, 14),
-          prospekHari1: _int(_prospek1, 30),
-          prospekHari2: _int(_prospek2, 60),
-          prospekHari3: _int(_prospek3, 90),
-          belumBisaHari: _int(_belumBisa, 14),
-          maksPesanHari: _int(_maksHari, 1),
-          maksPesanBulan: _int(_maksBulan, 2),
-          jedaProspekServisHari: _int(_jedaProspek, 7),
-          maksTidakMerespons: _int(_maksTidakRespons, 3),
+          cooldownHari: cooldown!,
+          garansiAkanHabisHari: garansiHari!,
+          garansiArsipHari: garansiArsip!,
+          servisBerkalaAwalHari: servisAwal!,
+          piutangJedaHari: piutangJeda!,
+          prospekHari1: prospek1!,
+          prospekHari2: prospek2!,
+          prospekHari3: prospek3!,
+          belumBisaHari: belumBisa!,
+          maksPesanHari: maksHari!,
+          maksPesanBulan: maksBulan!,
+          jedaProspekServisHari: jedaProspek!,
+          maksTidakMerespons: maksTidakRespons!,
         ),
       );
       if (!mounted) return;
@@ -154,7 +258,14 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
       child: TextField(
         controller: controller,
         keyboardType: TextInputType.number,
-        decoration: InputDecoration(labelText: label, helperText: helper),
+        onChanged: (_) {
+          if (_errors.remove(controller) != null) setState(() {});
+        },
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: helper,
+          errorText: _errors[controller],
+        ),
       ),
     );
   }

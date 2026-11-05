@@ -205,6 +205,7 @@ class SupplierService {
       '''
       SELECT st.id AS stock_item_id, st.kode, st.nama, st.satuan,
         COALESCE(st.jumlah_milli, st.jumlah * 1000) AS jumlah_milli,
+        COALESCE(st.desimal, 0) AS desimal,
         st.stok_minimum,
         s.id AS supplier_id, s.nama AS supplier_nama, s.nomor_hp,
         COALESCE(f.status, 'BELUM') AS status, f.catatan AS catatan
@@ -228,6 +229,7 @@ class SupplierService {
       '''
       SELECT st.id AS stock_item_id, st.nama, st.satuan,
         COALESCE(st.jumlah_milli, st.jumlah * 1000) AS jumlah_milli,
+        COALESCE(st.desimal, 0) AS desimal,
         st.stok_minimum,
         s.id AS supplier_id, s.nama AS supplier_nama, s.nomor_hp,
         COALESCE(f.status, 'BELUM') AS status,

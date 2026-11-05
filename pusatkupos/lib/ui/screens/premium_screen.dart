@@ -196,9 +196,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
       return;
     }
-    final stores = ((account['store_ids'] as List?) ?? const [])
-        .map((value) => '$value')
-        .toList();
+    final stores = _jsonList(account['store_ids_json']);
     final storeId =
         stores.isEmpty ? await SyncService.instance.storeId() : stores.first;
     setState(() => _busy = true);
@@ -1175,44 +1173,75 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final id = account['id'] as int;
     if (action == 'reset-password') {
       final password = TextEditingController();
-      final ok = await showDialog<bool>(
+      var error = '';
+      final nextPassword = await showDialog<String>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Reset password'),
-          content: TextField(
-            controller: password,
-            decoration: const InputDecoration(
-              labelText: 'Password baru (minimal 8)',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Batal'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(
-                context,
-                password.text.trim().length >= 8,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            title: const Text('Reset password'),
+            content: TextField(
+              controller: password,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'Password baru (minimal 8)',
+                errorText: error.isEmpty ? null : error,
               ),
-              child: const Text('Simpan'),
             ),
-          ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Batal'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final value = password.text.trim();
+                  if (value.length < 8) {
+                    setDialogState(
+                      () => error = 'Password minimal 8 karakter.',
+                    );
+                    return;
+                  }
+                  Navigator.pop(dialogContext, value);
+                },
+                child: const Text('Simpan'),
+              ),
+            ],
+          ),
         ),
       );
-      final nextPassword = password.text.trim();
       password.dispose();
-      if (ok != true) return;
-      await AccountService.instance.resetPassword(
-        id,
-        password: nextPassword,
-      );
-      await _load();
-      if (mounted) showSnack(context, 'Password direset.');
+      if (nextPassword == null) return;
+      try {
+        await AccountService.instance.resetPassword(
+          id,
+          password: nextPassword,
+        );
+        await _load();
+        if (mounted) showSnack(context, 'Password direset.');
+      } catch (resetError) {
+        if (mounted) {
+          showSnack(
+            context,
+            'Gagal mereset password: $resetError',
+            error: true,
+          );
+        }
+      }
     } else if (action == 'reset-pin') {
-      await AccountService.instance.resetPin(id);
-      await _load();
-      if (mounted) showSnack(context, 'PIN direset; karyawan membuat PIN baru saat login.');
+      try {
+        await AccountService.instance.resetPin(id);
+        await _load();
+        if (mounted) {
+          showSnack(
+            context,
+            'PIN direset; karyawan membuat PIN baru saat login.',
+          );
+        }
+      } catch (resetError) {
+        if (mounted) {
+          showSnack(context, 'Gagal mereset PIN: $resetError', error: true);
+        }
+      }
     } else if (action == 'audit') {
       final rows = await AccountService.instance.auditRows(id);
       if (!mounted) return;

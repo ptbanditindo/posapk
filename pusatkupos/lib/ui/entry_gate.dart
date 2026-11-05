@@ -6,6 +6,8 @@ import '../data/pin_service.dart';
 import '../data/secure_store.dart';
 import '../data/session_service.dart';
 import '../state/app_state.dart';
+import '../sync/sync_scheduler.dart';
+import '../sync/sync_service.dart';
 import 'onboarding.dart';
 import 'pin_gate.dart';
 
@@ -70,6 +72,15 @@ class _EntryGateState extends State<EntryGate> {
 }
 
 Future<void> signOutToOnboarding(BuildContext context) async {
+  SyncScheduler.instance.stop();
+  // Cabut token perangkat (jika masih terhubung) dan hapus kunci sinkronisasi
+  // sebelum database toko dilepas, agar perangkat yang keluar tidak lagi
+  // dapat mengirim data.
+  try {
+    await SyncService.instance.purgeDeviceIdentity();
+  } catch (_) {
+    // Keluar tetap harus berhasil walau relay/database sedang bermasalah.
+  }
   await SessionService.instance.clear();
   await PinService.instance.clear();
   await SecureStore.instance.delete('owner.enroll_token');

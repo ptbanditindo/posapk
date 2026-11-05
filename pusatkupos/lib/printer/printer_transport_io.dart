@@ -8,9 +8,9 @@ Future<void> sendNetwork(String host, int port, List<int> bytes) async {
   );
   try {
     socket.add(bytes);
-    await socket.flush();
+    await socket.flush().timeout(const Duration(seconds: 15));
   } finally {
-    await socket.close();
+    await socket.close().timeout(const Duration(seconds: 5)).catchError((_) {});
     socket.destroy();
   }
 }

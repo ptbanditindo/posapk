@@ -184,6 +184,8 @@ class ServiceRecordSummary {
     this.unitDitinggal = false,
     this.diambilAt,
     this.jenisTransaksi = 'servis_langsung',
+    this.jatuhTempo,
+    this.totalDibayarCents = 0,
   });
 
   final int id;
@@ -208,8 +210,23 @@ class ServiceRecordSummary {
   final DateTime? tanggalKlaim;
   final bool unitDitinggal;
   final DateTime? diambilAt;
+  final DateTime? jatuhTempo;
+  final int totalDibayarCents;
 
   bool get isVoid => voidedAt != null;
+
+  bool get jatuhTempoLewat {
+    final due = jatuhTempo;
+    if (due == null || sisaBayarCents <= 0 || isVoid) return false;
+    final today = DateTime.now();
+    return DateTime(today.year, today.month, today.day)
+        .isAfter(DateTime(due.year, due.month, due.day));
+  }
+
+  int get sisaBayarCents {
+    final paid = totalDibayarCents > 0 ? totalDibayarCents : bayarCents;
+    return totalCents - paid > 0 ? totalCents - paid : 0;
+  }
 
   bool get warrantyActive {
     final end = garansiSampai;
@@ -260,6 +277,10 @@ class ServiceRecordSummary {
         diambilAt: row['diambil_at'] == null
             ? null
             : DateTime.tryParse(row['diambil_at'] as String)?.toLocal(),
+        jatuhTempo: row['jatuh_tempo'] == null
+            ? null
+            : DateTime.tryParse(row['jatuh_tempo'] as String),
+        totalDibayarCents: row['total_dibayar'] as int? ?? 0,
       );
 }
 
@@ -271,7 +292,13 @@ class JobDraft {
     this.jasaId,
     this.modalCents = 0,
     this.intervalBulan = 0,
-  }) : hargaTerdaftarCents = hargaCents;
+    this.syncId,
+    int? hargaTerdaftarCents,
+    this.hargaFinalCents = 0,
+    this.diskonAlokasiCents = 0,
+    this.alasanDiskon,
+    this.disetujuiOleh,
+  }) : hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
 
   String deskripsi;
   int jumlah;
@@ -279,13 +306,15 @@ class JobDraft {
   final int? jasaId;
   int modalCents;
   final int intervalBulan;
+  final String? syncId;
   final int hargaTerdaftarCents;
-  int hargaFinalCents = 0;
-  int diskonAlokasiCents = 0;
+  int hargaFinalCents;
+  int diskonAlokasiCents;
   String? alasanDiskon;
   String? disetujuiOleh;
 
   int get subtotalCents => jumlah * hargaCents;
+  int get lineTotalCents => subtotalCents - diskonAlokasiCents;
 }
 
 class PartDraft {
@@ -296,7 +325,13 @@ class PartDraft {
     required this.hargaCents,
     required this.modalCents,
     this.intervalBulan = 0,
-  }) : hargaTerdaftarCents = hargaCents;
+    this.syncId,
+    int? hargaTerdaftarCents,
+    this.hargaFinalCents = 0,
+    this.diskonAlokasiCents = 0,
+    this.alasanDiskon,
+    this.disetujuiOleh,
+  }) : hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
 
   final int stockItemId;
   String nama;
@@ -304,13 +339,15 @@ class PartDraft {
   int hargaCents;
   int modalCents;
   final int intervalBulan;
+  final String? syncId;
   final int hargaTerdaftarCents;
-  int hargaFinalCents = 0;
-  int diskonAlokasiCents = 0;
+  int hargaFinalCents;
+  int diskonAlokasiCents;
   String? alasanDiskon;
   String? disetujuiOleh;
 
   int get subtotalCents => jumlah * hargaCents;
+  int get lineTotalCents => subtotalCents - diskonAlokasiCents;
 }
 
 class PaymentRow {
@@ -329,6 +366,60 @@ class PaymentRow {
   final int nominalCents;
   final DateTime waktu;
   final String? catatan;
+}
+
+class SaleReturnItemRow {
+  const SaleReturnItemRow({
+    required this.lineType,
+    required this.lineSyncId,
+    required this.deskripsi,
+    required this.jumlah,
+    required this.hargaSatuanCents,
+    required this.subtotalCents,
+  });
+
+  final String lineType;
+  final String lineSyncId;
+  final String deskripsi;
+  final int jumlah;
+  final int hargaSatuanCents;
+  final int subtotalCents;
+}
+
+class SaleReturnRow {
+  const SaleReturnRow({
+    required this.id,
+    required this.noRetur,
+    required this.noNota,
+    required this.waktu,
+    required this.totalCents,
+    required this.alasan,
+    this.items = const [],
+  });
+
+  final int id;
+  final String noRetur;
+  final String noNota;
+  final DateTime waktu;
+  final int totalCents;
+  final String alasan;
+  final List<SaleReturnItemRow> items;
+
+  factory SaleReturnRow.fromRow(
+    Map<String, Object?> row, {
+    List<SaleReturnItemRow> items = const [],
+  }) {
+    return SaleReturnRow(
+      id: row['id'] as int,
+      noRetur: row['no_retur'] as String? ?? '',
+      noNota: row['no_nota'] as String? ?? '',
+      waktu: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
+          DateTime.now(),
+      totalCents: (row['total'] as num?)?.toInt() ?? 0,
+      alasan: row['alasan'] as String? ?? '',
+      items: items,
+    );
+  }
 }
 
 class CommissionRow {
@@ -363,6 +454,7 @@ class RecordDetail {
     this.mechanic,
     this.commissions = const [],
     this.corrections = const [],
+    this.returns = const [],
   });
 
   final ServiceRecordSummary record;
@@ -379,6 +471,7 @@ class RecordDetail {
   final String? mechanic;
   final List<CommissionRow> commissions;
   final List<CorrectionEntry> corrections;
+  final List<SaleReturnRow> returns;
 }
 
 class ReportSummary {
@@ -392,11 +485,16 @@ class ReportSummary {
     required this.piutangCents,
     this.totalModalPartCents = 0,
     this.labaKotorPartCents = 0,
+    this.totalModalJasaCents = 0,
+    this.labaKotorJasaCents = 0,
     this.komisiCents = 0,
     this.gajiCents = 0,
     this.cashByMethod = const {},
     this.countByType = const {},
     this.totalByType = const {},
+    this.returJasaCents = 0,
+    this.returPartCents = 0,
+    this.returModalCents = 0,
   });
 
   final int transaksi;
@@ -408,11 +506,25 @@ class ReportSummary {
   final int piutangCents;
   final int totalModalPartCents;
   final int labaKotorPartCents;
+  final int totalModalJasaCents;
+  final int labaKotorJasaCents;
   final int komisiCents;
   final int gajiCents;
   final Map<String, int> cashByMethod;
   final Map<String, int> countByType;
   final Map<String, int> totalByType;
+  final int returJasaCents;
+  final int returPartCents;
+  final int returModalCents;
+
+  int get returCents => returJasaCents + returPartCents;
+
+  int get totalNetCents => totalCents - returCents;
+
+  int get totalModalCents => totalModalPartCents + totalModalJasaCents;
+  int get labaKotorCents => labaKotorPartCents + labaKotorJasaCents;
+  int get labaKotorNetCents =>
+      labaKotorCents - (returJasaCents + returPartCents - returModalCents);
 }
 
 class BelowPriceSale {

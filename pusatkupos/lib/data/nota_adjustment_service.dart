@@ -67,11 +67,12 @@ class NotaAdjustmentService {
     if (cleanReason.isEmpty) {
       throw ArgumentError('Alasan koreksi wajib diisi.');
     }
+    if (actor == null) {
+      throw StateError('Operator wajib diisi untuk koreksi nota.');
+    }
     final settings = await StoreSettingsService.instance.ensure();
-    final role = actor?.role ?? 'owner';
-    if (actor != null &&
-        !actor.isOwner &&
-        !settings.roleAllows(role, 'koreksi')) {
+    final role = actor.role;
+    if (!actor.isOwner && !settings.roleAllows(role, 'koreksi')) {
       throw StateError('Peran $role tidak berhak membuat koreksi nota.');
     }
     return AppDatabase.instance.db.transaction((txn) async {
@@ -100,8 +101,8 @@ class NotaAdjustmentService {
         [recordId, recordId],
       );
       final modalTotal = (modalRows.first['modal'] as num?)?.toInt() ?? 0;
-      var ownerApproved = actor?.isOwner ?? true;
-      String? approver = ownerApproved ? (actor?.label ?? 'Pemilik') : null;
+      var ownerApproved = actor.isOwner;
+      String? approver = ownerApproved ? actor.label : null;
       try {
         PriceRules.validateCorrection(
           modalTotal: modalTotal,

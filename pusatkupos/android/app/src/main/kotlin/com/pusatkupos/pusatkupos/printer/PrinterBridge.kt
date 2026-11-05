@@ -56,7 +56,10 @@ class PrinterBridge(
             }
 
             "sendBluetoothClassic" -> runAsync(result) {
-                bluetooth.send(call.argument<ByteArray>("bytes") ?: ByteArray(0))
+                bluetooth.send(
+                    call.argument<String>("address").orEmpty(),
+                    call.argument<ByteArray>("bytes") ?: ByteArray(0),
+                )
                 null
             }
 

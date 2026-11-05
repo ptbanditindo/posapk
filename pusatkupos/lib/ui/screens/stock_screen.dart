@@ -216,6 +216,17 @@ class _StockScreenState extends State<StockScreen> {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
+              if (snapshot.hasError) {
+                return EmptyState(
+                  title: 'Gagal memuat stok',
+                  subtitle: '${snapshot.error}',
+                  icon: Icons.error_outline,
+                  action: FilledButton(
+                    onPressed: _load,
+                    child: const Text('Coba lagi'),
+                  ),
+                );
+              }
               final rows = snapshot.data ?? const [];
               if (rows.isEmpty) {
                 return EmptyState(
@@ -518,8 +529,14 @@ class _StockDialogState extends State<_StockDialog> {
                 Expanded(
                   child: TextField(
                     controller: _jumlah,
+                    enabled: AppState.instance.isOwner,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Stok'),
+                    decoration: InputDecoration(
+                      labelText: 'Stok',
+                      helperText: AppState.instance.isOwner
+                          ? null
+                          : 'Gunakan opname stok untuk mengubah stok.',
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),

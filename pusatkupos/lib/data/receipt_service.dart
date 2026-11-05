@@ -1,13 +1,42 @@
 import '../core/dates.dart';
 import '../core/money.dart';
+import '../printer/receipt_builder.dart';
 import 'app_database.dart';
+import 'models.dart';
 import 'receipt_settings.dart';
+import 'receipt_template.dart';
+import 'store_settings.dart';
 
 class ReceiptDocument {
-  const ReceiptDocument({required this.text, required this.width});
+  const ReceiptDocument({
+    required this.lines,
+    required this.width,
+    this.recordId,
+    this.copies = 1,
+    this.blankLines = 3,
+    this.codepage = '',
+    this.logoPath = '',
+    this.logoWidthMm = 20,
+    this.customerPhone = '',
+    this.customerName = '',
+    this.noNota = '',
+    this.totalCents = 0,
+  });
 
-  final String text;
+  final List<ReceiptLine> lines;
   final int width;
+  final int? recordId;
+  final int copies;
+  final int blankLines;
+  final String codepage;
+  final String logoPath;
+  final int logoWidthMm;
+  final String customerPhone;
+  final String customerName;
+  final String noNota;
+  final int totalCents;
+
+  String get text => lines.map((line) => line.text).join('\n');
 }
 
 class ReceiptService {
@@ -19,21 +48,27 @@ class ReceiptService {
     if (width != 32 && width != 48) {
       throw ArgumentError('Lebar struk hanya 32 atau 48 kolom.');
     }
+    final template = await ReceiptSettings.instance.load();
+    return buildFromTemplate(recordId, template: template, width: width);
+  }
+
+  Future<ReceiptDocument> buildFromTemplate(
+    int recordId, {
+    required ReceiptTemplate template,
+    int? width,
+  }) async {
     final detail = await AppDatabase.instance.recordDetail(recordId);
     if (detail == null) throw StateError('Nota tidak ditemukan.');
     final db = AppDatabase.instance;
-    final settings = await ReceiptSettings.instance.load();
-    final storeName = await db.getSetting('bengkel.nama') ?? 'PUSATKU POS';
-    final storeAddress = await db.getSetting('bengkel.alamat') ?? '';
-    final tagline = await db.getSetting('bengkel.tagline') ?? '';
-    final contact = await db.getSetting('bengkel.telepon') ?? '';
-    final rekening = await db.getSetting('bengkel.rekening') ?? '';
-    final footer = await db.getSetting('struk.footer') ?? 'Terima kasih';
-    final karyawanAktif = (await db.getSetting('fitur.karyawan') ?? '1') == '1';
-
-    final customerRows = await db.db.rawQuery(
+    final store = _StoreInfo(
+      nama: await db.getSetting('bengkel.nama') ?? 'PUSATKU POS',
+      alamat: await db.getSetting('bengkel.alamat') ?? '',
+      tagline: await db.getSetting('bengkel.tagline') ?? '',
+      telepon: await db.getSetting('bengkel.telepon') ?? '',
+    );
+    final phoneRows = await db.db.rawQuery(
       '''
-      SELECT c.nomor_hp, c.alamat
+      SELECT c.nomor_hp
       FROM service_records r
       JOIN vehicle_or_units u ON u.id = r.unit_id
       JOIN customers c ON c.id = u.customer_id
@@ -41,187 +76,452 @@ class ReceiptService {
       ''',
       [recordId],
     );
-    final customerPhone = customerRows.isEmpty
+    final customerPhone = phoneRows.isEmpty
         ? ''
-        : (customerRows.first['nomor_hp'] as String? ?? '');
+        : (phoneRows.first['nomor_hp'] as String? ?? '');
+    final karyawanAktif =
+        (await db.getSetting('fitur.karyawan') ?? '1') == '1';
+    return _render(
+      template,
+      detail,
+      store,
+      width: width ?? template.width,
+      customerPhone: customerPhone,
+      karyawanAktif: karyawanAktif,
+    );
+  }
 
-    final lines = <String>[];
-    void add(String line) => lines.add(line);
-    void center(String line) {
-      for (final part in wrapText(line, width)) {
-        final padding = (width - part.length) ~/ 2;
-        add('${' ' * padding}$part');
-      }
-    }
+  /// Struk contoh untuk pratinjau di pengaturan.
+  Future<ReceiptDocument> sample({
+    ReceiptTemplate? template,
+    int? width,
+  }) async {
+    final resolved = template ?? await ReceiptSettings.instance.load();
+    final db = AppDatabase.instance;
+    final store = _StoreInfo(
+      nama: await db.getSetting('bengkel.nama') ?? 'PUSATKU POS',
+      alamat: await db.getSetting('bengkel.alamat') ?? '',
+      tagline: await db.getSetting('bengkel.tagline'),
+      telepon: await db.getSetting('bengkel.telepon'),
+    );
+    return _render(
+      resolved,
+      _sampleDetail(),
+      store,
+      width: width ?? resolved.width,
+      customerPhone: '0812-3456-7890',
+      karyawanAktif: true,
+    );
+  }
 
-    void rule() => add('-' * width);
-
-    void pair(String label, String value) {
-      final valueLines = wrapText(value, width - 12);
-      if (valueLines.isEmpty) return;
-      add('${label.padRight(10).substring(0, 10)}: ${valueLines.first}');
-      for (final extra in valueLines.skip(1)) {
-        add('${' ' * 12}$extra');
-      }
+  ReceiptDocument _render(
+    ReceiptTemplate template,
+    RecordDetail detail,
+    _StoreInfo store, {
+    required int width,
+    required String customerPhone,
+    required bool karyawanAktif,
+  }) {
+    if (width != 32 && width != 48) {
+      throw ArgumentError('Lebar struk hanya 32 atau 48 kolom.');
     }
-
-    void amount(String label, int cents) {
-      final value = formatRupiah(cents);
-      final space = width - label.length - value.length;
-      if (space >= 1) {
-        add('$label${' ' * space}$value');
-      } else {
-        add(label);
-        add(value.padLeft(width));
-      }
-    }
-
-    center(storeName);
-    if (settings['tagline']! && tagline.trim().isNotEmpty) {
-      center(tagline.trim());
-    }
-    if (settings['alamat']! && storeAddress.trim().isNotEmpty) {
-      center(storeAddress.trim());
-    }
-    if (settings['kontak']! && contact.trim().isNotEmpty) {
-      center('Telp/WA ${contact.trim()}');
-    }
-    rule();
-
     final record = detail.record;
-    if (settings['no_nota']!) pair('No. Nota', record.noNota);
-    if (settings['tanggal']!) pair('Tanggal', dateTimeId.format(record.waktu));
-    if (karyawanAktif && settings['kasir']! && (detail.createdBy ?? '').isNotEmpty) {
-      pair('Kasir', detail.createdBy!);
-    }
-    if (karyawanAktif &&
-        settings['mekanik']! &&
-        (detail.mechanic ?? '').isNotEmpty) {
-      pair('Mekanik', detail.mechanic!);
-    }
-    if (settings['pelanggan']! && record.customerNama.isNotEmpty) {
-      pair('Pelanggan', record.customerNama);
-    }
-    if (settings['hp']! && customerPhone.isNotEmpty) {
-      pair('HP', customerPhone);
-    }
-    if (settings['unit']! && record.unitLabel.isNotEmpty) {
-      pair('Unit', record.unitLabel);
-    }
-    if (settings['keluhan']! && record.keluhan.trim().isNotEmpty) {
-      pair('Keluhan', record.keluhan.trim());
-    }
-    if (settings['catatan']! && (detail.catatan ?? '').trim().isNotEmpty) {
-      pair('Catatan', detail.catatan!.trim());
-    }
-    rule();
+    final builder = ReceiptBuilder(width);
+    final values = <String, String>{
+      'nama_toko': store.nama,
+      'tagline': store.tagline,
+      'alamat': store.alamat,
+      'kontak':
+          store.telepon.trim().isEmpty ? '' : 'Telp/WA ${store.telepon.trim()}',
+      'no_nota': record.noNota,
+      'tanggal': dateTimeId.format(record.waktu),
+      'pelanggan': record.customerNama,
+      'unit': record.unitLabel,
+      'total': formatRupiah(record.totalCents),
+      'sisa': formatRupiah(detail.sisaCents),
+      'jatuh_tempo': record.jatuhTempo == null
+          ? ''
+          : dateId.format(record.jatuhTempo!),
+      'kasir': detail.createdBy ?? '',
+      'mekanik': detail.mechanic ?? '',
+    };
+    String resolve(String text) => text.replaceAllMapped(
+          RegExp(r'\{\{(\w+)\}\}'),
+          (match) => values[match.group(1)] ?? match.group(0)!,
+        );
 
-    if (settings['jasa']! && detail.jobs.isNotEmpty) {
-      add('JASA');
-      for (final job in detail.jobs) {
-        for (final line in wrapText(job.deskripsi, width - 4)) {
-          add('  $line');
-        }
-        final label = '  ${job.jumlah} x ${formatRupiah(job.hargaCents)}';
-        amount(label, job.subtotalCents);
+    void header() {
+      final name = store.nama.trim();
+      if (name.isNotEmpty) {
+        builder.add(
+          name,
+          align: ReceiptAlign.center,
+          bold: template.headerBold,
+          double: template.headerDouble && name.length <= (width ~/ 2) - 1,
+        );
       }
-    }
-    if (settings['part']! && detail.parts.isNotEmpty) {
-      if (settings['jasa']! && detail.jobs.isNotEmpty) add('');
-      add('SPAREPART');
-      for (final part in detail.parts) {
-        for (final line in wrapText(part.nama, width - 4)) {
-          add('  $line');
-        }
-        final label = '  ${part.jumlah} x ${formatRupiah(part.hargaCents)}';
-        amount(label, part.subtotalCents);
+      if (template.showTagline && store.tagline.trim().isNotEmpty) {
+        builder.center(store.tagline.trim());
       }
-    }
-    rule();
-    if (settings['total_jasa']!) {
-      amount('Total jasa', record.biayaJasaCents);
-    }
-    if (settings['total_part']!) {
-      amount('Total part', record.totalPartCents);
-    }
-    if (settings['diskon']! && record.diskonCents > 0) {
-      amount('Diskon', -record.diskonCents);
-    }
-    if (settings['grand_total']!) {
-      amount('GRAND TOTAL', record.totalCents);
-    }
-    if (settings['metode']!) {
-      pair('Metode', record.metodeBayar == 'TRANSFER' ? 'Transfer' : 'Tunai');
-    }
-    if (settings['bayar']!) {
-      amount('Dibayar', detail.totalDibayarCents);
-    }
-    if (settings['kembalian']!) {
-      final change = record.bayarCents > record.totalCents &&
-              record.metodeBayar == 'CASH'
-          ? record.bayarCents - record.totalCents
-          : 0;
-      amount('Kembalian', change);
-    }
-    if (settings['status_bayar']!) {
-      pair('Status', record.statusBayar);
-    }
-    if (settings['garansi']! && record.bergaransi) {
-      final end = record.garansiSampai;
-      pair(
-        'Garansi',
-        end == null ? 'Tanpa garansi' : 's.d. ${dateId.format(end)}',
-      );
-      if (record.statusKlaim == 'Sudah claim') {
-        pair('Klaim', 'Sudah diklaim');
+      if (template.showAlamat && store.alamat.trim().isNotEmpty) {
+        builder.center(store.alamat.trim());
       }
-      if ((record.catatanGaransi ?? '').trim().isNotEmpty) {
-        for (final line in wrapText(record.catatanGaransi!.trim(), width)) {
-          add(line);
+      if (template.showKontak && store.telepon.trim().isNotEmpty) {
+        builder.center('Telp/WA ${store.telepon.trim()}');
+      }
+      for (final line in template.headerExtra) {
+        final text = resolve(line.text).trim();
+        if (text.isNotEmpty) {
+          builder.add(text, align: line.align, bold: line.bold);
         }
       }
+      builder.divider();
     }
-    if (settings['rekening']! && rekening.trim().isNotEmpty) {
-      rule();
-      for (final line in wrapText(rekening.trim(), width)) {
-        add(line);
+
+    void meta() {
+      bool on(String key) => template.metaFields[key] ?? true;
+      if (on('no_nota')) builder.field(template.label('no_nota'), record.noNota);
+      if (on('tanggal')) {
+        builder.field(
+          template.label('tanggal'),
+          dateTimeId.format(record.waktu),
+        );
+      }
+      if (karyawanAktif &&
+          on('kasir') &&
+          (detail.createdBy ?? '').trim().isNotEmpty) {
+        builder.field(template.label('kasir'), detail.createdBy!.trim());
+      }
+      if (karyawanAktif &&
+          on('mekanik') &&
+          (detail.mechanic ?? '').trim().isNotEmpty) {
+        builder.field(template.label('mekanik'), detail.mechanic!.trim());
+      }
+      if (on('pelanggan') && record.customerNama.trim().isNotEmpty) {
+        builder.field(template.label('pelanggan'), record.customerNama.trim());
+      }
+      if (on('hp') && customerPhone.trim().isNotEmpty) {
+        builder.field(template.label('hp'), customerPhone.trim());
+      }
+      if (on('unit') && record.unitLabel.trim().isNotEmpty) {
+        builder.field(template.label('unit'), record.unitLabel.trim());
+      }
+      if (on('keluhan') && record.keluhan.trim().isNotEmpty) {
+        builder.field(template.label('keluhan'), record.keluhan.trim());
+      }
+      if (on('catatan') && (detail.catatan ?? '').trim().isNotEmpty) {
+        builder.field(template.label('catatan'), detail.catatan!.trim());
+      }
+      if (on('jatuh_tempo') &&
+          record.jatuhTempo != null &&
+          detail.sisaCents > 0) {
+        builder.field(
+          template.label('jatuh_tempo'),
+          dateId.format(record.jatuhTempo!),
+        );
+      }
+      builder.divider();
+    }
+
+    void items() {
+      var printed = false;
+      void line(
+        String nama,
+        int jumlah,
+        int harga,
+        int subtotal,
+        int diskon,
+      ) {
+        builder.item(nama, jumlah, harga, subtotal);
+        if (!template.showLineDiscount || diskon <= 0) return;
+        builder.amount('  ${template.label('diskon')}', -diskon);
+      }
+
+      if (template.showJasa && detail.jobs.isNotEmpty) {
+        builder.add('JASA', bold: true);
+        for (final job in detail.jobs) {
+          line(
+            job.deskripsi,
+            job.jumlah,
+            job.hargaTerdaftarCents,
+            job.subtotalCents,
+            job.diskonAlokasiCents,
+          );
+        }
+        printed = true;
+      }
+      if (template.showPart && detail.parts.isNotEmpty) {
+        if (printed) builder.blank();
+        builder.add('SPAREPART', bold: true);
+        for (final part in detail.parts) {
+          line(
+            part.nama,
+            part.jumlah,
+            part.hargaTerdaftarCents,
+            part.subtotalCents,
+            part.diskonAlokasiCents,
+          );
+        }
+        printed = true;
+      }
+      if (printed && template.itemsDivider) builder.divider();
+    }
+
+    void totals() {
+      bool on(String key) => template.totalFields[key] ?? true;
+      if (on('total_jasa')) {
+        builder.amount(
+          template.label('total_jasa'),
+          record.biayaJasaCents,
+        );
+      }
+      if (on('total_part')) {
+        builder.amount(template.label('total_part'), record.totalPartCents);
+      }
+      if (on('diskon') && record.diskonCents > 0) {
+        builder.amount(template.label('diskon'), -record.diskonCents);
+      }
+      if (on('grand_total')) {
+        builder.amount(
+          template.label('grand_total'),
+          record.totalCents,
+          bold: true,
+        );
+      }
+      if (on('metode')) {
+        builder.field(
+          template.label('metode'),
+          record.metodeBayar == 'TRANSFER' ? 'Transfer' : 'Tunai',
+        );
+      }
+      if (on('bayar')) {
+        builder.amount(template.label('bayar'), detail.totalDibayarCents);
+      }
+      if (on('kembalian')) {
+        final change = record.bayarCents > record.totalCents &&
+                record.metodeBayar == 'CASH'
+            ? record.bayarCents - record.totalCents
+            : 0;
+        builder.amount(template.label('kembalian'), change);
+      }
+      if (on('status_bayar')) {
+        builder.field(template.label('status_bayar'), record.statusBayar);
+      }
+      builder.divider();
+    }
+
+    void payment() {
+      final status = record.statusBayar.toUpperCase();
+      final jenis = detail.jenisBayar.toUpperCase();
+      final kredit = status != 'LUNAS' || jenis != 'LUNAS' || detail.sisaCents > 0;
+      final history = template.paymentShowHistory &&
+          detail.payments.isNotEmpty &&
+          (detail.payments.length > 1 || kredit);
+      if (history) {
+        builder.add('RIWAYAT PEMBAYARAN', bold: true);
+        for (final entry in detail.payments) {
+          builder.field(
+            '${dateId.format(entry.waktu)} ${entry.jenis}',
+            formatRupiah(entry.nominalCents),
+          );
+        }
+      }
+      if (kredit) {
+        if (template.paymentShowSisa) {
+          builder.amount('Sisa', detail.sisaCents, bold: true);
+        }
+      }
+      if (history || kredit) builder.divider();
+    }
+
+    void warranty() {
+      final note = (record.catatanGaransi ?? '').trim();
+      final extra = template.warrantyNote.trim();
+      var printed = false;
+      if (record.bergaransi && template.warrantyShowStatus) {
+        builder.field(
+          template.label('garansi'),
+          record.garansiSampai == null
+              ? 'Tanpa garansi'
+              : 's.d. ${dateId.format(record.garansiSampai!)}',
+        );
+        builder.field('Status', record.warrantyStatus);
+        printed = true;
+      }
+      if (template.warrantyShowNote && note.isNotEmpty) {
+        for (final line in wrapText(note, width)) {
+          builder.add(line);
+        }
+        printed = true;
+      }
+      if (template.warrantyShowNote && extra.isNotEmpty) {
+        for (final line in wrapText(extra, width)) {
+          builder.add(line);
+        }
+        printed = true;
+      }
+      if (printed) builder.divider();
+    }
+
+    void bank() {
+      final nama = template.bankNama.trim();
+      final nomor = template.noRekening.trim();
+      final atas = template.atasNama.trim();
+      final catatan = template.bankCatatan.trim();
+      if (nama.isEmpty && nomor.isEmpty && atas.isEmpty && catatan.isEmpty) {
+        return;
+      }
+      builder.divider();
+      builder.add(template.label('rekening'), bold: true);
+      final account = [$nama, nomor].where((part) => part.isNotEmpty).join(' ');
+      if (account.isNotEmpty) builder.add(account);
+      if (atas.isNotEmpty) builder.add('a.n. $atas');
+      for (final line in wrapText(catatan, width)) {
+        builder.add(line);
       }
     }
-    if (settings['footer']! && footer.trim().isNotEmpty) {
-      rule();
-      center(footer.trim());
+
+    void footer() {
+      for (final line in template.footerLines) {
+        final text = resolve(line).trim();
+        if (text.isNotEmpty) builder.center(text);
+      }
+      for (final line in template.footerExtra) {
+        final text = resolve(line.text).trim();
+        if (text.isNotEmpty) {
+          builder.add(text, align: line.align, bold: line.bold);
+        }
+      }
+      if (template.signature.trim().isNotEmpty) {
+        builder.blank();
+        builder.center(template.signature.trim());
+        builder.center('(__________________)');
+      }
     }
-    add('');
-    return ReceiptDocument(text: lines.join('\n'), width: width);
+
+    final sudahLunas = detail.sisaCents == 0 && detail.totalDibayarCents > 0;
+    final isPelunasan = template.pelunasanBanner &&
+        !record.isVoid &&
+        sudahLunas &&
+        (record.jenisTransaksi == transactionPelunasanOrder ||
+            detail.payments.length > 1);
+    if (isPelunasan) {
+      builder.divider('=');
+      builder.center(template.label('pelunasan'), bold: true);
+      builder.divider('=');
+    }
+
+    if (template.voidBanner && record.isVoid) {
+      builder.divider('=');
+      builder.center('STRUK DIBATALKAN', bold: true);
+      builder.center('(VOID)');
+      final reason = (detail.voidReason ?? '').trim();
+      if (reason.isNotEmpty) {
+        for (final line in wrapText(reason, width)) {
+          builder.center(line);
+        }
+      }
+      builder.divider('=');
+    }
+
+    final blocks = <String, void Function()>{
+      'header': header,
+      'meta': meta,
+      'items': items,
+      'totals': totals,
+      'payment': payment,
+      'warranty': warranty,
+      'bank': bank,
+      'footer': footer,
+    };
+    for (final id in template.blockOrder) {
+      if (!template.visible(id)) continue;
+      blocks[id]?.call();
+    }
+
+    return ReceiptDocument(
+      lines: builder.lines,
+      width: width,
+      recordId: detail.record.id > 0 ? detail.record.id : null,
+      copies: template.copies,
+      blankLines: template.blankLines,
+      codepage: template.codepage,
+      logoPath: template.logoPath.trim(),
+      logoWidthMm: template.logoWidthMm,
+      customerPhone: customerPhone.trim(),
+      customerName: record.customerNama.trim(),
+      noNota: record.noNota,
+      totalCents: record.totalCents,
+    );
+  }
+
+  RecordDetail _sampleDetail() {
+    final now = DateTime.now();
+    final record = ServiceRecordSummary(
+      id: 0,
+      noNota: 'SRV-2026-0001',
+      waktu: now,
+      customerNama: 'Budi Santoso',
+      unitLabel: 'B 1234 CD Honda Beat',
+      keluhan: 'Radiator bocor dan suhu cepat naik',
+      biayaJasaCents: 20000000,
+      totalPartCents: 9000000,
+      diskonCents: 1000000,
+      totalCents: 28000000,
+      bayarCents: 30000000,
+      statusBayar: 'LUNAS',
+      metodeBayar: 'CASH',
+      voidedAt: null,
+      bergaransi: true,
+      garansiSampai: now.add(const Duration(days: 30)),
+      catatanGaransi: 'Garansi servis 30 hari.',
+    );
+    return RecordDetail(
+      record: record,
+      jobs: [
+        JobDraft(deskripsi: 'Servis radiator', jumlah: 1, hargaCents: 15000000),
+        JobDraft(deskripsi: 'Ganti oli', jumlah: 1, hargaCents: 5000000),
+      ],
+      parts: [
+        PartDraft(
+          stockItemId: 0,
+          nama: 'Oli Mesin 1L',
+          jumlah: 2,
+          hargaCents: 4500000,
+          modalCents: 3500000,
+        ),
+      ],
+      payments: [
+        PaymentRow(
+          id: 1,
+          jenis: 'PELUNASAN',
+          metode: 'CASH',
+          nominalCents: 30000000,
+          waktu: now,
+        ),
+      ],
+      requestId: null,
+      catatan: 'Periksa air radiator setelah 100 km.',
+      jenisBayar: 'LUNAS',
+      totalDibayarCents: 30000000,
+      sisaCents: 0,
+      voidReason: null,
+      createdBy: 'Kasir',
+      mechanic: 'Andi',
+    );
   }
 }
 
-List<String> wrapText(String value, int width) {
-  if (width < 1) return const [];
-  final words = value.replaceAll(RegExp(r'\s+'), ' ').trim().split(' ');
-  final lines = <String>[];
-  var current = '';
-  for (final word in words) {
-    if (word.isEmpty) continue;
-    if (current.isEmpty) {
-      current = word;
-      while (current.length > width) {
-        lines.add(current.substring(0, width));
-        current = current.substring(width);
-      }
-      continue;
-    }
-    if (current.length + 1 + word.length <= width) {
-      current = '$current $word';
-    } else {
-      lines.add(current);
-      current = word;
-      while (current.length > width) {
-        lines.add(current.substring(0, width));
-        current = current.substring(width);
-      }
-    }
-  }
-  if (current.isNotEmpty) lines.add(current);
-  return lines;
+class _StoreInfo {
+  const _StoreInfo({
+    required this.nama,
+    required this.alamat,
+    required this.tagline,
+    required this.telepon,
+  });
+
+  final String nama;
+  final String alamat;
+  final String tagline;
+  final String telepon;
 }

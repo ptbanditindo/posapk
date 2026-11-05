@@ -34,7 +34,14 @@ class SyncScheduler with WidgetsBindingObserver {
     if (_started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
-    _scheduleNext(initial: true);
+    configuredInterval().then((value) {
+      if (!_started) return;
+      _interval = value;
+      _scheduleNext();
+    }).catchError((Object _) {
+      if (_started) _scheduleNext();
+      return const Duration(minutes: defaultIntervalMinutes);
+    });
     tick();
   }
 
@@ -57,23 +64,25 @@ class SyncScheduler with WidgetsBindingObserver {
     return Duration(minutes: minutes);
   }
 
-  void _scheduleNext({bool initial = false}) {
+  void _scheduleNext() {
     _timer?.cancel();
     final random = Random();
     final jitterSeconds = (random.nextBool() ? 1 : -1) *
         (60 + random.nextInt(61));
     final jitter = Duration(seconds: jitterSeconds);
     _timer = Timer(_interval + jitter, () async {
-      await tick(force: true);
-      if (!_started) return;
-      _interval = await configuredInterval();
-      _scheduleNext();
+      try {
+        await tick(force: true);
+      } finally {
+        if (!_started) return;
+        try {
+          _interval = await configuredInterval();
+        } catch (_) {
+          // Pakai interval terakhir bila pengaturan belum dapat dibaca.
+        }
+        _scheduleNext();
+      }
     });
-    if (initial) {
-      configuredInterval().then((value) {
-        _interval = value;
-      });
-    }
   }
 
   @override

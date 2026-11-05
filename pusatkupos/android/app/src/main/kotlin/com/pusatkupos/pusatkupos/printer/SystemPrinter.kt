@@ -121,9 +121,13 @@ class SystemPrinter(private val activity: Activity) {
 
     private fun columns(paperMm: Int): Int = if (paperMm == 80) 48 else 32
 
-    private fun textSize(paperMm: Int): Float = if (paperMm == 80) 9f else 8f
+    private fun textSize(paperMm: Int): Float {
+        val usable = (paperMm * PT_PER_INCH / MM_PER_INCH) - (MARGIN_PT * 2)
+        val fit = usable / (columns(paperMm) * MONO_CHAR_WIDTH)
+        return fit.coerceIn(6f, 9f)
+    }
 
-    private fun lineHeight(paperMm: Int): Float = if (paperMm == 80) 11f else 10f
+    private fun lineHeight(paperMm: Int): Float = textSize(paperMm) * 1.25f
 
     private fun pageHeightPt(): Int = (100f * PT_PER_INCH / MM_PER_INCH).roundToInt()
 
@@ -227,7 +231,8 @@ class SystemPrinter(private val activity: Activity) {
         private fun covers(ranges: Array<out PageRange>?, pageIndex: Int): Boolean {
             if (ranges == null || ranges.isEmpty()) return true
             if (ranges.any { it == PageRange.ALL_PAGES }) return true
-            return ranges.any { pageIndex >= it.start && pageIndex <= it.end }
+            val page = pageIndex + 1
+            return ranges.any { page >= it.start && page <= it.end }
         }
     }
 
@@ -236,6 +241,7 @@ class SystemPrinter(private val activity: Activity) {
         private const val PT_PER_INCH = 72f
         private const val MILS_PER_INCH = 1000f
         private const val MARGIN_PT = 8f
+        private const val MONO_CHAR_WIDTH = 0.6f
         private val CONTROL_CHARS = Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]")
     }
 }

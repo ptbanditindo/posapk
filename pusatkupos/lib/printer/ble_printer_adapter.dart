@@ -45,17 +45,16 @@ class BlePrinterAdapter extends PrinterAdapter {
       );
     }
     final results = <String, PrinterDevice>{};
-    late final StreamSubscription<List<ScanResult>> subscription;
+    StreamSubscription<List<ScanResult>>? subscription;
     try {
       subscription = FlutterBluePlus.scanResults.listen((items) {
         for (final item in items) {
           final address = item.device.remoteId.str;
           if (address.isEmpty) continue;
           final name = _nameOf(item);
-          if (name.isEmpty) continue;
           results[address] = PrinterDevice(
             connectionType: 'BLUETOOTH',
-            name: name,
+            name: name.isEmpty ? address : name,
             address: address,
             transport: 'BLE',
             detail: 'BLE',
@@ -71,9 +70,9 @@ class BlePrinterAdapter extends PrinterAdapter {
         code: 'BLE_SCAN',
       );
     } finally {
+      await subscription?.cancel();
       await FlutterBluePlus.stopScan();
     }
-    await subscription.cancel();
     final devices = results.values.toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     return devices;
@@ -84,7 +83,8 @@ class BlePrinterAdapter extends PrinterAdapter {
     await _ensurePermissions(discovery: false);
     final device = BluetoothDevice.fromId(printer.address);
     if (_device?.remoteId.str == device.remoteId.str &&
-        _characteristic != null) {
+        _characteristic != null &&
+        await device.isConnected) {
       return;
     }
     await disconnect(printer);
@@ -100,7 +100,16 @@ class BlePrinterAdapter extends PrinterAdapter {
         code: 'BLE_CONNECT',
       );
     }
-    final services = await device.discoverServices();
+    List<BluetoothService> services;
+    try {
+      services = await device.discoverServices();
+    } catch (error) {
+      await device.disconnect().catchError((_) {});
+      throw PrinterException(
+        'Gagal membaca layanan printer BLE. Detail: $error',
+        code: 'BLE_SERVICES',
+      );
+    }
     final characteristic = _writable(services);
     if (characteristic == null) {
       await device.disconnect().catchError((_) {});
@@ -139,7 +148,13 @@ class BlePrinterAdapter extends PrinterAdapter {
       );
     }
     final withoutResponse = target.properties.writeWithoutResponse;
-    const chunkSize = 180;
+    var chunkSize = 180;
+    try {
+      final mtu = await _device!.requestMtu(247);
+      if (mtu > 23) chunkSize = (mtu - 3).clamp(20, 244);
+    } catch (_) {
+      chunkSize = 20;
+    }
     for (var offset = 0; offset < payload.bytes.length; offset += chunkSize) {
       final end = (offset + chunkSize).clamp(0, payload.bytes.length);
       final chunk = payload.bytes.sublist(offset, end);

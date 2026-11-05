@@ -152,35 +152,50 @@ class PriceRules {
         );
       }
     }
+    // Diskon dialokasikan proporsional, tetapi tiap baris dibatasi agar
+    // harga akhirnya tidak jatuh di bawah modal kecuali pemilik mengizinkan.
+    // Sisa yang tidak tertampung dipindahkan ke baris lain yang masih punya
+    // ruang, sehingga total alokasi tetap sama dengan diskon nota.
+    final capacity = <int>[
+      for (final line in lines)
+        allowBelowMinimum ? line.subtotal : line.subtotal - line.batasTotal,
+    ];
+    final shares = List<int>.filled(lines.length, 0);
     var remaining = diskonCents;
+    if (bruto > 0) {
+      for (var index = 0; index < lines.length; index++) {
+        if (remaining <= 0) break;
+        final raw = diskonCents * lines[index].subtotal ~/ bruto;
+        final share = raw.clamp(0, capacity[index]).clamp(0, remaining);
+        shares[index] = share;
+        remaining -= share;
+      }
+    }
+    for (var index = lines.length - 1; index >= 0 && remaining > 0; index--) {
+      final room = capacity[index] - shares[index];
+      if (room <= 0) continue;
+      final extra = remaining < room ? remaining : room;
+      shares[index] += extra;
+      remaining -= extra;
+    }
+    if (remaining > 0) {
+      throw PriceRuleViolation(
+        'diskon_melebihi_margin',
+        'Diskon tidak dapat dialokasikan tanpa menembus batas modal.',
+      );
+    }
     var allocated = 0;
     for (var index = 0; index < lines.length; index++) {
       final line = lines[index];
-      int share;
-      if (index == lines.length - 1) {
-        share = remaining;
-      } else {
-        share = bruto == 0 ? 0 : diskonCents * line.subtotal ~/ bruto;
-        if (share > remaining) share = remaining;
-      }
-      if (share < 0) share = 0;
-      remaining -= share;
+      final share = shares[index];
       allocated += share;
       line.diskonAlokasi = share;
       final finalTotal = line.subtotal - share;
-      if (finalTotal < 0) {
-        throw PriceRuleViolation(
-          'diskon_melebihi_baris',
-          'Diskon melebihi nilai ${line.label}.',
-        );
-      }
       line.hargaFinal = finalTotal ~/ line.jumlah;
     }
     var belowMinimum = false;
     for (final line in lines) {
-      // Pembulatan ke bawah per unit tidak boleh menutupi penjualan di bawah
-      // modal: total baris tetap dibandingkan dengan total modal baris.
-      if (line.finalTotal < line.batasTotal) {
+      if (line.subtotal - line.diskonAlokasi < line.batasTotal) {
         belowMinimum = true;
       }
     }

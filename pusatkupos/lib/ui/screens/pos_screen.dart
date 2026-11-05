@@ -30,6 +30,7 @@ class _PosScreenState extends State<PosScreen> {
   final _diskon = TextEditingController();
   final _bayar = TextEditingController();
   final _garansiBulan = TextEditingController(text: '1');
+  bool _garansiEdited = false;
   final _garansiCatatan = TextEditingController();
   final _garansiBarangNilai = TextEditingController(text: '7');
   final List<JobDraft> _jobs = [];
@@ -55,6 +56,7 @@ class _PosScreenState extends State<PosScreen> {
   String _garansiBarangSatuan = 'HARI';
   bool _unitDitinggal = false;
   int _garansiDefaultBulan = 1;
+  DateTime? _jatuhTempo;
 
   Operator? get _actor => AppState.instance.operator;
 
@@ -122,6 +124,16 @@ class _PosScreenState extends State<PosScreen> {
       !AppState.instance.isOwner &&
       !_diskonInvalid &&
       _diskonCents > _maxDiscountCents;
+  bool get _diskonMelebihiTotal =>
+      !_diskonInvalid && _diskonCents > _bruto;
+  bool get _canDiscount {
+    final actor = _actor;
+    final settings = _settings;
+    if (actor == null || settings == null) return false;
+    return AppState.instance.can('diskon') &&
+        settings.roleAllows(actor.role, 'diskon');
+  }
+
   int get _total => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
   int get _bayarCents => tryParseRupiahToCents(_bayar.text) ?? 0;
   bool get _bayarInvalid =>
@@ -178,7 +190,7 @@ class _PosScreenState extends State<PosScreen> {
           )
           .toList();
       _garansiDefaultBulan = int.tryParse(defaultGaransi ?? '') ?? 1;
-      if (_garansiBulan.text == '1' && _garansiDefaultBulan != 1) {
+      if (!_garansiEdited && _garansiDefaultBulan != 1) {
         _garansiBulan.text = '$_garansiDefaultBulan';
       }
       _customerId = customerId;
@@ -303,6 +315,15 @@ class _PosScreenState extends State<PosScreen> {
       showSnack(context, 'Format diskon tidak valid.', error: true);
       return;
     }
+    if (_diskonMelebihiTotal) {
+      showSnack(
+        context,
+        'Diskon tidak boleh melebihi total tagihan '
+        '${formatRupiah(_bruto)}.',
+        error: true,
+      );
+      return;
+    }
     if (_diskonMelebihiMargin) {
       showSnack(
         context,
@@ -391,6 +412,7 @@ class _PosScreenState extends State<PosScreen> {
         _garansiCatatan.clear();
         _garansiBarang = false;
         _unitDitinggal = false;
+        _jatuhTempo = null;
       });
       if (detail != null) await _showReceipt(detail);
     } catch (error) {
@@ -555,6 +577,17 @@ class _PosScreenState extends State<PosScreen> {
     if (mounted) showSnack(context, result.message, error: !result.ok);
   }
 
+  Future<void> _pickJatuhTempo() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _jatuhTempo ?? now.add(const Duration(days: 14)),
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (picked != null) setState(() => _jatuhTempo = picked);
+  }
+
   Future<int?> _createWithApproval({
     required Operator? actor,
     required List<Map<String, Object?>> mechanics,
@@ -579,6 +612,7 @@ class _PosScreenState extends State<PosScreen> {
           diskonCents: _diskonCents,
           metodeBayar: _metode,
           bayarCents: _bayarCents,
+          jatuhTempo: (_total - _bayarCents) > 0 ? _jatuhTempo : null,
           requestId: _requestId,
           actor: actor,
           mechanic: mechanics.isEmpty
@@ -977,6 +1011,7 @@ class _PosScreenState extends State<PosScreen> {
                         child: TextField(
                           controller: _garansiBulan,
                           keyboardType: TextInputType.number,
+                          onChanged: (_) => _garansiEdited = true,
                           decoration: const InputDecoration(
                             labelText: 'Garansi (bulan)',
                             helperText: '1 bulan = 30 hari',
@@ -1048,12 +1083,14 @@ class _PosScreenState extends State<PosScreen> {
                   Expanded(
                     child: TextField(
                       controller: _diskon,
-                      enabled: AppState.instance.can('diskon'),
+                      enabled: _canDiscount,
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
                         labelText: 'Diskon (Rp)',
                         errorText: _diskonInvalid
                             ? 'Format tidak valid'
+                            : _diskonMelebihiTotal
+                            ? 'Maks. ${formatRupiah(_bruto)}'
                             : _diskonMelebihiMargin
                             ? 'Maks. ${formatRupiah(_maxDiscountCents)}'
                             : null,
@@ -1124,6 +1161,23 @@ class _PosScreenState extends State<PosScreen> {
                 'Sisa (Kredit)',
                 (_total - _bayarCents).clamp(0, _total).toInt(),
               ),
+              if ((_total - _bayarCents) > 0) ...[
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: _pickJatuhTempo,
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Jatuh tempo',
+                      suffixIcon: Icon(Icons.event_outlined),
+                    ),
+                    child: Text(
+                      _jatuhTempo == null
+                          ? 'Belum ditentukan'
+                          : dateId.format(_jatuhTempo!),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1497,6 +1551,7 @@ class _PartDialog extends StatefulWidget {
 class _PartDialogState extends State<_PartDialog> {
   final _qty = TextEditingController(text: '1');
   int? _stockId;
+  String? _error;
 
   @override
   void dispose() {
@@ -1535,7 +1590,13 @@ class _PartDialogState extends State<_PartDialog> {
           TextField(
             controller: _qty,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Qty'),
+            decoration: InputDecoration(
+              labelText: 'Qty',
+              errorText: _error,
+            ),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
           ),
           if (selected != null) ...[
             const SizedBox(height: 10),
@@ -1559,8 +1620,17 @@ class _PartDialogState extends State<_PartDialog> {
           onPressed: () {
             final item = selected;
             final qty = int.tryParse(_qty.text.trim()) ?? 0;
-            if (item == null || qty < 1) return;
-            if (qty * 1000 > item.jumlahMilli) return;
+            if (item == null || qty < 1) {
+              setState(() => _error = 'Jumlah harus lebih dari nol.');
+              return;
+            }
+            if (qty * 1000 > item.jumlahMilli) {
+              setState(
+                () => _error =
+                    'Stok tidak cukup. Tersisa ${item.jumlahLabel}.',
+              );
+              return;
+            }
             Navigator.pop(
               context,
               PartDraft(

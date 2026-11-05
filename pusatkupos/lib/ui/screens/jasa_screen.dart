@@ -271,15 +271,37 @@ class _CatalogDialogState extends State<_CatalogDialog> {
               setState(() => _error = 'Nama minimal 2 karakter.');
               return;
             }
+            final harga = tryParseRupiahToCents(_harga.text);
+            if (harga == null || harga <= 0) {
+              setState(() => _error = 'Tarif wajib diisi dan lebih dari 0.');
+              return;
+            }
+            final modalText = _modal.text.trim();
+            final modal = _isOwner
+                ? (modalText.isEmpty ? 0 : tryParseRupiahToCents(modalText))
+                : (widget.item?.hargaModalCents ?? 0);
+            if (modal == null || modal < 0) {
+              setState(() => _error = 'Modal tidak valid.');
+              return;
+            }
+            if (modal > harga) {
+              setState(() => _error = 'Modal tidak boleh melebihi tarif.');
+              return;
+            }
+            final intervalText = _interval.text.trim();
+            final interval =
+                intervalText.isEmpty ? 0 : int.tryParse(intervalText);
+            if (interval == null || interval < 0) {
+              setState(() => _error = 'Interval servis tidak valid.');
+              return;
+            }
             Navigator.pop(
               context,
               CatalogInput(
                 _nama.text.trim(),
-                tryParseRupiahToCents(_harga.text) ?? 0,
-                hargaModalCents: _isOwner
-                    ? (tryParseRupiahToCents(_modal.text) ?? 0)
-                    : (widget.item?.hargaModalCents ?? 0),
-                intervalBulan: int.tryParse(_interval.text.trim()) ?? 0,
+                harga,
+                hargaModalCents: modal,
+                intervalBulan: interval,
               ),
             );
           },

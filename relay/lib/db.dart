@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS envelopes (
   action TEXT NOT NULL DEFAULT '',
   entity_id TEXT NOT NULL DEFAULT '',
   hints_signature TEXT NOT NULL DEFAULT '',
+  key_id TEXT NOT NULL DEFAULT '',
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (owner_id, store_id, sender_device_id, seq),
   UNIQUE (owner_id, idempotency_key)
@@ -154,6 +155,9 @@ ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS entity_id TEXT NOT NULL DEFAULT '
 ''',
       '''
 ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS hints_signature TEXT NOT NULL DEFAULT ''
+''',
+      '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''
 ''',
       '''
 CREATE TABLE IF NOT EXISTS snapshots (

@@ -455,6 +455,7 @@ class _PrinterDialogState extends State<_PrinterDialog> {
       ip: _isNetwork ? _address.text.trim() : '',
       port: port,
       paperMm: _paper,
+      encoding: widget.initial.encoding,
       mode: _mode,
       transport: _transport,
       utama: _utama,

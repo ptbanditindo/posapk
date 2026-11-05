@@ -7,6 +7,7 @@ import '../core/ids.dart';
 import '../core/relay_url.dart';
 import '../sync/crypto.dart';
 import '../sync/relay_client.dart';
+import '../sync/sync_secrets.dart';
 import 'account_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
@@ -112,8 +113,8 @@ class PairingService {
     await SecureStore.instance
         .write('device.$localId.encrypt', encryption.privateKey);
     await SecureStore.instance.write('device.$localId.token', token);
-    await SecureStore.instance.write('device.current_token', token);
-    await SecureStore.instance.write('sync.relay_device_token', token);
+    await SyncSecrets.instance.write('device.current_token', token);
+    await SyncSecrets.instance.write('sync.relay_device_token', token);
     await AppDatabase.instance.setSetting('device.current_id', localId);
     await AppDatabase.instance.setSetting('sync.local_device_id', localId);
     await AppDatabase.instance.setSetting('sync.relay_device_id', relayId);

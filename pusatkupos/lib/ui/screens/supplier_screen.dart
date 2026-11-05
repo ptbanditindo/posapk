@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/license_service.dart';
 import '../../data/supplier_service.dart';
@@ -242,9 +243,10 @@ class _SupplierScreenState extends State<SupplierScreen> {
                   children: _lowStock.map((row) {
                     final status = '${row['status'] ?? 'BELUM'}';
                     final milli = row['jumlah_milli'] as int? ?? 0;
-                    final qty = milli % 1000 == 0
-                        ? '${milli ~/ 1000}'
-                        : (milli / 1000).toStringAsFixed(1);
+                    final qty = formatQuantity(
+                      milli,
+                      (row['desimal'] as num?)?.toInt() ?? 0,
+                    );
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text('${row['nama']}'),

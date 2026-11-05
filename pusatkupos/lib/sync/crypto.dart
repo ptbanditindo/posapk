@@ -9,6 +9,10 @@ String b64e(List<int> raw) => base64Url.encode(raw);
 List<int> b64d(String value) => base64Url.decode(value);
 String sha256Hex(List<int> raw) => crypto.sha256.convert(raw).toString();
 
+/// Penanda versi kunci toko. Amplop membawa penanda ini agar penerima dapat
+/// menolak kunci yang salah sebelum mencoba dekripsi (dan sebelum ack).
+String keyIdFor(List<int> storeKey) => sha256Hex(storeKey).substring(0, 16);
+
 String canonicalJson(Object? value) => jsonEncode(_sorted(value));
 Object? _sorted(Object? value) {
   if (value is Map) {

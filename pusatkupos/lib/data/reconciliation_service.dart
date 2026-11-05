@@ -19,12 +19,22 @@ class ReconciliationService {
     String dataType = 'nota',
     DatabaseExecutor? executor,
   }) async {
+    if (dataType != 'nota') {
+      // Jenis lain belum punya definisi ringkasan; jangan mengirim hash
+      // palsu yang akan memicu rekonsiliasi salah.
+      return (jumlah: 0, hash: '');
+    }
     final db = executor ?? AppDatabase.instance.db;
+    // `waktu_service` disimpan sebagai UTC; `tanggal` adalah tanggal lokal.
+    // Bandingkan dengan rentang UTC dari tengah malam lokal, bukan substr
+    // tanggal UTC (yang bergeser beberapa jam di zona waktu non-UTC).
+    final start = DateTime.parse('${tanggal}T00:00:00').toUtc();
+    final end = start.add(const Duration(days: 1));
     final rows = await db.query(
       'service_records',
       columns: ['sync_id'],
-      where: 'substr(waktu_service, 1, 10) = ?',
-      whereArgs: [tanggal],
+      where: 'waktu_service >= ? AND waktu_service < ?',
+      whereArgs: [start.toIso8601String(), end.toIso8601String()],
       orderBy: 'sync_id',
     );
     final ids = rows
@@ -45,13 +55,22 @@ class ReconciliationService {
     final db = executor ?? AppDatabase.instance.db;
     final today = _dateKey(DateTime.now());
     final last = await _setting(db, 'sync.day_digest_last_date');
-    if (last == today) return 0;
+    final lastAt = DateTime.tryParse(
+      await _setting(db, 'sync.day_digest_last_at') ?? '',
+    );
+    // Pemeriksaan penuh 30 hari cukup tiap 6 jam. Di antara itu, ringkasan
+    // hari ini tetap dihitung ulang agar koreksi siang hari ikut terkirim.
+    final full =
+        last != today ||
+        lastAt == null ||
+        DateTime.now().difference(lastAt) >= const Duration(hours: 6);
     final source = await _relayDeviceId(db);
     if (source.isEmpty) return 0;
     final store = AppDatabase.instance.activeStoreId ?? 'utama';
     var published = 0;
     final now = nowIso();
-    for (var offset = 0; offset < days; offset++) {
+    final count = full ? days : 1;
+    for (var offset = 0; offset < count; offset++) {
       final tanggal = _dateKey(
         DateTime.now().subtract(Duration(days: offset)),
       );
@@ -102,6 +121,7 @@ class ReconciliationService {
       published++;
     }
     await _setSetting(db, 'sync.day_digest_last_date', today);
+    await _setSetting(db, 'sync.day_digest_last_at', now);
     return published;
   }
 

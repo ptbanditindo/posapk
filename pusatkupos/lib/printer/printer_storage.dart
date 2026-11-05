@@ -4,6 +4,10 @@ abstract class PrinterStorage {
   Future<String?> read();
 
   Future<void> write(String data);
+
+  /// Salinan data sebelum penulisan terakhir, untuk pemulihan bila berkas
+  /// utama rusak. Penyimpanan tanpa cadangan mengembalikan null.
+  Future<String?> readBackup() async => null;
 }
 
 class MemoryPrinterStorage implements PrinterStorage {

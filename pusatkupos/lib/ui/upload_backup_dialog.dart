@@ -103,13 +103,16 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return AlertDialog(
-      title: const Text('Periksa kelengkapan cadangan'),
-      content: SizedBox(
-        width: 440,
-        child: SingleChildScrollView(child: _content(scheme)),
+    return PopScope(
+      canPop: !_busy && !_uploading,
+      child: AlertDialog(
+        title: const Text('Periksa kelengkapan cadangan'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(child: _content(scheme)),
+        ),
+        actions: _actions(),
       ),
-      actions: _actions(),
     );
   }
 

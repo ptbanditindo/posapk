@@ -483,7 +483,9 @@ class OrderService {
     final parts = <PartDraft>[];
     for (final item in items) {
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
-      final harga = (item['harga_final'] as num?)?.toInt() ?? 0;
+      final hargaFinal = (item['harga_final'] as num?)?.toInt() ?? 0;
+      final hargaTerdaftar =
+          (item['harga_jual_terdaftar'] as num?)?.toInt() ?? hargaFinal;
       final modal = (item['harga_modal'] as num?)?.toInt() ?? 0;
       if (item['jenis'] == 'part') {
         final stockSync = item['stock_sync_id'] as String? ?? '';
@@ -502,7 +504,7 @@ class OrderService {
             stockItemId: stockItem.id,
             nama: stockItem.nama,
             jumlah: jumlah,
-            hargaCents: stockItem.hargaJualCents,
+            hargaCents: hargaTerdaftar,
             modalCents: stockItem.hargaModalCents,
             intervalBulan:
                 (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
@@ -513,7 +515,7 @@ class OrderService {
           JobDraft(
             deskripsi: item['deskripsi'] as String? ?? '',
             jumlah: jumlah,
-            hargaCents: harga,
+            hargaCents: hargaTerdaftar,
             modalCents: modal,
             intervalBulan:
                 (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
@@ -527,12 +529,18 @@ class OrderService {
       (sum, part) => sum + part.subtotalCents,
     );
     final diskon = (hargaTotal + partTotal) - estimate.totalCents;
+    if (diskon < 0) {
+      throw StateError(
+        'Total estimasi lebih tinggi dari harga item terdaftar. '
+        'Periksa ulang estimasi sebelum konversi.',
+      );
+    }
     return AppDatabase.instance.createTransaction(
       jenisTransaksi: transactionOrderKerja,
       keluhan: 'Konversi estimasi ${estimate.nomorEstimasi}',
       jobs: jobs,
       parts: parts,
-      diskonCents: diskon < 0 ? 0 : diskon,
+      diskonCents: diskon,
       metodeBayar: metodeBayar,
       bayarCents: bayarCents,
       actor: actor,

@@ -149,11 +149,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   spacing: 10,
                   runSpacing: 10,
                   children: [
-                    ActionChip(
-                      avatar: const Icon(Icons.point_of_sale_outlined, size: 18),
-                      label: const Text('Kasir'),
-                      onPressed: () => widget.onNavigate(1),
-                    ),
+                    if (AppState.instance.isOwner ||
+                        (AppState.instance.operator?.canWriteMoney ?? false))
+                      ActionChip(
+                        avatar:
+                            const Icon(Icons.point_of_sale_outlined, size: 18),
+                        label: const Text('Kasir'),
+                        onPressed: () => widget.onNavigate(1),
+                      ),
                     ActionChip(
                       avatar: const Icon(Icons.people_outline, size: 18),
                       label: const Text('Pelanggan'),
@@ -164,11 +167,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       label: const Text('Stok'),
                       onPressed: () => widget.onNavigate(4),
                     ),
-                    ActionChip(
-                      avatar: const Icon(Icons.bar_chart_outlined, size: 18),
-                      label: const Text('Laporan'),
-                      onPressed: () => widget.onNavigate(7),
-                    ),
+                    if (AppState.instance.isOwner ||
+                        AppState.instance.can('lihat_laporan'))
+                      ActionChip(
+                        avatar: const Icon(Icons.bar_chart_outlined, size: 18),
+                        label: const Text('Laporan'),
+                        onPressed: () => widget.onNavigate(7),
+                      ),
                   ],
                 ),
               ),

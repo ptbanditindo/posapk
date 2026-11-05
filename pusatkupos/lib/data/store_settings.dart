@@ -382,7 +382,7 @@ class StoreSettingsService {
     DatabaseExecutor? executor,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
-    if (actor != null && !actor.isOwner) {
+    if (actor == null || !actor.isOwner) {
       throw StateError('Hanya pemilik yang boleh mengubah pengaturan toko.');
     }
     final target = executor ?? AppDatabase.instance.db;

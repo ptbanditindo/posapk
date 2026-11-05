@@ -60,7 +60,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     final debts = await EmployeeService.instance.listDebts(selected);
     final payments =
         await EmployeeService.instance.listSalaryPayments(selected);
-    if (!mounted) return;
+    if (!mounted || _selected != selected) return;
     setState(() {
       _summary = summary;
       _debts = debts;
@@ -110,7 +110,16 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
   Future<void> _paySalary() async {
     final selected = _selected;
     if (selected == null) return;
-    final bonus = tryParseRupiahToCents(_bonus.text) ?? 0;
+    final bonusText = _bonus.text.trim();
+    final bonus = bonusText.isEmpty ? 0 : tryParseRupiahToCents(bonusText);
+    if (bonus == null || bonus < 0) {
+      showSnack(
+        context,
+        'Bonus tidak valid. Isi angka rupiah atau kosongkan.',
+        error: true,
+      );
+      return;
+    }
     final ok = await confirmAction(
       context,
       title: 'Bayar gaji',

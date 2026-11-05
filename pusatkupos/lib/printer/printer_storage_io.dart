@@ -24,11 +24,26 @@ class FilePrinterStorage implements PrinterStorage {
   }
 
   @override
+  Future<String?> readBackup() async {
+    final file = await _file();
+    final backup = File('${file.path}.bak');
+    if (!await backup.exists()) return null;
+    return backup.readAsString();
+  }
+
+  @override
   Future<void> write(String data) async {
     final file = await _file();
     final temp = File('${file.path}.tmp');
+    final backup = File('${file.path}.bak');
     await temp.writeAsString(data, flush: true);
-    if (await file.exists()) await file.delete();
-    await temp.rename(file.path);
+    if (await backup.exists()) await backup.delete();
+    if (await file.exists()) await file.rename(backup.path);
+    try {
+      await temp.rename(file.path);
+    } catch (_) {
+      if (await backup.exists()) await backup.rename(file.path);
+      rethrow;
+    }
   }
 }

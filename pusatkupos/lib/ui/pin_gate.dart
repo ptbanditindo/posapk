@@ -108,7 +108,7 @@ class _PinGateState extends State<PinGate> {
         );
       }
     } catch (error) {
-      setState(() => _error = 'Gagal membuka aplikasi: $error');
+      if (mounted) setState(() => _error = 'Gagal membuka aplikasi: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

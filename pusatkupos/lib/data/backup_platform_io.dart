@@ -19,6 +19,10 @@ Future<List<int>> readFile(String path) async {
 
 Future<bool> fileExists(String path) => File(path).exists();
 
+Future<void> ensureParentDirectory(String path) async {
+  await File(path).parent.create(recursive: true);
+}
+
 /// Salinan pengaman database lama sebelum ditimpa.
 Future<String?> backupExistingDatabase(String path) async {
   final file = File(path);
@@ -48,6 +52,18 @@ Future<void> replaceDatabase(String path, String tempPath) async {
     await target.delete();
   }
   await File(tempPath).rename(path);
+}
+
+/// Lokasi sementara untuk ekspor database sebelum diarsipkan.
+Future<String> temporaryPath(String name) async {
+  final dir = await getTemporaryDirectory();
+  await dir.create(recursive: true);
+  return p.join(dir.path, name);
+}
+
+Future<void> deleteFile(String path) async {
+  final file = File(path);
+  if (await file.exists()) await file.delete();
 }
 
 Future<String> autoBackupFolder() async {

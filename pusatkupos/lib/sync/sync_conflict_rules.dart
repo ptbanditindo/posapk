@@ -76,6 +76,19 @@ class SenderProfile {
 ///   `extra_permissions` sebelum diterapkan.
 class SyncConflictRules {
   static const int maxRetries = 8;
+
+  /// Delta tetap diterapkan karena versi lokal lebih baru (HLC menang).
+  static const Set<String> supersededReasons = {'versi_lokal_lebih_baru'};
+
+  /// Data diterapkan, tetapi pemilik perlu meninjau hasilnya.
+  static const Set<String> reviewReasons = {
+    'harga_di_bawah_batas',
+    'stok_negatif',
+    'koreksi_di_bawah_batas',
+    'rekonsiliasi_beda',
+    'no_nota_bentrok',
+  };
+
   static const Set<String> priceEntities = {'harga_jasa', 'stock'};
   static const Set<String> ownerOnlyEntities = {
     'store_settings',

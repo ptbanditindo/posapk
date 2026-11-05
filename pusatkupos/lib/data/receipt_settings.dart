@@ -1,60 +1,87 @@
+import 'dart:convert';
+
 import 'app_database.dart';
+import 'receipt_template.dart';
 
-/// 25 bagian struk. Semua default tampil; nilai disimpan di app_settings
-/// dengan awalan `receipt.`.
-const receiptFields = <String, String>{
-  'tagline': 'Tagline',
-  'alamat': 'Alamat',
-  'kontak': 'Kontak',
-  'no_nota': 'Nomor nota',
-  'tanggal': 'Tanggal',
-  'kasir': 'Kasir',
-  'mekanik': 'Mekanik',
-  'pelanggan': 'Pelanggan',
-  'hp': 'Nomor HP',
-  'unit': 'Unit',
-  'keluhan': 'Keluhan',
-  'catatan': 'Catatan',
-  'jasa': 'Rincian jasa',
-  'part': 'Rincian part',
-  'total_jasa': 'Total jasa',
-  'total_part': 'Total part',
-  'diskon': 'Diskon',
-  'grand_total': 'Grand total',
-  'metode': 'Metode bayar',
-  'bayar': 'Dibayar',
-  'kembalian': 'Kembalian',
-  'status_bayar': 'Status bayar',
-  'garansi': 'Garansi',
-  'rekening': 'Rekening',
-  'footer': 'Footer',
-};
-
+/// Pengaturan struk v2. Satu JSON di `app_settings` menggantikan 25 kunci
+/// `receipt.<field>` lama. Data lama tetap dibaca sebagai migrasi satu arah.
 class ReceiptSettings {
   ReceiptSettings._();
 
   static final ReceiptSettings instance = ReceiptSettings._();
 
-  Future<Map<String, bool>> load() async {
-    final result = <String, bool>{};
-    for (final key in receiptFields.keys) {
-      final value = await AppDatabase.instance.getSetting('receipt.$key');
-      result[key] = value == null ? true : value == '1';
+  static const templateKey = 'receipt.template.v2';
+
+  Future<ReceiptTemplate> load() async {
+    final raw = await AppDatabase.instance.getSetting(templateKey);
+    if (raw != null && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          return ReceiptTemplate.fromJson(decoded.cast<String, Object?>());
+        }
+      } catch (_) {
+        // JSON rusak: pakai nilai lama agar struk tetap dapat dicetak.
+      }
     }
-    return result;
+    return _migrateLegacy();
   }
 
-  Future<void> save(String key, bool enabled) async {
-    if (!receiptFields.containsKey(key)) {
-      throw ArgumentError('Bagian struk tidak dikenal: $key');
-    }
-    await AppDatabase.instance
-        .setSetting('receipt.$key', enabled ? '1' : '0');
+  Future<void> save(ReceiptTemplate template) async {
+    template.validate();
+    await AppDatabase.instance.setSetting(
+      templateKey,
+      jsonEncode(template.toJson()),
+    );
   }
 
-  Future<void> saveAll(Map<String, bool> values) async {
-    for (final entry in values.entries) {
-      await save(entry.key, entry.value);
+  Future<void> reset() => save(ReceiptTemplate.defaults());
+
+  Future<ReceiptTemplate> _migrateLegacy() async {
+    final db = AppDatabase.instance;
+    Future<bool> toggle(String key) async =>
+        (await db.getSetting('receipt.$key') ?? '1') == '1';
+    final showTagline = await toggle('tagline');
+    final showAlamat = await toggle('alamat');
+    final showKontak = await toggle('kontak');
+    final showJasa = await toggle('jasa');
+    final showPart = await toggle('part');
+    final showWarranty = await toggle('garansi');
+    final showBank = await toggle('rekening');
+    final showFooter = await toggle('footer');
+    final meta = <String, bool>{};
+    for (final key in receiptMetaFields.keys) {
+      meta[key] = await toggle(key);
     }
+    final totals = <String, bool>{};
+    for (final key in receiptTotalFields.keys) {
+      totals[key] = await toggle(key);
+    }
+    final footerText = await db.getSetting('struk.footer');
+    final rekening = await db.getSetting('bengkel.rekening');
+    final footerLines = (footerText ?? 'Terima kasih')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+    return ReceiptTemplate(
+      showTagline: showTagline,
+      showAlamat: showAlamat,
+      showKontak: showKontak,
+      showJasa: showJasa,
+      showPart: showPart,
+      metaFields: meta,
+      totalFields: totals,
+      warrantyShowStatus: showWarranty,
+      warrantyShowNote: showWarranty,
+      bankCatatan: (rekening ?? '').trim(),
+      blockVisible: {
+        'items': showJasa || showPart,
+        'warranty': showWarranty,
+        'bank': showBank,
+        'footer': showFooter,
+      },
+      footerLines: footerLines,
+    );
   }
 }
