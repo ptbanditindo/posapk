@@ -141,16 +141,17 @@ Database dirancang ulang sebagai satu skema bersih kanonik. Tidak ada `migrateSc
 | TASK-028 | BL-02 | Penerima retur: tolak retur pada nota VOID, batasi per baris terhadap jumlah terjual dikurangi retur sebelumnya, idempoten, catat konflik | `note_sync.dart`, `sale_return_service.dart`, `sync_service.dart` | Stok/refund tidak berlipat; VOID terminal | TASK-009, TASK-025 | KRITIS |
 | TASK-029 | BL-34 | Void menandai komisi VOID, menghitung ulang pembayaran/refund, dan menampilkan status konsisten | `app_database.dart`, `note_sync.dart`, laporan komisi | Tidak ada komisi yatim pada nota VOID | TASK-006 | RENDAH |
 | TASK-030 | BL-15 | Jadikan void self-contained: terapkan refund/rekalkulasi total di cabang void secara idempoten; payment envelope tetap cadangan | `note_sync.dart`, `sync_service.dart`, `app_database.dart` | Penerima void langsung konsisten meski amplop payment tertunda | TASK-026 | SEDANG |
-| TASK-031 | BL-01 | Kirim opname absolut (`opname_absolut_milli`) + HLC; penerima menetapkan nilai absolut, bukan menjumlahkan delta; movement mencatat selisih | `app_database.dart`, `sync_service.dart`, `schema.dart` | Opname dua perangkat mengarah ke angka fisik yang sama | TASK-007 | KRITIS |
-| TASK-032 | BL-21 | Cegah stok negatif saat finalisasi atau tandai konflik yang membatalkan penjualan kedua; reservasi/aturan relay bila online | `app_database.dart`, `sync_service.dart`, `relay/lib/server.dart` | Barang terakhir tidak terjual dua kali tanpa keputusan | TASK-007, TASK-033 | SEDANG |
-| TASK-033 | BL-24 | Tetapkan dan terapkan satu kebijakan stok negatif di UI, service, dan penerima | `app_database.dart`, `stock_screen.dart`, `sync_service.dart` | Perilaku stok negatif konsisten; **kebijakan perlu keputusan bisnis** | TASK-007 | SEDANG |
+| TASK-031 | BL-01 | Kirim opname absolut (`opname_absolut_milli`) + HLC; penerima menetapkan nilai absolut, bukan menjumlahkan delta; movement mencatat selisih | `app_database.dart`, `sync_service.dart`, `schema.dart` | Opname dua perangkat mengarah ke angka fisik yang sama; kebijakan tahan-sinkron dilanjutkan di TASK-064 | TASK-007 | KRITIS |
+| TASK-032 | BL-21 | Cegah stok negatif saat finalisasi atau tandai konflik yang membatalkan penjualan kedua; reservasi/aturan relay bila online | `app_database.dart`, `sync_service.dart`, `relay/lib/server.dart` | Barang terakhir tidak terjual dua kali; pembatalan penjualan kedua mengikuti BD-13 di TASK-033 | TASK-007, TASK-033 | SEDANG |
+| TASK-033 | BL-24, BD-13 | Terapkan kebijakan BD-13: batalkan otomatis penjualan yang tiba belakangan dan membuat stok negatif; penjualan batal tidak boleh mengurangi stok, menambah piutang/kas, atau memberi komisi; simpan jejak nota dan konflik | `app_database.dart`, `stock_screen.dart`, `sync_service.dart`, `note_sync.dart` | Perilaku stok negatif konsisten; penjualan kedua tidak diterapkan diam-diam | TASK-007 | SEDANG |
 | TASK-034 | BL-04 | Simpan snapshot tarif komisi saat nota dibuat; rekalkulasi memakai snapshot; akun hilang mempertahankan nominal lama + konflik | `app_database.dart`, `schema.dart`, `models.dart` | Komisi tidak berubah surut | TASK-006 | TINGGI |
 | TASK-035 | BL-40 | Penerima retur memanggil rekalkulasi komisi berbasis snapshot secara idempoten | `note_sync.dart`, `app_database.dart` | Komisi penerima sama dengan perangkat asal | TASK-034 | RENDAH |
 | TASK-036 | BL-41 | Tangkap pelanggaran `UNIQUE(kode)` saat apply; catat konflik `kode_bentrok`; jangan menahan amplop independen; opsi gabung/renumber | `sync_service.dart`, `sync_conflict_rules.dart`, `app_database.dart` | Satu kode bentrok tidak menghentikan seluruh sinkronisasi | TASK-002, TASK-011 | SEDANG |
 | TASK-037 | BL-16 | Merge pelanggan memindahkan `service_records.customer_id` (termasuk unit NULL), unit, follow-up, WA, lalu enqueue semua perubahan | `app_database.dart`, `customer` service/UI | Riwayat pelanggan tujuan lengkap | TASK-002 | SEDANG |
 | TASK-038 | BL-33 | Perkuat kode perangkat (lebih panjang/acak) dan sertakan counter dokumen dalam snapshot; nomor internal berbasis ULID | `app_database.dart`, `snapshot_sync.dart`, `schema.dart` | Nomor dokumen tidak bentrok antardevice | TASK-011 | RENDAH |
+| TASK-064 | BL-01, BD-03 | Tahan opname sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data; tandai opname menunggu, beri peringatan perangkat offline 24 jam, terapkan opname sementara + catatan setelah 7 hari, lalu rekonsiliasi otomatis saat perangkat kembali | `app_database.dart`, `sync_service.dart`, `stock_screen.dart`, `relay/lib/server.dart` | Opname tidak mendahului data yang belum masuk; pemilik melihat perangkat tertinggal dan hasil rekonsiliasi | TASK-031 | SEDANG |
 
-**Kriteria keluar fase:** retur/void/pelunasan/gaji/opname memiliki validasi penerima dan idempotensi; stok dan kas dapat direkonsiliasi; komisi memakai snapshot; konflik tidak menahan antrean.
+**Kriteria keluar fase:** retur/void/pelunasan/gaji/opname memiliki validasi penerima dan idempotensi; opname menunggu sinkron sesuai BD-03; penjualan kedua yang membuat stok negatif dibatalkan otomatis sesuai BD-13; stok dan kas dapat direkonsiliasi; komisi memakai snapshot; konflik tidak menahan antrean.
 
 ---
 
@@ -208,16 +209,34 @@ Database dirancang ulang sebagai satu skema bersih kanonik. Tidak ada `migrateSc
 
 ---
 
+### MODUL PEMBELIAN DAN UTANG SUPPLIER (BD-12)
+
+**Tujuan:** menambah pembelian bernilai dan utang supplier sebagai modul baru di luar 42 temuan audit. Seluruh tugas modul ini wajib selesai sebelum TASK-061.
+
+| ID | Uraian | Berkas/modul | Hasil | Ketergantungan | Prioritas |
+|---|---|---|---|---|---|
+| TASK-065 | Skema pembelian: `supplier_purchases`, `supplier_purchase_items`, `supplier_payments`; nomor pembelian unik per toko, status, jatuh tempo, total/sisa, snapshot supplier/barang, HLC, soft-delete; indeks/constraint; selaraskan skema PostgreSQL relay dan daftar tabel snapshot/backup | `schema.dart`, `relay/lib/db.dart`, `snapshot_sync.dart` | Tabel pembelian/utang konsisten di SQLite, relay, dan snapshot | TASK-001, TASK-002, TASK-005 | TINGGI |
+| TASK-066 | Izin dan aktor: `lihat_pembelian`, `buat_pembelian`, `bayar_utang`; operator wajib; **tidak semua role** — default hanya pemilik, izin diberikan eksplisit per peran; viewer, kasir, dan mekanik tidak otomatis; pemetaan peran relay; menu dan aksi hanya muncul bila berizin | `permissions.dart`, `access_control.dart`, `store_settings.dart`, `relay/lib/auth_rules.dart`, `home_shell.dart` | Hanya peran berizin yang dapat melihat/membuat/membayar pembelian; akses default pemilik | TASK-010, TASK-013 | TINGGI |
+| TASK-067 | Service pembelian: buat nota + baris, stok masuk lewat ledger bersumber pembelian, total dari baris, tunai/kredit, jatuh tempo, utang awal, audit, idempoten `request_id` | `purchase_service.dart` (baru), `app_database.dart`, `models.dart`, `supplier_service.dart` | Pembelian menambah stok dan utang secara atomik dan dapat diaudit | TASK-065, TASK-066, TASK-007 | TINGGI |
+| TASK-068 | Pembayaran utang supplier: `request_id` unik, tidak boleh melebihi sisa, rekalkulasi sisa dari ledger pembayaran, kas keluar, konflik, larangan VOID bila sudah ada pembayaran atau stok tidak cukup untuk dikembalikan | `purchase_service.dart`, `app_database.dart` | Utang tidak negatif; pembayaran tidak ganda; VOID aman | TASK-067, TASK-005 | TINGGI |
+| TASK-069 | UI pembelian: daftar nota pembelian, form barang/qty/modal, status tunai/kredit, daftar utang + jatuh tempo, dialog pembayaran, laporan pembelian/kas keluar/utang, aksi sesuai izin | `purchases_screen.dart` (baru), `home_shell.dart`, `reports_screen.dart`, `models.dart` | Pemilik/karyawan berizin dapat mengelola pembelian dan utang dari aplikasi | TASK-067, TASK-068 | SEDANG |
+| TASK-070 | Sinkronisasi pembelian: amplop `supplier_purchase`, `supplier_purchase_item`, `supplier_payment`; idempoten, validasi izin/akun, ledger stok/kas, rekalkulasi utang, konflik nomor ganda/pembayaran berlebih/VOID setelah bayar; ikut snapshot | `sync_service.dart`, `sync_conflict_rules.dart`, `sync_conflicts_screen.dart`, `snapshot_sync.dart` | Pembelian/utang konvergen antarperangkat tanpa penggandaan | TASK-065, TASK-067, TASK-068, TASK-049 | TINGGI |
+| TASK-071 | Backup/restore: tabel pembelian/utang menjadi tabel wajib; verifikasi restore; tolak salinan tanpa tabel tersebut | `backup_service.dart`, `snapshot_sync.dart` | Pembelian dan utang ikut backup/restore/snapshot | TASK-065, TASK-052, TASK-054 | SEDANG |
+
+**Kriteria keluar modul:** nota pembelian menambah stok dan utang secara atomik; pembayaran utang idempoten dan tidak melebihi sisa; hanya peran berizin yang dapat melihat/membuat/membayar; sinkronisasi dan backup membawa seluruh data pembelian; pengujian modul masuk TASK-061.
+
+---
+
 ### FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, DAN LAPORAN
 
 | ID | Uraian | Berkas | Hasil | Ketergantungan |
 |---|---|---|---|---|
-| TASK-060 | Sapu konsistensi statis: semua pemanggil, query, kolom, dan tipe setelah perubahan skema | seluruh `pusatkupos/lib`, `relay/lib` | Tidak ada referensi mati/kolom hilang | Semua fase |
-| TASK-061 | Jalankan pengujian akhir sesuai teknologi repo (setelah seluruh implementasi selesai): test suite, SQLite, PostgreSQL relay, offline/online, sinkronisasi dua arah, konflik dua perangkat, retur/void/stok/payroll/pembayaran/laporan, backup/restore | `pusatkupos`, `relay` | Seluruh pengujian lulus atau tercatat | TASK-060 |
+| TASK-060 | Sapu konsistensi statis: semua pemanggil, query, kolom, dan tipe setelah perubahan skema | seluruh `pusatkupos/lib`, `relay/lib` | Tidak ada referensi mati/kolom hilang | Semua fase dan modul pembelian |
+| TASK-061 | Jalankan pengujian akhir sesuai teknologi repo (setelah seluruh implementasi selesai): test suite, SQLite, PostgreSQL relay, offline/online, sinkronisasi dua arah, konflik dua perangkat, retur/void/stok/payroll/pembayaran/laporan, pembelian/utang supplier, backup/restore | `pusatkupos`, `relay` | Seluruh pengujian lulus atau tercatat | TASK-060, TASK-065..071 |
 | TASK-062 | Build APK dan verifikasi akhir | `pusatkupos` | APK terbentuk | TASK-061 |
 | TASK-063 | Tulis `IMPLEMENTATION_FINAL_REPORT.md` | root | Laporan akhir lengkap | TASK-061, TASK-062 |
 
-> TASK-061 sampai TASK-063 **tidak boleh dimulai** sebelum seluruh tugas FASE 1–6 berstatus selesai.
+> TASK-061 sampai TASK-063 **tidak boleh dimulai** sebelum seluruh tugas FASE 1–6 dan modul pembelian TASK-065–071 berstatus selesai.
 
 ---
 
@@ -225,7 +244,7 @@ Database dirancang ulang sebagai satu skema bersih kanonik. Tidak ada `migrateSc
 
 ```text
 TASK-001 (skema bersih)
-  ├─ TASK-002 (master) ─ TASK-007 (stock ledger) ─ TASK-031/032/033
+  ├─ TASK-002 (master) ─ TASK-007 (stock ledger) ─ TASK-031/032/033/064
   ├─ TASK-003 (nota) ─ TASK-004 (baris) ─ TASK-006 (komisi) ─ TASK-034/035
   │     └─ TASK-005 (pembayaran) ─ TASK-025/026/030
   ├─ TASK-008 (gaji) ─ TASK-027
@@ -235,37 +254,44 @@ TASK-001 (skema bersih)
 TASK-013 (actor wajib) ─ TASK-014/017/018
 TASK-039 (total efektif) ─ TASK-041/043/044/045
 TASK-054 (restore atomik) ─ TASK-055/057
+TASK-065 (skema pembelian) ─ TASK-067 (service pembelian) ─ TASK-068 (pembayaran utang)
+TASK-010/013 ─ TASK-066 (izin pembelian) ─ TASK-067
+TASK-067/068 ─ TASK-069 (UI pembelian)
+TASK-065/067/068 + TASK-049 ─ TASK-070 (sync pembelian)
+TASK-065 + TASK-052/054 ─ TASK-071 (backup pembelian)
 ```
 
-Tidak ada tugas yang menunggu fase berikutnya kecuali yang tercantum di atas. Tugas tanpa ketergantungan dapat dikerjakan lebih dulu.
+Tidak ada tugas yang menunggu fase berikutnya kecuali yang tercantum di atas. Modul pembelian TASK-065 sampai TASK-071 harus selesai sebelum TASK-061. Tugas tanpa ketergantungan dapat dikerjakan lebih dulu.
 
 ---
 
-## 5. Keputusan bisnis yang belum final
+## 5. Keputusan bisnis
 
-Item berikut ditandai **`BLOCKED — NEEDS BUSINESS DECISION`**. Implementasi hanya menggunakan default konservatif yang tidak merusak data; keputusan final tetap milik pemilik.
+Keputusan pemilik per **2026-11-07** dicatat pada kolom terakhir. BD-11 masih memakai default konservatif dan belum boleh dianggap final.
 
-| Kode | Pertanyaan | Default konservatif yang dipakai sementara | Tugas |
-|---|---|---|---|
-| BD-01 | Apakah retur boleh melebihi qty terjual per baris (setelah retur sebelumnya)? | Tidak; total retur per baris ≤ qty terjual | TASK-028 |
-| BD-02 | Apakah retur pada nota VOID boleh? | Tidak; VOID terminal | TASK-028 |
-| BD-03 | Apakah opname absolut menang atas penjualan yang belum tersinkron? | Opname dengan HLC lebih baru menang; konflik dicatat | TASK-031 |
-| BD-04 | Apakah pelunasan yang melebihi sisa menjadi saldo pelanggan atau ditolak? | Ditolak; kelebihan menjadi konflik | TASK-026 |
-| BD-05 | Apakah satu siklus gaji hanya boleh dibayar sekali secara global? | Ya; pembayaran kedua menjadi konflik | TASK-027 |
-| BD-06 | Komisi memakai tarif saat nota atau saat pembayaran? | Tarif saat nota (snapshot) | TASK-034 |
-| BD-07 | Apakah akun karyawan ikut snapshot dan dibuat saat login? | Ya, tanpa kredensial | TASK-024 |
-| BD-08 | Apakah viewer boleh menulis ke salinan lokal? | Tidak; viewer read-only | TASK-020 |
-| BD-09 | Definisi "pendapatan hari ini": bruto, neto retur, atau kas? | Tampilkan ketiganya dengan label jelas | TASK-043 |
-| BD-10 | Kode barang unik global per owner atau boleh renumber otomatis? | Unik per toko; konflik dicatat, tidak memblokir antrean | TASK-036 |
-| BD-11 | Apakah perubahan status follow-up boleh menghapus tanggal servis/janji bayar? | Tidak; tanggal dipertahankan kecuali status baru membutuhkan dan dikonfirmasi | TASK-018 |
-| BD-12 | Apakah ada modul pembelian bernilai/utang supplier? | Tidak ada; tidak ada tugas pembelian baru | — |
-| BD-13 | Bila dua perangkat menjual barang terakhir sehingga stok menjadi negatif, apakah penjualan kedua dibatalkan, dipenuhi lewat stok masuk, atau dibiarkan negatif? | Penjualan tidak dibatalkan otomatis: penulisan lokal menolak stok negatif, penerima tetap menerapkan penjualan sah dan mencatat konflik `stok_negatif` untuk ditinjau pemilik | TASK-032, TASK-033 |
+| Kode | Pertanyaan | Default konservatif | Keputusan pemilik (2026-11-07) | Tugas |
+|---|---|---|---|---|
+| BD-01 | Apakah retur boleh melebihi qty terjual per baris (setelah retur sebelumnya)? | Tidak; total retur per baris ≤ qty terjual | **Dikonfirmasi**: tetap. Retur tidak boleh melebihi qty terjual per baris. | TASK-028 |
+| BD-02 | Apakah retur pada nota VOID boleh? | Tidak; VOID terminal | **Dikonfirmasi**: tetap. Nota VOID tidak boleh diretur. | TASK-028 |
+| BD-03 | Apakah opname absolut menang atas penjualan yang belum tersinkron? | Opname dengan HLC lebih baru menang; konflik dicatat | **Dipilih (b)**: opname ditahan sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data. Perangkat yang offline 24 jam diberi peringatan agar segera tersambung; setelah 7 hari opname diterapkan sebagai opname sementara dengan catatan perangkat yang belum sinkron, lalu direkonsiliasi otomatis saat perangkat kembali. | TASK-031, TASK-064 |
+| BD-04 | Apakah pelunasan yang melebihi sisa menjadi saldo pelanggan atau ditolak? | Ditolak; kelebihan menjadi konflik | **Dikonfirmasi**: tetap. Kelebihan ditolak dan dicatat sebagai konflik. | TASK-026 |
+| BD-05 | Apakah satu siklus gaji hanya boleh dibayar sekali secara global? | Ya; pembayaran kedua menjadi konflik | **Dikonfirmasi**: tetap. | TASK-027 |
+| BD-06 | Komisi memakai tarif saat nota atau saat pembayaran? | Tarif saat nota (snapshot) | **Dikonfirmasi**: tetap. Komisi memakai tarif yang berlaku saat nota dibuat. | TASK-034 |
+| BD-07 | Apakah akun karyawan ikut snapshot dan dibuat saat login? | Ya, tanpa kredensial | **Dikonfirmasi**: tetap. | TASK-024 |
+| BD-08 | Apakah viewer boleh menulis ke salinan lokal? | Tidak; viewer read-only | **Dikonfirmasi dengan penegasan**: viewer dipakai pemilik untuk melihat ringkasan dan mengelola akun/akses karyawan (tambah, ubah, nonaktifkan, ubah akses) melalui mode ringkasan owner. Pembukuan (nota, stok, pembayaran, retur, gaji, pengaturan toko) tetap read-only. | TASK-020 |
+| BD-09 | Definisi "pendapatan hari ini": bruto, neto retur, atau kas? | Tampilkan ketiganya dengan label jelas | **Dikonfirmasi**: tetap. | TASK-043 |
+| BD-10 | Kode barang unik global per owner atau boleh renumber otomatis? | Unik per toko; konflik dicatat, tidak memblokir antrean | **Dipilih (a)**: tetap unik per toko. Barang kedua masuk dengan kode pembeda dan konflik dicatat agar pemilik menggabungkan atau mengganti kode. | TASK-036 |
+| BD-11 | Apakah perubahan status follow-up boleh menghapus tanggal servis/janji bayar? | Tidak; tanggal dipertahankan kecuali status baru membutuhkan dan dikonfirmasi | **Belum diputuskan**; default sementara dipertahankan. | TASK-018 |
+| BD-12 | Apakah ada modul pembelian bernilai/utang supplier? | Tidak ada; tidak ada tugas pembelian baru | **Diputuskan**: ya, tambahkan modul pembelian bernilai dan utang supplier. Cakupan: nota pembelian, stok masuk, pembelian tunai/kredit, daftar utang dan jatuh tempo, pembayaran utang, laporan pembelian/kas keluar/utang, sinkronisasi, dan backup. Retur pembelian belum termasuk sampai ada keputusan terpisah. **Tidak semua role**: default hanya pemilik; izin `lihat_pembelian`, `buat_pembelian`, dan `bayar_utang` diberikan eksplisit per peran; viewer, kasir, dan mekanik tidak otomatis mendapat akses. Pembayaran tidak boleh melebihi sisa; pembelian VOID ditolak bila sudah ada pembayaran atau stok tidak cukup untuk dikembalikan. | TASK-065 sampai TASK-071 |
+| BD-13 | Bila dua perangkat menjual barang terakhir sehingga stok menjadi negatif, apakah penjualan kedua dibatalkan, dipenuhi lewat stok masuk, atau dibiarkan negatif? | Penjualan tidak dibatalkan otomatis: penulisan lokal menolak stok negatif, penerima tetap menerapkan penjualan sah dan mencatat konflik `stok_negatif` untuk ditinjau pemilik | **Diputuskan**: penjualan yang tiba belakangan dan membuat stok negatif **dibatalkan otomatis**. Penjualan itu tidak boleh mengurangi stok, menambah piutang/kas, atau memberi komisi; nota asal tetap tersimpan sebagai jejak dan konflik pembatalan dicatat untuk ditinjau pemilik. | TASK-032, TASK-033 |
 
 ---
 
 ## 6. Definisi selesai
 
 - Seluruh 42 temuan memiliki tugas yang tercatat dan tidak ada yang dihapus diam-diam.
+- Keputusan pemilik BD-01 sampai BD-10, BD-12, dan BD-13 diterapkan; BD-11 tetap memakai default sampai diputuskan.
+- Modul pembelian dan utang supplier (TASK-065–071) selesai dan tercakup pengujian akhir.
 - Skema bersih baru dibuat tanpa migrasi data lama dan tanpa data palsu.
 - SQLite dan PostgreSQL relay memakai kontrak data yang konsisten.
 - Tidak ada operasi uang/stok/gaji/retur/pembayaran yang menggandakan atau menimpa tanpa konflik eksplisit.

@@ -8,17 +8,17 @@
 
 ## STATUS PROGRES
 
-Total tugas: 63
+Total tugas: 71
 
 - Selesai: 59
-- Belum selesai: 3
-- Terhambat: 1
+- Belum selesai: 12
+- Terhambat: 0
 
-Fase aktif: FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN (FASE 1–6 dan TASK-060 selesai; pengujian menunggu instruksi)
+Fase aktif: FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN (FASE 1–6 dan TASK-060 selesai; TASK-033, TASK-064, modul pembelian TASK-065–071, dan pengujian menunggu pengerjaan)
 
 Tugas terakhir selesai: TASK-060
 
-Tugas berikutnya: TASK-061 (menunggu izin menjalankan pengujian; TASK-033 tertahan BD-13)
+Tugas berikutnya: TASK-064 (opname BD-03), TASK-033 (pembatalan penjualan kedua BD-13), modul pembelian TASK-065–071 (BD-12), lalu TASK-061 (menunggu izin menjalankan pengujian)
 
 ---
 
@@ -72,12 +72,13 @@ Tidak ada.
 - [x] TASK-030 — Void self-contained (BL-15).
 - [x] TASK-031 — Opname absolut lintas perangkat (BL-01).
 - [x] TASK-032 — Stok bersamaan: cegah/konflik (BL-21).
-- [!] TASK-033 — Kebijakan stok negatif konsisten (BL-24) — `BLOCKED — NEEDS BUSINESS DECISION` (BD-13). Default konservatif sudah diterapkan: tulis lokal menolak stok negatif, penerima mempertahankan penjualan sah dan mencatat konflik `stok_negatif` (status review) yang menyebut nota/barang/saldo; hitungan dashboard tidak lagi menggandakan barang negatif dengan konfliknya. Keputusan akhir (batalkan penjualan kedua / penuhi lewat stok masuk / biarkan negatif) menunggu pemilik.
+- [ ] TASK-033 — Kebijakan stok negatif konsisten (BL-24). Keputusan pemilik BD-13 (2026-11-07): penjualan yang tiba belakangan dan membuat stok negatif **dibatalkan otomatis**. Penjualan batal tidak boleh mengurangi stok, menambah piutang/kas, atau memberi komisi; nota asal tetap tersimpan sebagai jejak dan konflik pembatalan dicatat untuk ditinjau. Implementasi belum dikerjakan.
 - [x] TASK-034 — Rekalkulasi komisi memakai snapshot (BL-04).
 - [x] TASK-035 — Penerima retur merekalkulasi komisi (BL-40).
 - [x] TASK-036 — Konflik kode barang tidak memblokir antrean (BL-41).
 - [x] TASK-037 — Merge pelanggan memindahkan semua referensi (BL-16).
 - [x] TASK-038 — Kode perangkat/counter dokumen kuat (BL-33).
+- [ ] TASK-064 — Opname menunggu sinkron (BD-03): tahan opname sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data; tandai opname menunggu; beri peringatan perangkat offline 24 jam; terapkan opname sementara + catatan setelah 7 hari; rekonsiliasi otomatis saat perangkat kembali.
 
 ## FASE 4 — PERHITUNGAN, TAMPILAN, DAN LAPORAN
 
@@ -109,6 +110,18 @@ Tidak ada.
 - [x] TASK-058 — Waktu server tepercaya untuk lisensi (BL-29).
 - [x] TASK-059 — Relay memeriksa lisensi pada `_deviceAuth` (BL-35).
 
+## MODUL PEMBELIAN DAN UTANG SUPPLIER (BD-12)
+
+Modul baru di luar 42 temuan audit. Wajib selesai sebelum TASK-061.
+
+- [ ] TASK-065 — Skema `supplier_purchases`, `supplier_purchase_items`, `supplier_payments`; constraint/index, snapshot supplier/barang, HLC; selaras dengan relay dan snapshot.
+- [ ] TASK-066 — Izin `lihat_pembelian`, `buat_pembelian`, `bayar_utang`; operator wajib; **tidak semua role** — default pemilik, izin eksplisit per peran, viewer/kasir/mekanik tidak otomatis; pemetaan peran relay; menu dan aksi sesuai izin.
+- [ ] TASK-067 — Service pembelian: nota + baris, stok masuk lewat ledger, total, tunai/kredit, jatuh tempo, utang awal, audit, idempoten.
+- [ ] TASK-068 — Pembayaran utang supplier: idempoten, tidak melebihi sisa, rekalkulasi, kas keluar, konflik, aturan VOID aman.
+- [ ] TASK-069 — UI pembelian dan utang: daftar nota, form barang/qty/modal, daftar utang + jatuh tempo, dialog pembayaran, laporan.
+- [ ] TASK-070 — Sinkronisasi `supplier_purchase`/`supplier_purchase_item`/`supplier_payment`; validasi izin, ledger stok/kas, rekalkulasi utang, konflik.
+- [ ] TASK-071 — Backup/restore dan snapshot memuat tabel pembelian/utang sebagai tabel wajib.
+
 ## FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN
 
 - [x] TASK-060 — Sapu konsistensi statis seluruh pemanggil/query.
@@ -120,7 +133,21 @@ Tidak ada.
 
 ## CATATAN KEPUTUSAN BISNIS
 
-Lihat **Bagian 5** `IMPLEMENTATION_PLAN.md` (BD-01 s.d. BD-12). Default konservatif dipakai sementara dan ditandai di kode; keputusan final belum diambil.
+Keputusan pemilik per **2026-11-07**. Rincian ada di **Bagian 5** `IMPLEMENTATION_PLAN.md`.
+
+- **BD-01** dikonfirmasi: retur tidak boleh melebihi qty terjual per baris.
+- **BD-02** dikonfirmasi: nota VOID terminal dan tidak boleh diretur.
+- **BD-03** dipilih (b): opname ditahan sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data. Perangkat offline 24 jam diberi peringatan; setelah 7 hari opname diterapkan sebagai opname sementara dengan catatan perangkat yang belum sinkron, lalu direkonsiliasi otomatis saat perangkat kembali. Implementasi: TASK-064.
+- **BD-04** dikonfirmasi: pelunasan melebihi sisa ditolak dan dicatat sebagai konflik.
+- **BD-05** dikonfirmasi: satu siklus gaji hanya dibayar sekali; pembayaran kedua menjadi konflik.
+- **BD-06** dikonfirmasi: komisi memakai tarif saat nota dibuat (snapshot).
+- **BD-07** dikonfirmasi: akun karyawan ikut snapshot tanpa kredensial.
+- **BD-08** dikonfirmasi dengan penegasan: viewer dipakai pemilik untuk melihat ringkasan dan mengelola akun/akses karyawan melalui mode ringkasan owner; pembukuan tetap read-only.
+- **BD-09** dikonfirmasi: dashboard menampilkan omzet bruto, omzet neto retur, dan kas diterima dengan label jelas.
+- **BD-10** dipilih (a): kode barang unik per toko; kode bentrok diberi kode pembeda dan dicatat sebagai konflik.
+- **BD-13** diputuskan: penjualan yang tiba belakangan dan membuat stok negatif dibatalkan otomatis, dengan jejak nota dan konflik tetap dicatat. Implementasi: TASK-033.
+- **BD-11** belum diputuskan; default sementara: tanggal follow-up lama dipertahankan.
+- **BD-12** diputuskan: tambahkan modul pembelian bernilai dan utang supplier. Cakupan: nota pembelian, stok masuk, tunai/kredit, daftar utang + jatuh tempo, pembayaran utang, laporan, sinkronisasi, dan backup. **Tidak semua role**: default hanya pemilik, izin diberikan eksplisit per peran; viewer/kasir/mekanik tidak otomatis. Retur pembelian belum termasuk sampai ada keputusan terpisah. Implementasi: TASK-065 sampai TASK-071.
 
 ---
 
@@ -128,7 +155,7 @@ Lihat **Bagian 5** `IMPLEMENTATION_PLAN.md` (BD-01 s.d. BD-12). Default konserva
 
 | Tanggal | Tugas | Berkas diubah | Ringkasan |
 |---|---|---|---|
-| 2026-11-07 | Perencanaan | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Memetakan 42 temuan menjadi 63 tugas dalam 7 fase; belum ada source code yang diubah. |
+| 2026-11-07 | Perencanaan | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Memetakan 42 temuan menjadi 63 tugas dalam 7 fase; TASK-064 dan modul pembelian TASK-065–071 ditambahkan kemudian pada pembaruan keputusan bisnis; belum ada source code yang diubah. |
 | 2026-11-07 | TASK-001 | `pusatkupos/lib/data/schema.dart`, `pusatkupos/lib/data/app_database.dart` | Skema bersih kanonik, `schemaVersion = 1`, seluruh migrasi lama dihapus, database versi lama ditolak. |
 | 2026-11-07 | TASK-002..009, 019, 020, 037 (parsial) | `app_database.dart`, `sale_return_service.dart`, `nota_adjustment_service.dart`, `employee_service.dart`, `employee_auth_service.dart`, `account_service.dart`, `operator.dart`, `permissions.dart`, `access_control.dart`, `app_state.dart`, `schema.dart` | Normalisasi pelanggan, ledger stok/kas, snapshot komisi, total efektif, VOID terminal, idempotensi retur/pelunasan, kunci siklus gaji, akun lokal + akses toko + viewer, merge pelanggan menyeluruh. Analisis statis `dart analyze lib`: tidak ada issue. |
 | 2026-11-07 | TASK-013 | `pusatkupos/lib/data/app_database.dart` | `_requireActor` kini mengembalikan `Operator` dan mewajibkan identitas pada `createTransaction`, `saveStockItem`, `stockIn`, `stockOut`, `opname`, `voidRecord`, `settleReceivable`, `claimWarranty`; seluruh jejak tulis memakai `actor.label`/`actor.employeeId` tanpa fallback "Pemilik". Analisis statis `dart analyze lib`: tidak ada issue. |
@@ -187,3 +214,5 @@ Lihat **Bagian 5** `IMPLEMENTATION_PLAN.md` (BD-01 s.d. BD-12). Default konserva
 | 2026-11-07 | TASK-056 | `pusatkupos/lib/ui/screens/settings_screen.dart`, `pusatkupos/lib/data/backup_service.dart` | Layar Pengaturan tidak lagi memuat passphrase backup ke kolom teks: kolom kini hanya untuk mengisi passphrase baru (selalu tersembunyi) dan menampilkan status apakah passphrase sudah tersimpan, tanpa tombol lihat. Menyalin passphrase tersimpan kini memerlukan PIN pemilik (diverifikasi lewat `PinService`, termasuk penanganan lockout) dan hasilnya hanya masuk clipboard, bukan layar; bila PIN belum diatur, penyalinan ditolak dan pemilik diarahkan membuat PIN atau mengganti passphrase. `BackupSettings` hanya membawa penanda `passphraseConfigured`, bukan nilai rahasianya. Analisis statis: tidak ada issue. |
 | 2026-11-07 | TASK-055 | `pusatkupos/lib/data/backup_service.dart`, `pusatkupos/lib/data/backup_platform_io.dart`, `pusatkupos/lib/data/backup_platform_stub.dart` | Restore kini menolak berkas arsip maupun total isi hasil dekompresi di atas 512 MB sebelum payload dibaca, memakai ukuran deklarasi ZIP agar arsip besar tidak mengisi memori. Restore multi-toko menjumlahkan seluruh payload terdekripsi dan menolak bila melewati batas agregat yang sama dengan pembuatan arsip. Sebelum menulis, ruang disk volume tujuan diperiksa (`fileSize`/`freeDiskBytes`; best-effort pada platform yang tidak menyediakan info) dengan kebutuhan staging + pengganti + data lama + salinan pengaman. Seluruh berkas staging kini berada di direktori toko tujuan (`.restore.plain`/`.restore.tmp`), semua toko diverifikasi sebelum satu pun diganti, dan staging dibersihkan bila salah satu toko ditolak; pemulihan startup juga membersihkan sisa `.restore.plain`. Analisis statis: tidak ada issue. |
 | 2026-11-07 | TASK-054 | `pusatkupos/lib/data/backup_platform_io.dart`, `pusatkupos/lib/data/backup_platform_stub.dart`, `pusatkupos/lib/data/backup_service.dart`, `pusatkupos/lib/data/app_database.dart` | Penggantian database hasil restore kini dua tahap: berkas baru di-flush, berkas lama di-rename ke `<path>.old`, lalu berkas baru di-rename ke path aktif; `.old` baru dibuang oleh `commitReplacedDatabase` setelah integritas database diverifikasi, dan `rollbackReplacedDatabase` mengembalikan berkas lama bila verifikasi gagal. Penanda `<path>.restore.ok` membedakan crash setelah verifikasi dari crash sebelum verifikasi. Setiap pembukaan database menjalankan `recoverInterruptedRestore`: memulihkan `.old` yang tertinggal (termasuk saat path aktif hilang), membersihkan sisa `.old` yang sudah terverifikasi, memakai salinan pengaman `.bak-*` terbaru bila database aktif hilang, dan tidak pernah mempromosikan `.restore.tmp` yang belum lengkap. Restore multi-toko memakai mekanisme yang sama per toko dan mengembalikan seluruh toko yang sudah diganti bila salah satu gagal. Analisis statis: tidak ada issue. |
+| 2026-11-07 | Keputusan bisnis | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Mencatat keputusan pemilik BD-01 sampai BD-10 dan BD-13; BD-11 masih pending. Menambahkan TASK-064 untuk kebijakan opname menunggu sinkron; TASK-033 dibuka kembali untuk pembatalan otomatis penjualan kedua. Belum ada source code yang diubah. |
+| 2026-11-07 | BD-12 | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | BD-12 diputuskan: menambahkan modul pembelian bernilai dan utang supplier. Akses tidak untuk semua role: default hanya pemilik, izin diberikan eksplisit per peran, viewer/kasir/mekanik tidak otomatis. Menambahkan TASK-065 sampai TASK-071 (skema, izin, service, pembayaran utang, UI, sinkronisasi, backup) dan memasukkan modul ke syarat TASK-061. Belum ada source code yang diubah. |
