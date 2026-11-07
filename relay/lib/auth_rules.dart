@@ -37,6 +37,15 @@ const Map<String, Set<String>> baseRolePermissions = {
     'followup',
   },
   'MEKANIK': {'ubah_status'},
+  'SUPERVISOR': {
+    'buat_nota',
+    'buat_estimasi',
+    'buat_order',
+    'ubah_status',
+    'ubah_stok',
+    'koreksi',
+    'followup',
+  },
   'KEDUANYA': {
     'buat_nota',
     'buat_estimasi',
@@ -53,11 +62,13 @@ bool employeeEntityAllowed({
   required String action,
   required String roleBase,
   required Set<String> extras,
+  bool explicit = false,
 }) {
   if (entity.isEmpty || action.isEmpty) return false;
   bool allowed(String permission) =>
       extras.contains(permission) ||
-      (baseRolePermissions[roleBase]?.contains(permission) ?? false);
+      (!explicit &&
+          (baseRolePermissions[roleBase]?.contains(permission) ?? false));
   if (entity == 'supplier_followup') return allowed('followup');
   if (entity == 'nota') {
     if (action == 'void') return allowed('void');

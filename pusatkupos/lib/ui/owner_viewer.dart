@@ -11,6 +11,7 @@ import '../core/money.dart';
 import '../core/summary_file_stub.dart'
     if (dart.library.io) '../core/summary_file_io.dart'
     if (dart.library.html) '../core/summary_file_web.dart';
+import '../data/access_control.dart';
 import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/device_service.dart';
@@ -20,6 +21,7 @@ import '../data/models.dart';
 import '../data/owner_access_api.dart';
 import '../data/secure_store.dart';
 import '../data/session_service.dart';
+import '../data/store_settings.dart';
 import '../sync/crypto.dart';
 import '../sync/sync_service.dart';
 import 'entry_gate.dart';
@@ -407,14 +409,26 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
   }
 
   Future<void> _editAccount([Map<String, Object?>? account]) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!mounted) return;
     final username = TextEditingController(text: '${account?['username'] ?? ''}');
     final nama = TextEditingController(text: '${account?['nama'] ?? ''}');
     final password = TextEditingController();
-    var role = '${account?['role_base'] ?? 'KASIR'}';
+    var role = canonicalRole('${account?['role_base'] ?? 'KASIR'}');
     var aktif = account?['aktif'] != false;
+    final explicit = account?['permissions_explicit'] == true;
+    final grantSource = explicit
+        ? (account?['permission_grants'] as List?)
+        : (account?['extra_permissions'] as List?);
     final permissions = <String>{
-      ...((account?['extra_permissions'] as List?) ?? const []).map((e) => '$e'),
+      ...((grantSource ?? const []).map((e) => '$e')),
     };
+    final roleOptions = <String>{
+      ...settings.roleNames,
+      role,
+      for (final row in _accounts)
+        canonicalRole('${row['role_base'] ?? ''}'),
+    }.toList();
     final stores = <String>{
       ...((account?['store_ids'] as List?) ?? const []).map((e) => '$e'),
     };
@@ -440,13 +454,13 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
-                  initialValue: roles.contains(role) ? role : 'KASIR',
+                  initialValue: roleOptions.contains(role) ? role : 'KASIR',
                   decoration: const InputDecoration(labelText: 'Peran'),
-                  items: roles
+                  items: roleOptions
                       .map(
                         (item) => DropdownMenuItem(
                           value: item,
-                          child: Text(roleLabels[item] ?? item),
+                          child: Text(roleDisplayName(item)),
                         ),
                       )
                       .toList(),
@@ -541,7 +555,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                     username: username.text,
                     nama: nama.text,
                     role: role,
-                    permissions: permissions.toList(),
+                    permissions:
+                        settings.accessFor(role, extras: permissions.toList()).toList(),
+                    permissionGrants: permissions.toList(),
                     stores: stores.toList(),
                     password: temp.isEmpty ? null : temp,
                     aktif: aktif,
@@ -1185,7 +1201,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               child: ListTile(
                 title: Text('${account['nama']} (${account['username']})'),
                 subtitle: Text(
-                  '${account['role_base']} · '
+                  '${roleDisplayName('${account['role_base'] ?? ''}')} · '
                   '${(account['store_ids'] as List? ?? const []).join(', ')} · '
                   '${account['aktif'] == false ? 'nonaktif' : 'aktif'}',
                 ),

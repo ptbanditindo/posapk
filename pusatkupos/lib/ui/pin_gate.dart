@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../auth/operator.dart';
 import '../data/pin_service.dart';
 import '../data/session_service.dart';
+import '../data/store_settings.dart';
 import '../state/app_state.dart';
 import 'entry_gate.dart';
 import 'home_shell.dart';
@@ -72,6 +73,15 @@ class _PinGateState extends State<PinGate> {
         return;
       }
       final profile = widget.profile;
+      var permissions = profile.permissions;
+      if (!profile.isOwner) {
+        // Hitung ulang agar perubahan akses peran langsung berlaku saat
+        // perangkat dibuka, termasuk sesi lama yang belum punya kunci menu.
+        final settings = await StoreSettingsService.instance.ensure();
+        permissions = settings
+            .accessFor(profile.role, extras: profile.extraPermissions)
+            .toList();
+      }
       AppState.instance.setOperator(
         Operator(
           kind: profile.isOwner ? 'owner' : 'employee',
@@ -79,7 +89,7 @@ class _PinGateState extends State<PinGate> {
           label: profile.nama,
           employeeSyncId: profile.employeeSyncId,
           username: profile.username,
-          permissions: profile.permissions.toSet(),
+          permissions: permissions.toSet(),
           storeIds: profile.storeIds,
           mustChangePassword: profile.mustChangePassword,
         ),

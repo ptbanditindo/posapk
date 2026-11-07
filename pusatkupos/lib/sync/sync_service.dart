@@ -2595,6 +2595,7 @@ class SyncService {
             extraPermissions: ((device['extra_permissions'] as List?) ?? const [])
                 .map((item) => '$item')
                 .toSet(),
+            permissionsExplicit: device['permissions_explicit'] == true,
             storeIds: ((device['store_ids'] as List?) ?? const [])
                 .map((item) => '$item')
                 .toList(),

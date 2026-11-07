@@ -85,7 +85,7 @@ Future<void> _seedAccounts() async {
   await _insertAccount(
     username: dummyKeduanya.username,
     nama: 'Kasir & Mekanik Demo',
-    role: 'KEDUANYA',
+    role: 'SUPERVISOR',
     password: dummyKeduanya.password,
     pin: dummyKeduanya.pin,
     extraPermissions: const ['lihat_laporan'],
@@ -93,7 +93,7 @@ Future<void> _seedAccounts() async {
   await _insertAccount(
     username: dummyPenanggungJawab.username,
     nama: 'Penanggung Jawab Demo',
-    role: 'KEDUANYA',
+    role: 'SUPERVISOR',
     password: dummyPenanggungJawab.password,
     pin: dummyPenanggungJawab.pin,
     extraPermissions: const ['setujui', 'koreksi', 'lihat_laporan'],

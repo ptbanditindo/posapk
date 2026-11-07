@@ -19,6 +19,7 @@ class SessionProfile {
     this.employeeSyncId,
     this.username,
     this.permissions = const [],
+    this.extraPermissions = const [],
     this.storeIds = const ['utama'],
     this.mustChangePassword = false,
     this.email,
@@ -34,6 +35,10 @@ class SessionProfile {
   final String? employeeSyncId;
   final String? username;
   final List<String> permissions;
+
+  /// Izin tambahan per akun, dipisahkan agar izin peran bisa dihitung ulang
+  /// saat pengaturan toko berubah.
+  final List<String> extraPermissions;
   final List<String> storeIds;
   final bool mustChangePassword;
   final String? email;
@@ -53,6 +58,7 @@ class SessionProfile {
         'employee_sync_id': employeeSyncId,
         'username': username,
         'permissions': permissions,
+        'extra_permissions': extraPermissions,
         'store_ids': storeIds,
         'must_change_password': mustChangePassword,
         'email': email,
@@ -70,6 +76,7 @@ class SessionProfile {
       employeeSyncId: json['employee_sync_id'] as String?,
       username: json['username'] as String?,
       permissions: list(json['permissions']),
+      extraPermissions: list(json['extra_permissions']),
       storeIds: list(json['store_ids']).isEmpty
           ? const ['utama']
           : list(json['store_ids']),
@@ -88,6 +95,7 @@ class SessionProfile {
     String? employeeSyncId,
     String? username,
     List<String>? permissions,
+    List<String>? extraPermissions,
     List<String>? storeIds,
     bool? mustChangePassword,
     String? email,
@@ -102,6 +110,7 @@ class SessionProfile {
         employeeSyncId: employeeSyncId ?? this.employeeSyncId,
         username: username ?? this.username,
         permissions: permissions ?? this.permissions,
+        extraPermissions: extraPermissions ?? this.extraPermissions,
         storeIds: storeIds ?? this.storeIds,
         mustChangePassword: mustChangePassword ?? this.mustChangePassword,
         email: email ?? this.email,
@@ -116,6 +125,7 @@ class SessionProfile {
         employeeSyncId: employeeSyncId,
         username: username,
         permissions: permissions.toSet(),
+        extraPermissions: extraPermissions,
         storeIds: storeIds,
         mustChangePassword: mustChangePassword,
       );

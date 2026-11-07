@@ -45,6 +45,19 @@ Future<void> migrateSchemaV3(Database db) async {
   );
 }
 
+Future<void> migrateSchemaV4(Database db) async {
+  await _addColumnIfMissing(
+    db,
+    'employee_accounts',
+    'permissions_explicit',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute(
+    "UPDATE employee_accounts SET role_base = 'SUPERVISOR' "
+    "WHERE role_base = 'KEDUANYA'",
+  );
+}
+
 Future<void> _addColumnIfMissing(
   Database db,
   String table,
@@ -170,6 +183,7 @@ Future<void> createCleanSchema(Database db) async {
       must_change_password INTEGER NOT NULL DEFAULT 1,
       aktif INTEGER NOT NULL DEFAULT 1,
       permission_version INTEGER NOT NULL DEFAULT 1,
+      permissions_explicit INTEGER NOT NULL DEFAULT 0,
       last_login_at TEXT,
       jenis_imbalan TEXT NOT NULL DEFAULT 'KOMISI',
       gaji_bulanan INTEGER NOT NULL DEFAULT 0,

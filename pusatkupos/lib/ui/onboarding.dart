@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/app_config.dart';
-import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/employee_auth_service.dart';
 import '../data/google_auth_service.dart';
@@ -13,6 +12,7 @@ import '../data/pairing_service.dart';
 import '../data/pin_service.dart';
 import '../data/secure_store.dart';
 import '../data/session_service.dart';
+import '../data/store_settings.dart';
 import '../state/app_state.dart';
 import 'home_shell.dart';
 import 'owner_viewer.dart';
@@ -843,6 +843,7 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
       final role = '${account['role_base'] ?? 'KASIR'}';
       final extras = _stringList(account['extra_permissions_json']);
       final stores = _stringList(account['store_ids_json']);
+      final settings = await StoreSettingsService.instance.ensure();
       final profile = SessionProfile(
         mode: 'employee',
         ownerId: '${result['owner_id'] ?? ''}',
@@ -850,7 +851,8 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
         role: role,
         employeeSyncId: account['sync_id'] as String?,
         username: '${account['username'] ?? ''}',
-        permissions: [...(rolePermissions[role] ?? const <String>{}), ...extras],
+        permissions: settings.accessFor(role, extras: extras).toList(),
+        extraPermissions: extras,
         storeIds: stores.isEmpty
             ? ['${result['store_id'] ?? 'utama'}']
             : stores,

@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import 'access_control.dart';
 import 'app_database.dart';
 
 const transactionJualSparepart = 'jual_sparepart';
@@ -141,11 +142,51 @@ class StoreSettings {
 
   bool roleAllows(String role, String capability) {
     if (role == 'owner') return true;
-    if (role == 'KEDUANYA') {
-      return _roleMap('KASIR')[capability] == true ||
-          _roleMap('MEKANIK')[capability] == true;
+    final canonical = canonicalRole(role);
+    final map = rolePermissions[canonical] ?? rolePermissions[role];
+    final stored = map?[capability];
+    if (stored != null) return stored;
+    if (isBuiltinRole(canonical)) {
+      return defaultRoleAccess()[canonical]?[capability] ?? false;
     }
-    return _roleMap(role)[capability] ?? false;
+    return false;
+  }
+
+  /// Daftar peran yang dapat dipakai. Peran bawaan selalu tersedia; peran
+  /// kustom muncul dari peta akses yang disimpan pemilik.
+  List<String> get roleNames {
+    final result = <String>[];
+    void add(String role) {
+      final canonical = canonicalRole(role);
+      if (canonical.isEmpty || result.contains(canonical)) return;
+      result.add(canonical);
+    }
+
+    for (final role in builtinRoles) {
+      add(role);
+    }
+    for (final role in rolePermissions.keys) {
+      add(role);
+    }
+    return result;
+  }
+
+  /// Izin efektif seorang karyawan: akses peran ditambah izin tambahan akun.
+  Set<String> accessFor(
+    String role, {
+    Iterable<String> extras = const [],
+  }) {
+    final canonical = canonicalRole(role);
+    final result = <String>{};
+    if (canonical == 'owner') {
+      result.addAll(allAccessKeys());
+    } else {
+      for (final key in allAccessKeys()) {
+        if (roleAllows(canonical, key)) result.add(key);
+      }
+    }
+    result.addAll(extras.where((item) => item.trim().isNotEmpty));
+    return result;
   }
 
   bool roleCanSelect(String role, String type) {
@@ -154,13 +195,18 @@ class StoreSettings {
     if (!roleAllows(role, 'buat_nota')) return false;
     final perType = _roleMap(role)['jenis_$type'];
     if (perType != null) return perType;
+    if (isBuiltinRole(role)) {
+      final fallback = defaultRoleAccess()[canonicalRole(role)]?['jenis_$type'];
+      if (fallback != null) return fallback;
+    }
     final allowed = _roleMap(role)['jenis_transaksi'];
     if (allowed == null) return true;
     return allowed;
   }
 
   Map<String, bool> _roleMap(String role) {
-    final raw = rolePermissions[role] ?? const <String, bool>{};
+    final canonical = canonicalRole(role);
+    final raw = rolePermissions[canonical] ?? const <String, bool>{};
     return raw;
   }
 
@@ -230,36 +276,7 @@ Map<String, bool> defaultOrderStages() => {
       stagePersetujuanPelanggan: true,
     };
 
-Map<String, Map<String, bool>> defaultRolePermissions() => {
-      'KASIR': {
-        'buat_nota': true,
-        'ubah_status': false,
-        'void': false,
-        'koreksi': false,
-        'diskon': true,
-        'setujui': false,
-        'ubah_pengaturan': false,
-        'jenis_jual_sparepart': true,
-        'jenis_servis_langsung': true,
-        'jenis_order_kerja': true,
-        'jenis_estimasi_saja': true,
-        'jenis_pelunasan_order': false,
-      },
-      'MEKANIK': {
-        'buat_nota': false,
-        'ubah_status': true,
-        'void': false,
-        'koreksi': false,
-        'diskon': false,
-        'setujui': false,
-        'ubah_pengaturan': false,
-        'jenis_jual_sparepart': true,
-        'jenis_servis_langsung': true,
-        'jenis_order_kerja': true,
-        'jenis_estimasi_saja': true,
-        'jenis_pelunasan_order': false,
-      },
-    };
+Map<String, Map<String, bool>> defaultRolePermissions() => defaultRoleAccess();
 
 StoreSettings presetSettings({
   required String storeId,

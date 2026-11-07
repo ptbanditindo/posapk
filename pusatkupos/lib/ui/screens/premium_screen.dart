@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import '../../data/access_control.dart';
 import '../../data/account_service.dart';
 import '../../data/app_database.dart';
 import '../../data/device_service.dart';
@@ -11,6 +12,7 @@ import '../../data/google_auth_service.dart';
 import '../../data/license_service.dart';
 import '../../data/owner_access_api.dart';
 import '../../data/reconciliation_service.dart';
+import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../upload_backup_dialog.dart';
@@ -141,17 +143,21 @@ class _PremiumScreenState extends State<PremiumScreen> {
       return;
     }
     final store = await SyncService.instance.storeId();
+    final settings = await StoreSettingsService.instance.ensure();
     setState(() => _busy = true);
     try {
       var count = 0;
       for (final account in _accounts.where((row) => row['aktif'] == 1)) {
         final stores = _jsonList(account['store_ids_json']);
+        final role = '${account['role_base'] ?? 'KASIR'}';
+        final extras = _jsonList(account['extra_permissions_json']);
         await api.saveAccount(
           syncId: '${account['sync_id'] ?? ''}',
           username: '${account['username'] ?? ''}',
           nama: '${account['nama'] ?? ''}',
-          role: '${account['role_base'] ?? 'KASIR'}',
-          permissions: _jsonList(account['extra_permissions_json']),
+          role: role,
+          permissions: settings.accessFor(role, extras: extras).toList(),
+          permissionGrants: extras,
           stores: stores.isEmpty ? [store] : stores,
           passwordHash: '${account['password_hash'] ?? ''}',
           passwordSalt: '${account['password_salt'] ?? ''}',
@@ -160,6 +166,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
           aktif: account['aktif'] == 1,
           permissionVersion:
               (account['permission_version'] as num?)?.toInt() ?? 0,
+          permissionsExplicit: true,
         );
         count++;
       }
@@ -428,9 +435,14 @@ class _PremiumScreenState extends State<PremiumScreen> {
   }
 
   Future<void> _addAccount() async {
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!mounted) return;
     final input = await showDialog<_AccountInput>(
       context: context,
-      builder: (_) => const _AccountDialog(),
+      builder: (_) => _AccountDialog(
+        roles: settings.roleNames,
+        roleName: roleDisplayName,
+      ),
     );
     if (input == null) return;
     try {
@@ -450,6 +462,36 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal membuat akun: $error', error: true);
+    }
+  }
+
+  Future<void> _editAccount(Map<String, Object?> account) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!mounted) return;
+    final input = await showDialog<_AccountInput>(
+      context: context,
+      builder: (_) => _AccountDialog(
+        roles: settings.roleNames,
+        roleName: roleDisplayName,
+        account: account,
+      ),
+    );
+    if (input == null) return;
+    try {
+      await AccountService.instance.updateAccount(
+        account['id'] as int,
+        nama: input.nama,
+        role: input.role,
+        aktif: input.aktif,
+        extraPermissions: input.permissions,
+        storeIds: _jsonList(account['store_ids_json']).isEmpty
+            ? const ['utama']
+            : _jsonList(account['store_ids_json']),
+      );
+      await _load();
+      if (mounted) showSnack(context, 'Akun ${input.username} diperbarui.');
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal mengubah akun: $error', error: true);
     }
   }
 
@@ -723,6 +765,13 @@ class _PremiumScreenState extends State<PremiumScreen> {
     );
   }
 
+  bool get _canManageAccounts =>
+      AppState.instance.isOwner || AppState.instance.can('kelola_akun');
+  bool get _canManageDevices =>
+      AppState.instance.isOwner || AppState.instance.can('kelola_perangkat');
+  bool get _canManageLicense =>
+      AppState.instance.isOwner || AppState.instance.can('lisensi');
+
   @override
   Widget build(BuildContext context) {
     final premium = _status?['premium'] == true;
@@ -768,8 +817,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
               ),
             ),
           ),
-        SectionCard(
-          title: 'Lisensi dan ID owner',
+        if (_canManageLicense)
+          SectionCard(
+            title: 'Lisensi dan ID owner',
           trailing: premium
               ? const Chip(label: Text('Premium'))
               : FilledButton.tonal(
@@ -843,8 +893,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ),
         ),
         const SizedBox(height: 12),
-        SectionCard(
-          title: 'Akun karyawan',
+        if (_canManageAccounts)
+          SectionCard(
+            title: 'Akun karyawan',
           trailing: TextButton.icon(
             onPressed: premium ? _addAccount : null,
             icon: const Icon(Icons.person_add_alt_1),
@@ -867,6 +918,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
                             onSelected: (value) => _accountAction(account, value),
                             itemBuilder: (context) => const [
                               PopupMenuItem(
+                                value: 'ubah',
+                                child: Text('Ubah peran & akses'),
+                              ),
+                              PopupMenuItem(
                                 value: 'reset-password',
                                 child: Text('Reset password'),
                               ),
@@ -886,8 +941,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 ),
         ),
         const SizedBox(height: 12),
-        SectionCard(
-          title: 'Perangkat',
+        if (_canManageDevices)
+          SectionCard(
+            title: 'Perangkat',
           trailing: PopupMenuButton<String>(
             enabled: premium,
             onSelected: (value) {
@@ -936,8 +992,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 ),
         ),
         const SizedBox(height: 12),
-        SectionCard(
-          title: 'Akses karyawan',
+        if (_canManageAccounts || _canManageDevices)
+          SectionCard(
+            title: 'Akses karyawan',
           subtitle:
               'Kode pairing berlaku 10 menit dan hangus setelah dipakai '
               'satu perangkat.',
@@ -1029,8 +1086,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 ),
         ),
         const SizedBox(height: 12),
-        SectionCard(
-          title: 'Sinkronisasi',
+        if (_canManageDevices)
+          SectionCard(
+            title: 'Sinkronisasi',
           subtitle:
               'Data toko dikirim terenkripsi antar perangkat milik akun Anda.',
           child: Column(
@@ -1171,6 +1229,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
 
   Future<void> _accountAction(Map<String, Object?> account, String action) async {
     final id = account['id'] as int;
+    if (action == 'ubah') {
+      await _editAccount(account);
+      return;
+    }
     if (action == 'reset-password') {
       final password = TextEditingController();
       var error = '';
@@ -1285,6 +1347,7 @@ class _AccountInput {
     required this.role,
     required this.password,
     required this.permissions,
+    this.aktif = true,
   });
 
   final String username;
@@ -1292,10 +1355,19 @@ class _AccountInput {
   final String role;
   final String password;
   final List<String> permissions;
+  final bool aktif;
 }
 
 class _AccountDialog extends StatefulWidget {
-  const _AccountDialog();
+  const _AccountDialog({
+    required this.roles,
+    required this.roleName,
+    this.account,
+  });
+
+  final List<String> roles;
+  final String Function(String role) roleName;
+  final Map<String, Object?>? account;
 
   @override
   State<_AccountDialog> createState() => _AccountDialogState();
@@ -1305,8 +1377,27 @@ class _AccountDialogState extends State<_AccountDialog> {
   final _username = TextEditingController();
   final _nama = TextEditingController();
   final _password = TextEditingController();
-  String _role = 'KASIR';
+  late final List<String> _roles;
+  late String _role;
+  late bool _aktif;
   final Set<String> _permissions = {};
+
+  bool get _editing => widget.account != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final account = widget.account;
+    _username.text = '${account?['username'] ?? ''}';
+    _nama.text = '${account?['nama'] ?? ''}';
+    _roles = [...widget.roles];
+    _role = canonicalRole('${account?['role_base'] ?? _roles.first}');
+    if (!_roles.contains(_role)) _roles.insert(0, _role);
+    _aktif = account?['aktif'] != 0;
+    _permissions.addAll(
+      _decodeList('${account?['extra_permissions_json'] ?? '[]'}'),
+    );
+  }
 
   @override
   void dispose() {
@@ -1319,14 +1410,15 @@ class _AccountDialogState extends State<_AccountDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Akun karyawan baru'),
+      title: Text(_editing ? 'Ubah akun karyawan' : 'Akun karyawan baru'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: _username,
-              autofocus: true,
+              autofocus: !_editing,
+              enabled: !_editing,
               decoration: const InputDecoration(labelText: 'Nama pengguna'),
             ),
             const SizedBox(height: 10),
@@ -1338,34 +1430,46 @@ class _AccountDialogState extends State<_AccountDialog> {
             DropdownButtonFormField<String>(
               initialValue: _role,
               decoration: const InputDecoration(labelText: 'Peran'),
-              items: roles
+              items: _roles
                   .map(
                     (role) => DropdownMenuItem(
                       value: role,
-                      child: Text(roleLabels[role] ?? role),
+                      child: Text(widget.roleName(role)),
                     ),
                   )
                   .toList(),
-              onChanged: (value) => setState(() => _role = value ?? 'KASIR'),
+              onChanged: (value) =>
+                  setState(() => _role = value ?? _roles.first),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _password,
               obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Password awal (minimal 8)',
+              decoration: InputDecoration(
+                labelText: _editing
+                    ? 'Password baru (kosongkan jika tetap)'
+                    : 'Password awal (minimal 8)',
               ),
             ),
+            if (_editing)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Aktif'),
+                value: _aktif,
+                onChanged: (value) => setState(() => _aktif = value),
+              ),
             const SizedBox(height: 10),
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Izin tambahan',
+                'Izin tambahan (di atas akses peran)',
                 style: Theme.of(context).textTheme.labelLarge,
               ),
             ),
+            const SizedBox(height: 6),
             Wrap(
               spacing: 6,
+              runSpacing: 6,
               children: permissionLabels.entries
                   .map(
                     (entry) => FilterChip(
@@ -1400,6 +1504,7 @@ class _AccountDialogState extends State<_AccountDialog> {
                 role: _role,
                 password: _password.text.trim(),
                 permissions: _permissions.toList(),
+                aktif: _aktif,
               ),
             );
           },
@@ -1408,4 +1513,12 @@ class _AccountDialogState extends State<_AccountDialog> {
       ],
     );
   }
+}
+
+List<String> _decodeList(String raw) {
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is List) return decoded.map((item) => '$item').toList();
+  } catch (_) {}
+  return const [];
 }

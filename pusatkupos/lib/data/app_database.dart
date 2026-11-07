@@ -29,7 +29,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
 
   Database? _db;
   String? _path;
@@ -246,6 +246,9 @@ class AppDatabase {
     if (oldVersion < 3) {
       await migrateSchemaV3(db);
     }
+    if (oldVersion < 4) {
+      await migrateSchemaV4(db);
+    }
   }
 
   Future<void> _open() async {
@@ -257,6 +260,7 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
+        onUpgrade: _upgrade,
         onDowngrade: _rejectIncompatibleVersion,
       );
       return;

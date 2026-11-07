@@ -108,6 +108,7 @@ class OwnerApi {
     required String nama,
     required String role,
     required List<String> permissions,
+    List<String>? permissionGrants,
     required List<String> stores,
     String? password,
     String? passwordHash,
@@ -115,9 +116,11 @@ class OwnerApi {
     int passwordIterations = 600000,
     bool aktif = true,
     int permissionVersion = 0,
+    bool permissionsExplicit = true,
   }) async {
     final id = syncId == null || syncId.isEmpty ? newSyncId() : syncId;
     final version = permissionVersion <= 0 ? 1 : permissionVersion + 1;
+    final grants = permissionGrants ?? permissions;
     var hash = passwordHash ?? '';
     var salt = passwordSalt ?? '';
     if ((password ?? '').isNotEmpty) {
@@ -134,7 +137,9 @@ class OwnerApi {
       'nama': nama.trim(),
       'role_base': role,
       'extra_permissions': permissions,
+      'permission_grants': grants,
       'store_ids': stores,
+      'permissions_explicit': permissionsExplicit,
       'issued_at': nowIso(),
     };
     final signature = await signPayload(
@@ -151,12 +156,14 @@ class OwnerApi {
         'nama': nama.trim(),
         'role_base': role,
         'extra_permissions': permissions,
+        'permission_grants': grants,
         'store_ids': stores,
         'password_hash': hash,
         'password_salt': salt,
         'password_iterations': passwordIterations,
         'aktif': aktif,
         'permission_version': version,
+        'permissions_explicit': permissionsExplicit,
         'permission_payload': payload,
         'permission_signature': signature,
         'permission_signer_public_key': keys.publicKey,

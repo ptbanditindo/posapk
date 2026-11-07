@@ -14,6 +14,7 @@ import 'app_database.dart';
 import 'license_service.dart';
 import 'secure_store.dart';
 import 'session_service.dart';
+import 'store_settings.dart';
 
 class EmployeeAuthException implements Exception {
   EmployeeAuthException(this.message, {this.code = ''});
@@ -94,6 +95,7 @@ class EmployeeAuthService {
           employeeSyncId: operator.employeeSyncId,
           username: operator.username,
           permissions: operator.permissions.toList(),
+          extraPermissions: operator.extraPermissions,
           storeIds: operator.storeIds,
           plan: 'free',
         ),
@@ -238,7 +240,13 @@ class EmployeeAuthService {
     await SessionService.instance.saveDeviceToken(token, relayDeviceId);
 
     final role = '${account['role_base'] ?? 'KASIR'}';
-    final extras = _list(account['extra_permissions']);
+    final grants = account['permission_grants'];
+    final extras = _list(
+      account['permissions_explicit'] == true && grants is List
+          ? grants
+          : account['extra_permissions'],
+    );
+    final settings = await StoreSettingsService.instance.ensure();
     final profile = SessionProfile(
       mode: 'employee',
       ownerId: owner,
@@ -246,8 +254,8 @@ class EmployeeAuthService {
       role: role,
       employeeSyncId: account['sync_id'] as String?,
       username: '${account['username'] ?? username}',
-      permissions: {...(rolePermissions[role] ?? const <String>{}), ...extras}
-          .toList(),
+      permissions: settings.accessFor(role, extras: extras).toList(),
+      extraPermissions: extras,
       storeIds: storeIds,
       mustChangePassword: account['must_change_password'] == true,
       plan: '${result['plan'] ?? 'premium'}',

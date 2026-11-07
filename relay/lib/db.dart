@@ -214,12 +214,14 @@ CREATE TABLE IF NOT EXISTS accounts (
   nama TEXT NOT NULL,
   role_base TEXT NOT NULL DEFAULT 'KASIR',
   extra_permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  permission_grants JSONB NOT NULL DEFAULT '[]'::jsonb,
   store_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   password_hash TEXT NOT NULL DEFAULT '',
   password_salt TEXT NOT NULL DEFAULT '',
   password_iterations INTEGER NOT NULL DEFAULT 600000,
   aktif BOOLEAN NOT NULL DEFAULT true,
   permission_version INTEGER NOT NULL DEFAULT 1,
+  permissions_explicit BOOLEAN NOT NULL DEFAULT false,
   permission_payload JSONB,
   permission_signature TEXT,
   permission_signer_public_key TEXT,
@@ -271,6 +273,16 @@ CREATE TABLE IF NOT EXISTS followup_quota (
       'ALTER TABLE owner_identities ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ',
       'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false',
       'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_updated_at TIMESTAMPTZ',
+      'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS permissions_explicit BOOLEAN NOT NULL DEFAULT false',
+      'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS permission_grants JSONB NOT NULL DEFAULT \'[]\'::jsonb',
+      '''
+UPDATE accounts SET permission_grants = extra_permissions
+WHERE permissions_explicit = true
+  AND permission_grants = '[]'::jsonb
+  AND extra_permissions <> '[]'::jsonb
+  AND permission_payload IS NOT NULL
+  AND NOT (permission_payload ? 'permission_grants')
+''',
       'ALTER TABLE owners ADD COLUMN IF NOT EXISTS license_store_limit INTEGER NOT NULL DEFAULT 1',
     ];
     for (final statement in statements) {

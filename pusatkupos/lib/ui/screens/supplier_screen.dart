@@ -4,6 +4,7 @@ import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/license_service.dart';
 import '../../data/supplier_service.dart';
+import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
@@ -43,7 +44,13 @@ class _SupplierScreenState extends State<SupplierScreen> {
     });
   }
 
+  bool get _canEdit =>
+      AppState.instance.isOwner || AppState.instance.can('ubah_supplier');
+
   Future<void> _openForm([Map<String, Object?>? supplier]) async {
+    if (!_canEdit) {      showSnack(context, 'Peran ini tidak boleh mengelola supplier.', error: true);
+      return;
+    }
     final input = await showDialog<_SupplierInput>(
       context: context,
       builder: (context) => _SupplierDialog(supplier: supplier),
@@ -70,6 +77,10 @@ class _SupplierScreenState extends State<SupplierScreen> {
   }
 
   Future<void> _delete(Map<String, Object?> supplier) async {
+    if (!_canEdit) {
+      showSnack(context, 'Peran ini tidak boleh mengelola supplier.', error: true);
+      return;
+    }
     final ok = await confirmAction(
       context,
       title: 'Hapus supplier',
@@ -89,6 +100,10 @@ class _SupplierScreenState extends State<SupplierScreen> {
   }
 
   Future<void> _setStatus(Map<String, Object?> row, String status) async {
+    if (!_canEdit) {
+      showSnack(context, 'Peran ini tidak boleh mengubah status supplier.', error: true);
+      return;
+    }
     try {
       await SupplierService.instance.setFollowupStatus(
         supplierId: row['supplier_id'] as int,
@@ -174,11 +189,12 @@ class _SupplierScreenState extends State<SupplierScreen> {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
             ),
-            FilledButton.icon(
-              onPressed: () => _openForm(),
-              icon: const Icon(Icons.add),
-              label: const Text('Supplier'),
-            ),
+            if (_canEdit)
+              FilledButton.icon(
+                onPressed: () => _openForm(),
+                icon: const Icon(Icons.add),
+                label: const Text('Supplier'),
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -210,17 +226,19 @@ class _SupplierScreenState extends State<SupplierScreen> {
                       if (supplier['aktif'] != 1) 'nonaktif',
                     ].join(' · '),
                   ),
-                  onTap: () => _openForm(supplier),
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (value) {
-                      if (value == 'ubah') _openForm(supplier);
-                      if (value == 'hapus') _delete(supplier);
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'ubah', child: Text('Ubah')),
-                      PopupMenuItem(value: 'hapus', child: Text('Hapus')),
-                    ],
-                  ),
+                  onTap: _canEdit ? () => _openForm(supplier) : null,
+                  trailing: _canEdit
+                      ? PopupMenuButton<String>(
+                          onSelected: (value) {
+                            if (value == 'ubah') _openForm(supplier);
+                            if (value == 'hapus') _delete(supplier);
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(value: 'ubah', child: Text('Ubah')),
+                            PopupMenuItem(value: 'hapus', child: Text('Hapus')),
+                          ],
+                        )
+                      : null,
                 ),
               ),
             ),
@@ -254,27 +272,33 @@ class _SupplierScreenState extends State<SupplierScreen> {
                         '${row['supplier_nama']} · stok $qty '
                         '${row['satuan'] ?? ''}',
                       ),
-                      trailing: PopupMenuButton<String>(
-                        tooltip: 'Ubah status',
-                        onSelected: (value) => _setStatus(row, value),
-                        itemBuilder: (context) => [
-                          for (final entry in supplierStatusLabels.entries)
-                            if (entry.key != 'BELUM')
-                              PopupMenuItem(
-                                value: entry.key,
-                                child: Text(
-                                  entry.key == status
-                                      ? '${entry.value} (aktif)'
-                                      : entry.value,
+                      trailing: _canEdit
+                          ? PopupMenuButton<String>(
+                              tooltip: 'Ubah status',
+                              onSelected: (value) => _setStatus(row, value),
+                              itemBuilder: (context) => [
+                                for (final entry in supplierStatusLabels.entries)
+                                  if (entry.key != 'BELUM')
+                                    PopupMenuItem(
+                                      value: entry.key,
+                                      child: Text(
+                                        entry.key == status
+                                            ? '${entry.value} (aktif)'
+                                            : entry.value,
+                                      ),
+                                    ),
+                              ],
+                              child: Chip(
+                                label: Text(
+                                  supplierStatusLabels[status] ?? status,
                                 ),
                               ),
-                        ],
-                        child: Chip(
-                          label: Text(
-                            supplierStatusLabels[status] ?? status,
-                          ),
-                        ),
-                      ),
+                            )
+                          : Chip(
+                              label: Text(
+                                supplierStatusLabels[status] ?? status,
+                              ),
+                            ),
                     );
                   }).toList(),
                 ),

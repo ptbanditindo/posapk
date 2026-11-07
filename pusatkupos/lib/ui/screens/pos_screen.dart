@@ -138,6 +138,18 @@ class _PosScreenState extends State<PosScreen> {
         settings.roleAllows(actor.role, 'diskon');
   }
 
+  bool get _canSave {
+    if (AppState.instance.isOwner) return true;
+    return AppState.instance.can(
+      _jenis == transactionEstimasiSaja ? 'buat_estimasi' : 'buat_nota',
+    );
+  }
+
+  bool get _canEditCustomers {
+    if (AppState.instance.isOwner) return true;
+    return AppState.instance.can('ubah_pelanggan');
+  }
+
   int get _total => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
   int get _bayarCents => tryParseRupiahToCents(_bayar.text) ?? 0;
   bool get _bayarInvalid =>
@@ -146,15 +158,22 @@ class _PosScreenState extends State<PosScreen> {
 
   List<String> get _availableTypes {
     final settings = _settings;
-    final role = _actor?.role ?? 'owner';
     if (settings == null) return const [transactionServisLangsung];
+    if (!AppState.instance.isOwner &&
+        !AppState.instance.can('buat_nota')) {
+      return const [];
+    }
+    final canEstimasi =
+        AppState.instance.isOwner || AppState.instance.can('buat_estimasi');
+    final role = _actor?.role ?? 'owner';
     return [
       transactionJualSparepart,
       transactionServisLangsung,
       transactionEstimasiSaja,
     ].where((type) {
       return settings.typeEnabled(type) &&
-          settings.roleCanSelect(role, type);
+          (type != transactionEstimasiSaja || canEstimasi) &&
+          (role == 'owner' || settings.roleAllows(role, 'jenis_$type'));
     }).toList();
   }
 
@@ -189,8 +208,10 @@ class _PosScreenState extends State<PosScreen> {
           .where(
             (account) =>
                 account['aktif'] == 1 &&
-                (account['role_base'] == 'MEKANIK' ||
-                    account['role_base'] == 'KEDUANYA'),
+                settings.roleAllows(
+                  account['role_base'] as String? ?? 'KASIR',
+                  'ubah_status',
+                ),
           )
           .toList();
       _garansiDefaultBulan = int.tryParse(defaultGaransi ?? '') ?? 1;
@@ -214,6 +235,14 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _addCustomer() async {
+    if (!_canEditCustomers) {
+      showSnack(
+        context,
+        'Peran ini tidak diizinkan menambah atau mengubah pelanggan.',
+        error: true,
+      );
+      return;
+    }
     final input = await showDialog<_QuickCustomer>(
       context: context,
       builder: (_) => const _QuickCustomerDialog(),
@@ -249,6 +278,14 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _addUnit() async {
+    if (!_canEditCustomers) {
+      showSnack(
+        context,
+        'Peran ini tidak diizinkan menambah atau mengubah pelanggan.',
+        error: true,
+      );
+      return;
+    }
     final customerId = _customerId;
     if (customerId == null) {
       showSnack(context, 'Pilih pelanggan terlebih dahulu.', error: true);
@@ -341,6 +378,16 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _save() async {
+    if (!_canSave) {
+      showSnack(
+        context,
+        _jenis == transactionEstimasiSaja
+            ? 'Peran ini tidak diizinkan membuat estimasi.'
+            : 'Peran ini tidak diizinkan membuat nota.',
+        error: true,
+      );
+      return;
+    }
     if (_customerId == null) {
       showSnack(context, 'Pilih pelanggan.', error: true);
       return;
@@ -867,11 +914,12 @@ class _PosScreenState extends State<PosScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filledTonal(
-                    onPressed: _addCustomer,
-                    icon: const Icon(Icons.person_add_alt_1),
-                    tooltip: 'Pelanggan baru',
-                  ),
+                  if (_canEditCustomers)
+                    IconButton.filledTonal(
+                      onPressed: _addCustomer,
+                      icon: const Icon(Icons.person_add_alt_1),
+                      tooltip: 'Pelanggan baru',
+                    ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -902,11 +950,12 @@ class _PosScreenState extends State<PosScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filledTonal(
-                    onPressed: _addUnit,
-                    icon: const Icon(Icons.add_road_outlined),
-                    tooltip: 'Unit baru',
-                  ),
+                  if (_canEditCustomers)
+                    IconButton.filledTonal(
+                      onPressed: _addUnit,
+                      icon: const Icon(Icons.add_road_outlined),
+                      tooltip: 'Unit baru',
+                    ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -1230,7 +1279,7 @@ class _PosScreenState extends State<PosScreen> {
         ),
         const SizedBox(height: 16),
         FilledButton.icon(
-          onPressed: _saving ? null : _save,
+          onPressed: _saving || !_canSave ? null : _save,
           icon: _saving
               ? const SizedBox(
                   width: 18,

@@ -114,7 +114,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           value: '${data.lowStockCount}',
                           icon: Icons.inventory_2_outlined,
                           tone: Theme.of(context).colorScheme.error,
-                          onTap: () => widget.onNavigate(4),
+                          onTap: AppState.instance.can('lihat_stok')
+                              ? () => widget.onNavigate(4)
+                              : null,
                         ),
                       ),
                       SizedBox(
@@ -124,7 +126,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           value: formatRupiah(data.receivableCents),
                           icon: Icons.account_balance_wallet_outlined,
                           tone: Colors.orange,
-                          onTap: () => widget.onNavigate(2),
+                          onTap: AppState.instance.can('lihat_riwayat')
+                              ? () => widget.onNavigate(2)
+                              : null,
                         ),
                       ),
                       if (data.negativeStockCount > 0)
@@ -135,7 +139,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             value: '${data.negativeStockCount}',
                             icon: Icons.error_outline,
                             tone: Theme.of(context).colorScheme.error,
-                            onTap: () => widget.onNavigate(4),
+                            onTap: AppState.instance.can('lihat_stok')
+                                ? () => widget.onNavigate(4)
+                                : null,
                           ),
                         ),
                     ],
@@ -150,23 +156,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   runSpacing: 10,
                   children: [
                     if (AppState.instance.isOwner ||
-                        (AppState.instance.operator?.canWriteMoney ?? false))
+                        AppState.instance.can('lihat_kasir'))
                       ActionChip(
                         avatar:
                             const Icon(Icons.point_of_sale_outlined, size: 18),
                         label: const Text('Kasir'),
                         onPressed: () => widget.onNavigate(1),
                       ),
-                    ActionChip(
-                      avatar: const Icon(Icons.people_outline, size: 18),
-                      label: const Text('Pelanggan'),
-                      onPressed: () => widget.onNavigate(3),
-                    ),
-                    ActionChip(
-                      avatar: const Icon(Icons.inventory_2_outlined, size: 18),
-                      label: const Text('Stok'),
-                      onPressed: () => widget.onNavigate(4),
-                    ),
+                    if (AppState.instance.isOwner ||
+                        AppState.instance.can('lihat_pelanggan'))
+                      ActionChip(
+                        avatar: const Icon(Icons.people_outline, size: 18),
+                        label: const Text('Pelanggan'),
+                        onPressed: () => widget.onNavigate(3),
+                      ),
+                    if (AppState.instance.isOwner ||
+                        AppState.instance.can('lihat_stok'))
+                      ActionChip(
+                        avatar: const Icon(Icons.inventory_2_outlined, size: 18),
+                        label: const Text('Stok'),
+                        onPressed: () => widget.onNavigate(4),
+                      ),
                     if (AppState.instance.isOwner ||
                         AppState.instance.can('lihat_laporan'))
                       ActionChip(

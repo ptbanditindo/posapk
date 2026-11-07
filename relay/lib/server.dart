@@ -303,7 +303,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     final account = accountId.isEmpty
         ? null
         : await tx.one(
-            'SELECT role_base, extra_permissions FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+            'SELECT role_base, extra_permissions, permissions_explicit FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
             {'owner': device['owner_id'], 'sync': accountId},
           );
     if (account == null) return false;
@@ -312,6 +312,7 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
       action: action,
       roleBase: '${account['role_base'] ?? ''}',
       extras: stringList(account['extra_permissions']).toSet(),
+      explicit: account['permissions_explicit'] == true,
     );
   }
 
@@ -1119,7 +1120,7 @@ ON CONFLICT (owner_id, device_id, store_id) DO UPDATE SET
       '''
 SELECT d.id, d.owner_id, d.nama, d.kind, d.public_key, d.encryption_key,
        d.store_ids, d.created_at, d.revoked_at, d.last_seen_at,
-       a.role_base, a.extra_permissions
+       a.role_base, a.extra_permissions, a.permissions_explicit
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id
@@ -1137,6 +1138,7 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
         'kind': row['kind'],
         'role_base': row['role_base'] ?? '',
         'extra_permissions': stringList(row['extra_permissions']),
+        'permissions_explicit': row['permissions_explicit'] == true,
         'public_key': row['public_key'],
         'encryption_key': row['encryption_key'],
         'store_ids': stringList(row['store_ids']),
@@ -1700,11 +1702,13 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
       'nama': row['nama'],
       'role_base': row['role_base'],
       'extra_permissions': stringList(row['extra_permissions']),
+      'permission_grants': stringList(row['permission_grants']),
       'store_ids': stringList(row['store_ids']),
       'has_password': '${row['password_hash'] ?? ''}'.isNotEmpty,
       'must_change_password': row['must_change_password'] == true ? 1 : 0,
       'aktif': row['aktif'] == true ? 1 : 0,
       'permission_version': (row['permission_version'] as num?)?.toInt() ?? 1,
+      'permissions_explicit': row['permissions_explicit'] == true,
     };
     if (secrets) {
       json['password_hash'] = row['password_hash'];
@@ -2053,6 +2057,13 @@ WHERE owner_id = @owner AND sync_id = @sync
     if (permissions is! List || storeIds is! List) {
       return _error(400, 'Payload izin tidak lengkap.');
     }
+    final grantsPayload = payload['permission_grants'];
+    final grantsSource = grantsPayload is List ? grantsPayload : permissions;
+    final grants = grantsSource
+        .map((item) => '$item'.trim())
+        .where((item) => item.isNotEmpty)
+        .toSet()
+        .toList();
     final stores = storeIds.map((item) => '$item'.trim()).toSet().toList();
     if (stores.isEmpty ||
         stores.any(
@@ -2065,6 +2076,7 @@ WHERE owner_id = @owner AND sync_id = @sync
     if (version <= 0) {
       return _error(400, 'Versi izin tidak valid.');
     }
+    final permissionsExplicit = payload['permissions_explicit'] == true;
     final existing = await db.one(
       'SELECT password_hash, password_salt, password_iterations, must_change_password FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': syncId},
@@ -2102,6 +2114,7 @@ WHERE owner_id = @owner AND sync_id = @sync
       'nama': '${payload['nama'] ?? username}',
       'role': role,
       'permissions': jsonEncode(permissions),
+      'grants': jsonEncode(grants),
       'stores': jsonEncode(stores),
       'hash': resolvedHash,
       'salt': resolvedSalt,
@@ -2110,6 +2123,7 @@ WHERE owner_id = @owner AND sync_id = @sync
       'must_change': hashChanged ||
           (existing?['must_change_password'] == true),
       'version': version,
+      'explicit': permissionsExplicit,
       'payload': jsonEncode(payload),
       'signature': signature,
       'signer': signer,
@@ -2117,16 +2131,19 @@ WHERE owner_id = @owner AND sync_id = @sync
     await db.execute(
       '''
 INSERT INTO accounts (owner_id, sync_id, username, nama, role_base,
-  extra_permissions, store_ids, password_hash, password_salt,
+  extra_permissions, permission_grants, store_ids, password_hash, password_salt,
   password_iterations, aktif, must_change_password, permission_version,
-  permission_payload, permission_signature, permission_signer_public_key)
+  permissions_explicit, permission_payload, permission_signature,
+  permission_signer_public_key)
 VALUES (@owner, @sync, @username, @nama, @role, CAST(@permissions AS jsonb),
-  CAST(@stores AS jsonb), @hash, @salt, @iterations, @aktif, @must_change,
-  @version, CAST(@payload AS jsonb), @signature, @signer)
+  CAST(@grants AS jsonb), CAST(@stores AS jsonb), @hash, @salt, @iterations,
+  @aktif, @must_change, @version, @explicit, CAST(@payload AS jsonb), @signature,
+  @signer)
 ON CONFLICT (owner_id, sync_id) DO UPDATE SET
   username = EXCLUDED.username, nama = EXCLUDED.nama,
   role_base = EXCLUDED.role_base,
   extra_permissions = EXCLUDED.extra_permissions,
+  permission_grants = EXCLUDED.permission_grants,
   store_ids = EXCLUDED.store_ids,
   password_hash = EXCLUDED.password_hash,
   password_salt = EXCLUDED.password_salt,
@@ -2134,6 +2151,7 @@ ON CONFLICT (owner_id, sync_id) DO UPDATE SET
   aktif = EXCLUDED.aktif,
   must_change_password = EXCLUDED.must_change_password,
   permission_version = EXCLUDED.permission_version,
+  permissions_explicit = EXCLUDED.permissions_explicit,
   permission_payload = EXCLUDED.permission_payload,
   permission_signature = EXCLUDED.permission_signature,
   permission_signer_public_key = EXCLUDED.permission_signer_public_key,
@@ -2256,7 +2274,7 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       '''
-SELECT d.*, a.role_base, a.extra_permissions
+SELECT d.*, a.role_base, a.extra_permissions, a.permissions_explicit
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id

@@ -7,53 +7,18 @@ import 'package:cryptography/cryptography.dart';
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import 'access_control.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 import 'login_guard.dart';
+import 'store_settings.dart';
 
-const roles = ['KASIR', 'MEKANIK', 'KEDUANYA'];
-const roleLabels = {
-  'KASIR': 'Kasir',
-  'MEKANIK': 'Mekanik',
-  'KEDUANYA': 'Kasir & Mekanik',
-};
-const permissionLabels = {
-  'void': 'Void nota',
-  'retur': 'Retur penjualan',
-  'ubah_harga_jasa': 'Ubah harga jasa',
-  'ubah_stok': 'Ubah data stok',
-  'stok_masuk': 'Stok masuk',
-  'stok_keluar': 'Stok keluar',
-  'opname': 'Opname stok',
-  'diskon': 'Diskon',
-  'lihat_laporan': 'Lihat laporan',
-  'cetak_laporan': 'Cetak laporan',
-  'followup': 'Follow up pelanggan',
-  'backup': 'Backup & restore',
-};
-const rolePermissions = {
-  'KASIR': {
-    'void',
-    'retur',
-    'diskon',
-    'stok_masuk',
-    'stok_keluar',
-    'opname',
-    'lihat_laporan',
-    'followup',
-  },
-  'MEKANIK': <String>{},
-  'KEDUANYA': {
-    'void',
-    'retur',
-    'diskon',
-    'stok_masuk',
-    'stok_keluar',
-    'opname',
-    'lihat_laporan',
-    'followup',
-  },
-};
+const roles = builtinRoles;
+const roleLabels = builtinRoleLabels;
+
+/// Izin yang dapat ditambahkan per akun di atas akses perannya.
+Map<String, String> get permissionLabels => allAccessLabels;
+
 const _iterations = 600000;
 
 class AccountService {
@@ -68,13 +33,20 @@ class AccountService {
     );
   }
 
-  Set<String> effectivePermissions(Map<String, Object?> account) {
-    final role = account['role_base'] as String? ?? 'MEKANIK';
-    final extras = _jsonList(account['extra_permissions_json']);
-    return {
-      ...(rolePermissions[role] ?? const <String>{}),
-      ...extras,
-    };
+  Future<Set<String>> effectivePermissions(Map<String, Object?> account) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    return settings.accessFor(
+      account['role_base'] as String? ?? 'MEKANIK',
+      extras: _jsonList(account['extra_permissions_json']),
+    );
+  }
+
+  Future<void> _requireKnownRole(String role) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    final target = canonicalRole(role);
+    if (!settings.roleNames.contains(target)) {
+      throw ArgumentError('Peran tidak dikenal. Tambahkan peran di aturan toko.');
+    }
   }
 
   Future<Map<String, Object?>> createAccount({
@@ -97,9 +69,8 @@ class AccountService {
         'Nama pengguna 3-32 karakter, huruf kecil/angka/titik/strip.',
       );
     }
-    if (!roles.contains(role)) {
-      throw ArgumentError('Peran dasar tidak dikenal.');
-    }
+    await _requireKnownRole(role);
+    role = canonicalRole(role);
     final existing = await AppDatabase.instance.db.query(
       'employee_accounts',
       columns: ['id'],
@@ -126,6 +97,7 @@ class AccountService {
       'must_change_password': 1,
       'aktif': 1,
       'permission_version': 1,
+      'permissions_explicit': 1,
       'created_at': now,
       'updated_at': now,
     });
@@ -158,7 +130,7 @@ class AccountService {
       'username': username,
       'nama': (account['nama'] as String? ?? username).trim(),
       'role_base': account['role_base'] as String? ?? 'KASIR',
-      'extra_permissions_json': jsonEncode(account['extra_permissions'] ?? []),
+      'extra_permissions_json': jsonEncode(_remoteExtras(account)),
       'store_ids_json': jsonEncode(account['store_ids'] ?? []),
       'password_hash': account['password_hash'] as String? ?? '',
       'password_salt': account['password_salt'] as String? ?? '',
@@ -168,6 +140,8 @@ class AccountService {
       'aktif': account['aktif'] == false ? 0 : 1,
       'permission_version':
           (account['permission_version'] as num?)?.toInt() ?? 1,
+      'permissions_explicit':
+          account['permissions_explicit'] == true ? 1 : 0,
       'updated_at': now,
     };
     if (existing.isNotEmpty) {
@@ -212,10 +186,12 @@ class AccountService {
       {
         'nama': account['nama'],
         'role_base': account['role_base'],
-        'extra_permissions_json': jsonEncode(account['extra_permissions'] ?? []),
+        'extra_permissions_json': jsonEncode(_remoteExtras(account)),
         'store_ids_json': jsonEncode(account['store_ids'] ?? []),
         'aktif': account['aktif'] == false ? 0 : 1,
         'permission_version': incoming,
+        'permissions_explicit':
+            account['permissions_explicit'] == true ? 1 : 0,
         'updated_at': nowIso(),
       },
       where: 'id = ?',
@@ -234,6 +210,8 @@ class AccountService {
   }) async {
     final before = await _accountById(id);
     if (before == null) throw StateError('Akun tidak ditemukan.');
+    await _requireKnownRole(role);
+    role = canonicalRole(role);
     await AppDatabase.instance.db.update(
       'employee_accounts',
       {
@@ -243,6 +221,7 @@ class AccountService {
         'extra_permissions_json': jsonEncode(extraPermissions),
         'store_ids_json': jsonEncode(storeIds),
         'permission_version': ((before['permission_version'] as int?) ?? 1) + 1,
+        'permissions_explicit': 1,
         'updated_at': nowIso(),
       },
       where: 'id = ?',
@@ -503,15 +482,25 @@ class AccountService {
     );
   }
 
-  Operator _operator(Map<String, Object?> account, {String? deviceId}) {
+  Future<Operator> _operator(
+    Map<String, Object?> account, {
+    String? deviceId,
+  }) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    final extras = _jsonList(account['extra_permissions_json']);
+    final permissions = settings.accessFor(
+      account['role_base'] as String? ?? 'MEKANIK',
+      extras: extras,
+    );
     return Operator(
       kind: 'employee',
-      role: account['role_base'] as String? ?? 'MEKANIK',
+      role: canonicalRole(account['role_base'] as String? ?? 'MEKANIK'),
       label: account['nama'] as String? ?? 'Karyawan',
       employeeId: account['id'] as int,
       employeeSyncId: account['sync_id'] as String?,
       username: account['username'] as String,
-      permissions: effectivePermissions(account),
+      permissions: permissions,
+      extraPermissions: extras,
       deviceId: deviceId,
       storeIds: _jsonList(account['store_ids_json']).isEmpty
           ? const ['utama']
@@ -604,5 +593,20 @@ class AccountService {
       if (decoded is List) return decoded.map((item) => '$item').toList();
     } catch (_) {}
     return const [];
+  }
+
+  /// `extra_permissions` dari relay adalah izin efektif; `permission_grants`
+  /// menyimpan tambahan semantik per akun agar pencabutan akses peran tidak
+  /// tertahan oleh izin lama di perangkat.
+  List<String> _remoteExtras(Map<String, Object?> account) {
+    final grants = account['permission_grants'];
+    final explicit = account['permissions_explicit'] == true;
+    if (explicit && grants is List) {
+      return grants.map((item) => '$item').toList();
+    }
+    final extras = account['extra_permissions'];
+    if (extras is List) return extras.map((item) => '$item').toList();
+    if (grants is List) return grants.map((item) => '$item').toList();
+    return _jsonList(extras);
   }
 }

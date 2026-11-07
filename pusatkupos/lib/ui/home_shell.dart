@@ -8,6 +8,7 @@ import '../data/session_service.dart';
 import '../data/store_registry.dart';
 import '../data/store_service.dart';
 import '../state/app_state.dart';
+import 'entry_gate.dart';
 import 'pin_gate.dart';
 import 'widgets.dart';
 import 'screens/customers_screen.dart';
@@ -198,6 +199,23 @@ class _HomeShellState extends State<HomeShell>
     Icons.workspace_premium_outlined,
   ];
 
+  /// Kunci akses untuk tiap layar sesuai urutan `_allLabels`.
+  static const _screenAccess = [
+    'lihat_ringkasan',
+    'lihat_kasir',
+    'lihat_riwayat',
+    'lihat_pelanggan',
+    'lihat_stok',
+    'lihat_order',
+    'lihat_jasa',
+    'lihat_laporan',
+    'lihat_supplier',
+    'lihat_followup',
+    'lihat_karyawan',
+    'lihat_pengaturan',
+    'lihat_premium',
+  ];
+
   Operator get _operator => AppState.instance.operator ?? Operator.owner;
 
   List<int> get _visible {
@@ -205,13 +223,10 @@ class _HomeShellState extends State<HomeShell>
     if (operator.isOwner) {
       return List.generate(_allLabels.length, (index) => index);
     }
-    final screens = <int>[0, 2, 3, 4, 5];
-    if (operator.canWriteMoney) screens.add(1);
-    if (operator.can('lihat_laporan')) screens.add(7);
-    if (operator.can('ubah_stok')) screens.add(8);
-    if (operator.can('followup')) screens.add(9);
-    screens.sort();
-    return screens;
+    return [
+      for (var index = 0; index < _screenAccess.length; index++)
+        if (operator.can(_screenAccess[index])) index,
+    ];
   }
 
   Widget _screen(int index) => switch (index) {
@@ -248,6 +263,44 @@ class _HomeShellState extends State<HomeShell>
     if (position >= 0) setState(() => _position = position);
   }
 
+  Widget _buildNoAccess() {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Akses terbatas')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.lock_outline,
+                size: 48,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Akun ini belum diberi akses menu apa pun.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Hubungi pemilik untuk mengatur menu dan tindakan yang boleh dibuka.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () => signOutToOnboarding(context),
+                icon: const Icon(Icons.logout),
+                label: const Text('Keluar'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = AppState.instance;
@@ -255,6 +308,9 @@ class _HomeShellState extends State<HomeShell>
       animation: appState,
       builder: (context, _) {
         final visible = _visible;
+        if (visible.isEmpty) {
+          return _buildNoAccess();
+        }
         if (_position >= visible.length) _position = 0;
         final screenIndex = visible[_position.clamp(0, visible.length - 1)];
         final wide = MediaQuery.sizeOf(context).width >= 900;

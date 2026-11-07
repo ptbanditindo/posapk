@@ -82,13 +82,13 @@ class _JasaScreenState extends State<JasaScreen> {
                       ?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
-              FilledButton.icon(
-                onPressed: AppState.instance.can('ubah_harga_jasa')
-                    ? () => _openForm()
-                    : null,
-                icon: const Icon(Icons.add),
-                label: const Text('Jasa'),
-              ),
+              if (AppState.instance.isOwner ||
+                  AppState.instance.can('ubah_harga_jasa'))
+                FilledButton.icon(
+                  onPressed: () => _openForm(),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Jasa'),
+                ),
             ],
           ),
         ),
@@ -105,10 +105,13 @@ class _JasaScreenState extends State<JasaScreen> {
                   title: 'Belum ada tarif jasa',
                   subtitle: 'Tambahkan jasa agar cepat dipilih di kasir.',
                   icon: Icons.build_outlined,
-                  action: FilledButton(
-                    onPressed: () => _openForm(),
-                    child: const Text('Tambah jasa'),
-                  ),
+                  action: AppState.instance.isOwner ||
+                          AppState.instance.can('ubah_harga_jasa')
+                      ? FilledButton(
+                          onPressed: () => _openForm(),
+                          child: const Text('Tambah jasa'),
+                        )
+                      : null,
                 );
               }
               return RefreshIndicator(
@@ -121,7 +124,10 @@ class _JasaScreenState extends State<JasaScreen> {
                     final item = rows[index];
                     return Card(
                       child: ListTile(
-                        onTap: () => _openForm(item),
+                        onTap: AppState.instance.isOwner ||
+                                AppState.instance.can('ubah_harga_jasa')
+                            ? () => _openForm(item)
+                            : null,
                         leading: const CircleAvatar(
                           child: Icon(Icons.build_outlined),
                         ),

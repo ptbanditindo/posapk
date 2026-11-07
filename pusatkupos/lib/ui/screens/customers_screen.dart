@@ -38,7 +38,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
     });
   }
 
+  bool get _canEdit =>
+      AppState.instance.isOwner || AppState.instance.can('ubah_pelanggan');
+
   Future<void> _addCustomer() async {
+    if (!_canEdit) {
+      showSnack(context, 'Peran ini tidak boleh menambah pelanggan.', error: true);
+      return;
+    }
     final input = await showDialog<CustomerInput>(
       context: context,
       builder: (_) => const _CustomerDialog(),
@@ -79,6 +86,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> _editCustomer(Customer customer) async {
+    if (!_canEdit) {
+      showSnack(context, 'Peran ini tidak boleh mengubah pelanggan.', error: true);
+      return;
+    }
     final row = await AppDatabase.instance.customerRow(customer.id);
     if (row == null || !mounted) return;
     final input = await showDialog<_CustomerEdit>(
@@ -105,6 +116,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> _mergeCustomer(Customer source, List<Customer> all) async {
+    if (!_canEdit) {
+      showSnack(context, 'Peran ini tidak boleh menggabung pelanggan.', error: true);
+      return;
+    }
     final targets =
         all.where((customer) => customer.id != source.id).toList();
     if (targets.isEmpty) {
@@ -196,11 +211,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              FilledButton.icon(
-                onPressed: _addCustomer,
-                icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Tambah'),
-              ),
+              if (_canEdit)
+                FilledButton.icon(
+                  onPressed: _addCustomer,
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: const Text('Tambah'),
+                ),
             ],
           ),
         ),
@@ -228,10 +244,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   title: 'Belum ada pelanggan',
                   subtitle: 'Tambahkan pelanggan untuk mulai membuat nota.',
                   icon: Icons.people_outline,
-                  action: FilledButton(
-                    onPressed: _addCustomer,
-                    child: const Text('Tambah pelanggan'),
-                  ),
+                  action: _canEdit
+                      ? FilledButton(
+                          onPressed: _addCustomer,
+                          child: const Text('Tambah pelanggan'),
+                        )
+                      : null,
                 );
               }
               return RefreshIndicator(
@@ -265,24 +283,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Icon(Icons.chevron_right),
-                            PopupMenuButton<String>(
-                              onSelected: (value) {
-                                if (value == 'edit') _editCustomer(customer);
-                                if (value == 'merge') {
-                                  _mergeCustomer(customer, rows);
-                                }
-                              },
-                              itemBuilder: (context) => const [
-                                PopupMenuItem(
-                                  value: 'edit',
-                                  child: Text('Ubah pelanggan'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'merge',
-                                  child: Text('Gabung pelanggan'),
-                                ),
-                              ],
-                            ),
+                            if (_canEdit)
+                              PopupMenuButton<String>(
+                                onSelected: (value) {
+                                  if (value == 'edit') _editCustomer(customer);
+                                  if (value == 'merge') {
+                                    _mergeCustomer(customer, rows);
+                                  }
+                                },
+                                itemBuilder: (context) => const [
+                                  PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text('Ubah pelanggan'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'merge',
+                                    child: Text('Gabung pelanggan'),
+                                  ),
+                                ],
+                              ),
                           ],
                         ),
                       ),
@@ -450,6 +469,11 @@ class _UnitsSheetState extends State<_UnitsSheet> {
   }
 
   Future<void> _addUnit() async {
+    if (!AppState.instance.isOwner &&
+        !AppState.instance.can('ubah_pelanggan')) {
+      showSnack(context, 'Peran ini tidak boleh menambah unit.', error: true);
+      return;
+    }
     final input = await showDialog<UnitInput>(
       context: context,
       builder: (_) => const _UnitDialog(),
@@ -502,11 +526,13 @@ class _UnitsSheetState extends State<_UnitsSheet> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
-              FilledButton.tonalIcon(
-                onPressed: _addUnit,
-                icon: const Icon(Icons.add),
-                label: const Text('Unit'),
-              ),
+              if (AppState.instance.isOwner ||
+                  AppState.instance.can('ubah_pelanggan'))
+                FilledButton.tonalIcon(
+                  onPressed: _addUnit,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Unit'),
+                ),
             ],
           ),
           const SizedBox(height: 10),

@@ -1,0 +1,234 @@
+/// Katalog akses peran.
+///
+/// Peran hanyalah label untuk menandai orang. Jalur yang boleh dibuka
+/// ditentukan oleh peta akses per peran di `store_settings`.
+const builtinRoles = ['KASIR', 'MEKANIK', 'SUPERVISOR'];
+
+/// Peran lama yang dipertahankan sebagai alias agar data dan sesi lama tetap
+/// terbaca. Penyimpanan baru selalu memakai `SUPERVISOR`.
+const legacyRoleAliases = {'KEDUANYA': 'SUPERVISOR'};
+
+const builtinRoleLabels = {
+  'KASIR': 'Kasir',
+  'MEKANIK': 'Mekanik',
+  'SUPERVISOR': 'Supervisor',
+};
+
+/// Menu yang boleh ditampilkan. Kunci ini dipakai `HomeShell` dan layar lain.
+const viewAccessLabels = {
+  'lihat_ringkasan': 'Ringkasan',
+  'lihat_kasir': 'Kasir',
+  'lihat_riwayat': 'Riwayat',
+  'lihat_pelanggan': 'Pelanggan',
+  'lihat_stok': 'Stok',
+  'lihat_order': 'Order',
+  'lihat_jasa': 'Jasa',
+  'lihat_laporan': 'Laporan',
+  'lihat_supplier': 'Supplier',
+  'lihat_followup': 'Follow up',
+  'lihat_karyawan': 'Karyawan',
+  'lihat_pengaturan': 'Pengaturan',
+  'lihat_premium': 'Premium',
+};
+
+/// Tindakan yang boleh dilakukan di dalam layar.
+const actionAccessLabels = {
+  'buat_nota': 'Buat nota',
+  'buat_estimasi': 'Buat estimasi',
+  'buat_order': 'Buat order kerja',
+  'ubah_status': 'Ubah status order',
+  'void': 'Batalkan nota',
+  'retur': 'Retur penjualan',
+  'koreksi': 'Koreksi nota',
+  'diskon': 'Beri diskon',
+  'setujui': 'Menyetujui pengecualian',
+  'ubah_stok': 'Ubah data stok',
+  'stok_masuk': 'Stok masuk',
+  'stok_keluar': 'Stok keluar',
+  'opname': 'Opname stok',
+  'ubah_harga_jasa': 'Ubah harga jasa',
+  'followup': 'Follow up pelanggan',
+  'ubah_pelanggan': 'Tambah/ubah pelanggan',
+  'ubah_supplier': 'Kelola supplier',
+  'kelola_jasa': 'Kelola daftar jasa',
+  'ubah_pengaturan': 'Ubah pengaturan toko',
+  'kelola_akun': 'Kelola akun karyawan',
+  'kelola_perangkat': 'Kelola perangkat',
+  'lisensi': 'Kelola lisensi',
+  'backup': 'Backup & restore',
+  'cetak_laporan': 'Cetak laporan',
+};
+
+const transactionAccessLabels = {
+  'jenis_jual_sparepart': 'Jual sparepart',
+  'jenis_servis_langsung': 'Servis langsung',
+  'jenis_order_kerja': 'Order kerja',
+  'jenis_estimasi_saja': 'Estimasi saja',
+  'jenis_pelunasan_order': 'Pelunasan order',
+};
+
+/// Semua kunci yang dapat disimpan pada peta akses peran.
+Map<String, String> get allAccessLabels => {
+      ...viewAccessLabels,
+      ...actionAccessLabels,
+    };
+
+Set<String> allAccessKeys() => {
+      ...viewAccessLabels.keys,
+      ...actionAccessLabels.keys,
+      ...transactionAccessLabels.keys,
+    };
+
+String canonicalRole(String role) {
+  final trimmed = role.trim();
+  if (trimmed.isEmpty) return 'KASIR';
+  final upper = trimmed.toUpperCase();
+  final alias = legacyRoleAliases[upper];
+  if (alias != null) return alias;
+  if (builtinRoles.contains(upper)) return upper;
+  return trimmed;
+}
+
+String roleDisplayName(String role) {
+  final canonical = canonicalRole(role);
+  return builtinRoleLabels[canonical] ?? canonical;
+}
+
+bool isBuiltinRole(String role) => builtinRoles.contains(canonicalRole(role));
+
+/// Akses bawaan tiap peran. Peran kustom dimulai tanpa akses lalu diatur
+/// pemilik.
+Map<String, Map<String, bool>> defaultRoleAccess() => {
+      'KASIR': {
+        'lihat_ringkasan': true,
+        'lihat_kasir': true,
+        'lihat_riwayat': true,
+        'lihat_pelanggan': true,
+        'lihat_stok': true,
+        'lihat_order': true,
+        'lihat_jasa': false,
+        'lihat_laporan': true,
+        'lihat_supplier': false,
+        'lihat_followup': true,
+        'lihat_karyawan': false,
+        'lihat_pengaturan': false,
+        'lihat_premium': false,
+        'buat_nota': true,
+        'buat_estimasi': true,
+        'buat_order': true,
+        'ubah_status': false,
+        'void': true,
+        'retur': true,
+        'koreksi': false,
+        'diskon': true,
+        'setujui': false,
+        'ubah_stok': false,
+        'stok_masuk': true,
+        'stok_keluar': true,
+        'opname': true,
+        'ubah_harga_jasa': false,
+        'followup': true,
+        'ubah_pelanggan': true,
+        'ubah_supplier': false,
+        'kelola_jasa': false,
+        'ubah_pengaturan': false,
+        'kelola_akun': false,
+        'kelola_perangkat': false,
+        'lisensi': false,
+        'backup': false,
+        'cetak_laporan': false,
+        'jenis_jual_sparepart': true,
+        'jenis_servis_langsung': true,
+        'jenis_order_kerja': true,
+        'jenis_estimasi_saja': true,
+        'jenis_pelunasan_order': false,
+      },
+      'MEKANIK': {
+        'lihat_ringkasan': true,
+        'lihat_kasir': false,
+        'lihat_riwayat': true,
+        'lihat_pelanggan': true,
+        'lihat_stok': true,
+        'lihat_order': true,
+        'lihat_jasa': false,
+        'lihat_laporan': false,
+        'lihat_supplier': false,
+        'lihat_followup': false,
+        'lihat_karyawan': false,
+        'lihat_pengaturan': false,
+        'lihat_premium': false,
+        'buat_nota': false,
+        'buat_estimasi': false,
+        'buat_order': false,
+        'ubah_status': true,
+        'void': false,
+        'retur': false,
+        'koreksi': false,
+        'diskon': false,
+        'setujui': false,
+        'ubah_stok': false,
+        'stok_masuk': false,
+        'stok_keluar': false,
+        'opname': false,
+        'ubah_harga_jasa': false,
+        'followup': false,
+        'ubah_pelanggan': true,
+        'ubah_supplier': false,
+        'kelola_jasa': false,
+        'ubah_pengaturan': false,
+        'kelola_akun': false,
+        'kelola_perangkat': false,
+        'lisensi': false,
+        'backup': false,
+        'cetak_laporan': false,
+        'jenis_jual_sparepart': true,
+        'jenis_servis_langsung': true,
+        'jenis_order_kerja': true,
+        'jenis_estimasi_saja': true,
+        'jenis_pelunasan_order': false,
+      },
+      'SUPERVISOR': {
+        'lihat_ringkasan': true,
+        'lihat_kasir': true,
+        'lihat_riwayat': true,
+        'lihat_pelanggan': true,
+        'lihat_stok': true,
+        'lihat_order': true,
+        'lihat_jasa': true,
+        'lihat_laporan': true,
+        'lihat_supplier': true,
+        'lihat_followup': true,
+        'lihat_karyawan': false,
+        'lihat_pengaturan': false,
+        'lihat_premium': false,
+        'buat_nota': true,
+        'buat_estimasi': true,
+        'buat_order': true,
+        'ubah_status': true,
+        'void': true,
+        'retur': true,
+        'koreksi': true,
+        'diskon': true,
+        'setujui': true,
+        'ubah_stok': true,
+        'stok_masuk': true,
+        'stok_keluar': true,
+        'opname': true,
+        'ubah_harga_jasa': true,
+        'followup': true,
+        'ubah_pelanggan': true,
+        'ubah_supplier': true,
+        'kelola_jasa': true,
+        'ubah_pengaturan': false,
+        'kelola_akun': false,
+        'kelola_perangkat': false,
+        'lisensi': false,
+        'backup': false,
+        'cetak_laporan': true,
+        'jenis_jual_sparepart': true,
+        'jenis_servis_langsung': true,
+        'jenis_order_kerja': true,
+        'jenis_estimasi_saja': true,
+        'jenis_pelunasan_order': true,
+      },
+    };

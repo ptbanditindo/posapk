@@ -17,6 +17,7 @@ class SenderProfile {
     required this.kind,
     this.roleBase = '',
     this.extraPermissions = const {},
+    this.permissionsExplicit = false,
     this.storeIds = const [],
     this.legacyAll = false,
   });
@@ -24,12 +25,17 @@ class SenderProfile {
   const SenderProfile.legacy(this.kind)
       : roleBase = '',
         extraPermissions = const {},
+        permissionsExplicit = false,
         storeIds = const [],
         legacyAll = true;
 
   final String kind; // owner | employee | viewer
-  final String roleBase; // owner | KASIR | MEKANIK | KEDUANYA
+  final String roleBase; // owner | peran bawaan | peran kustom
   final Set<String> extraPermissions;
+
+  /// Bila true, izin yang dikirim sudah final; izin bawaan peran tidak
+  /// ditambahkan lagi.
+  final bool permissionsExplicit;
   final List<String> storeIds;
 
   /// Hanya dipakai harness lama yang belum mengirim profil perangkat.
@@ -47,6 +53,14 @@ class SenderProfile {
       'koreksi',
     },
     'MEKANIK': {'ubah_status'},
+    'SUPERVISOR': {
+      'buat_nota',
+      'buat_estimasi',
+      'buat_order',
+      'ubah_status',
+      'ubah_stok',
+      'koreksi',
+    },
     'KEDUANYA': {
       'buat_nota',
       'buat_estimasi',
@@ -63,7 +77,8 @@ class SenderProfile {
       isOwner ||
       legacyAll ||
       extraPermissions.contains(permission) ||
-      (baseRolePermissions[roleBase]?.contains(permission) ?? false);
+      (!permissionsExplicit &&
+          (baseRolePermissions[roleBase]?.contains(permission) ?? false));
 }
 
 /// Satu tempat untuk aturan konflik sinkronisasi.

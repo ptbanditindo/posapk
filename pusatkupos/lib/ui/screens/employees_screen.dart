@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
 import '../../core/money.dart';
+import '../../data/access_control.dart';
 import '../../data/employee_service.dart';
 import '../../data/license_service.dart';
+import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
@@ -75,7 +77,14 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     return null;
   }
 
+  bool get _canManage =>
+      AppState.instance.isOwner || AppState.instance.can('kelola_akun');
+
   Future<void> _editCompensation() async {
+    if (!_canManage) {
+      showSnack(context, 'Peran ini tidak boleh mengatur kompensasi.', error: true);
+      return;
+    }
     final employee = _employee;
     if (employee == null) return;
     final result = await showDialog<_CompensationInput>(
@@ -108,6 +117,10 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
   }
 
   Future<void> _paySalary() async {
+    if (!_canManage) {
+      showSnack(context, 'Peran ini tidak boleh membayar gaji.', error: true);
+      return;
+    }
     final selected = _selected;
     if (selected == null) return;
     final bonusText = _bonus.text.trim();
@@ -148,6 +161,10 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
   }
 
   Future<void> _addDebt() async {
+    if (!_canManage) {
+      showSnack(context, 'Peran ini tidak boleh menambah hutang.', error: true);
+      return;
+    }
     final selected = _selected;
     if (selected == null) return;
     final nominal = TextEditingController();
@@ -286,18 +303,20 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 subtitle: Text(
-                  '${employee['role_base']} · '
+                  '${roleDisplayName('${employee['role_base'] ?? ''}')} · '
                   '${employee['jenis_imbalan'] == 'GAJI' ? 'Gaji' : 'Komisi'} · '
                   '${employee['payroll_period']}'
                   '${employee['aktif'] == 1 ? '' : ' · nonaktif'}',
                 ),
-                trailing: TextButton(
-                  onPressed: () {
-                    setState(() => _selected = '${employee['sync_id']}');
-                    _editCompensation();
-                  },
-                  child: const Text('Atur'),
-                ),
+                trailing: _canManage
+                    ? TextButton(
+                        onPressed: () {
+                          setState(() => _selected = '${employee['sync_id']}');
+                          _editCompensation();
+                        },
+                        child: const Text('Atur'),
+                      )
+                    : null,
               ),
             ),
           ),
@@ -334,7 +353,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                       child: Text('Gaji siklus ini sudah dibayar.'),
                     ),
                   )
-                else ...[
+                else if (_canManage) ...[
                   const SizedBox(height: 10),
                   TextField(
                     controller: _bonus,
@@ -397,11 +416,13 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
         SectionCard(
           title: 'Hutang karyawan',
           subtitle: 'Total sisa ${formatRupiah(total)}',
-          trailing: IconButton(
-            tooltip: 'Tambah hutang',
-            onPressed: _addDebt,
-            icon: const Icon(Icons.add),
-          ),
+          trailing: _canManage
+              ? IconButton(
+                  tooltip: 'Tambah hutang',
+                  onPressed: _addDebt,
+                  icon: const Icon(Icons.add),
+                )
+              : null,
           child: _debts.isEmpty
               ? const Text('Belum ada hutang.')
               : Column(
