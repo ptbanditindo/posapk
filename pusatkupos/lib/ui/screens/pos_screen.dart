@@ -338,6 +338,7 @@ class _PosScreenState extends State<PosScreen> {
       builder: (_) => _PartDialog(stock: _stock),
     );
     if (part == null) return;
+    if (!mounted) return;
     final index = _parts.indexWhere(
       (item) => item.stockItemId == part.stockItemId,
     );
@@ -770,6 +771,12 @@ class _PosScreenState extends State<PosScreen> {
             _receiptRow('Total', formatRupiah(record.totalCents)),
             _receiptRow('Dibayar', formatRupiah(detail.totalDibayarCents)),
             _receiptRow('Sisa', formatRupiah(detail.sisaCents)),
+            if (record.metodeBayar == 'CASH' &&
+                record.bayarCents > record.totalCents)
+              _receiptRow(
+                'Kembalian',
+                formatRupiah(record.bayarCents - record.totalCents),
+              ),
             _receiptRow('Status', record.statusBayar),
             if (record.bergaransi && record.garansiSampai != null)
               _receiptRow(

@@ -170,7 +170,7 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
             ),
             if (canWhatsApp)
               TextButton.icon(
-                onPressed: () => _sendWhatsApp(document!),
+                onPressed: () => _sendWhatsApp(document),
                 icon: const Icon(Icons.chat_outlined),
                 label: const Text('WhatsApp'),
               ),
@@ -247,7 +247,7 @@ class _LogoPreview extends StatelessWidget {
               Uint8List.fromList(bytes),
               height: 72,
               fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
             ),
           ),
         );

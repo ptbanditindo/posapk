@@ -865,7 +865,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 text: _backupPassphrase.text.trim(),
                               ),
                             );
-                            if (!mounted) return;
+                            if (!context.mounted) return;
                             showSnack(context, 'Passphrase disalin.');
                           },
                         ),

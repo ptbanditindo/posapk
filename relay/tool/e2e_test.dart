@@ -372,6 +372,11 @@ Future<void> main() async {
     'perangkat 2 melihat amplop perangkat 1',
     envelopes.any((item) => item is Map && item['idempotency_key'] == 'idem-1'),
   );
+  _check(
+    'feed pemilik baru melaporkan pruned_through=0',
+    r.body?['pruned_through'] == 0,
+    '${r.body?['pruned_through']}',
+  );
   r = await _request('GET', '/relay/feed?store_id=lain&since_seq=0', token: dev2Token);
   _expect('feed menolak toko tidak terdaftar', r.status, 403);
 
@@ -385,6 +390,32 @@ Future<void> main() async {
     'last_seq': env1RelaySeq,
   });
   _expect('ack perangkat 1 200', r.status, 200);
+
+  // 8b. Retensi: amplop yang diakui semua perangkat dipangkas dan relay
+  // mencatat batasnya untuk membedakan pemangkasan nyata dari nomor global.
+  r = await _request(
+    'POST',
+    '/relay/envelopes',
+    token: dev1Token,
+    body: await envelope(
+      dev1,
+      dev1Id,
+      seq: 6,
+      idem: 'idem-prune',
+      entityId: 'nota-prune',
+    ),
+  );
+  _expect('amplop pemicu retensi 200', r.status, 200, r.code);
+  r = await _request('GET', '/relay/feed?store_id=utama&since_seq=0', token: dev2Token);
+  _expect('feed setelah retensi 200', r.status, 200, r.code);
+  final prunedThrough = (r.body?['pruned_through'] as num?)?.toInt() ?? 0;
+  final latestAfterPrune = (r.body?['latest_seq'] as num?)?.toInt() ?? 0;
+  _check('retensi mencatat pruned_through', prunedThrough > 0, '$prunedThrough');
+  _check(
+    'pruned_through tidak melewati amplop terakhir',
+    prunedThrough <= latestAfterPrune,
+    'pruned=$prunedThrough latest=$latestAfterPrune',
+  );
 
   // 9. Sync round + snapshot.
   r = await _request('POST', '/relay/sync/rounds', token: dev1Token, body: {'store_id': 'utama'});

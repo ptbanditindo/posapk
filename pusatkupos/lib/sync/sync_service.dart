@@ -770,19 +770,17 @@ class SyncService {
         where: 'id = ?',
         whereArgs: [conflictId],
       );
-      if (inboxId != null) {
-        await txn.update(
-          'sync_inbox',
-          {
-            'status': 'pending',
-            'retry_count': 0,
-            'next_retry_at': stamp,
-            'updated_at': stamp,
-          },
-          where: 'id = ?',
-          whereArgs: [inboxId],
-        );
-      }
+      await txn.update(
+        'sync_inbox',
+        {
+          'status': 'pending',
+          'retry_count': 0,
+          'next_retry_at': stamp,
+          'updated_at': stamp,
+        },
+        where: 'id = ?',
+        whereArgs: [inboxId],
+      );
     });
   }
 
@@ -1879,11 +1877,18 @@ class SyncService {
     while (true) {
       final feed = await client.feed(storeId: store, sinceSeq: pageCursor);
       final logStart = (feed['log_start_seq'] as num?)?.toInt() ?? 0;
+      final prunedThrough = (feed['pruned_through'] as num?)?.toInt();
       if (feed['snapshot_required'] != true &&
-          logStart > 0 &&
-          logStart > pageCursor + 1) {
+          relayHistoryPruned(
+            cursor: pageCursor,
+            logStart: logStart,
+            prunedThrough: prunedThrough,
+          )) {
+        final boundary = prunedThrough != null && prunedThrough > 0
+            ? prunedThrough
+            : logStart;
         throw StateError(
-          'Riwayat relay sudah dipangkas mulai urutan $logStart, sedangkan '
+          'Riwayat relay sudah dipangkas sampai urutan $boundary, sedangkan '
           'perangkat ini baru berada di urutan $pageCursor. Minta pemilik '
           'mengunggah snapshot dari perangkat yang datanya lengkap.',
         );

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io' show HttpConnectionInfo;
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
@@ -161,18 +162,27 @@ class RelayServer {
     Request request, {
     int maxBytes = _defaultMaxBodyBytes,
   }) async {
-    final declared = request.contentLength;
-    if (declared != null && declared > maxBytes) {
-      throw const _BodyTooLarge();
-    }
-    final bytes = <int>[];
+    final builder = BytesBuilder(copy: false);
+    var tooLarge =
+        request.contentLength != null && request.contentLength! > maxBytes;
+    var drained = 0;
     await for (final chunk in request.read()) {
-      if (bytes.length + chunk.length > maxBytes) {
-        throw const _BodyTooLarge();
+      if (tooLarge) {
+        // Tetap baca sisa body agar klien dapat menerima respons 413, bukan
+        // koneksi yang diputus saat unggah.
+        drained += chunk.length;
+        if (drained > maxBytes) break;
+        continue;
       }
-      bytes.addAll(chunk);
+      if (builder.length + chunk.length > maxBytes) {
+        tooLarge = true;
+        builder.clear();
+        continue;
+      }
+      builder.add(chunk);
     }
-    final raw = utf8.decode(bytes);
+    if (tooLarge) throw const _BodyTooLarge();
+    final raw = utf8.decode(builder.takeBytes());
     if (raw.trim().isEmpty) return {};
     final decoded = jsonDecode(raw);
     if (decoded is! Map) throw FormatException('Body harus objek JSON.');
@@ -990,6 +1000,16 @@ WHERE owner_id = @owner AND store_id = @store AND relay_seq <= @seq
 ''',
       {'owner': ownerId, 'store': store, 'seq': seq},
     );
+    await db.execute(
+      '''
+INSERT INTO retention (owner_id, store_id, pruned_through, updated_at)
+VALUES (@owner, @store, @seq, now())
+ON CONFLICT (owner_id, store_id) DO UPDATE SET
+  pruned_through = GREATEST(retention.pruned_through, EXCLUDED.pruned_through),
+  updated_at = now()
+''',
+      {'owner': ownerId, 'store': store, 'seq': seq},
+    );
   }
 
   Future<Response> _feed(Request request) async {
@@ -1024,12 +1044,20 @@ WHERE owner_id = @owner AND store_id = @store AND relay_seq <= @seq
       {'owner': device['owner_id'], 'store': store},
     );
     final logStart = (firstRow?['first'] as num?)?.toInt() ?? 0;
+    final retentionRow = await db.one(
+      'SELECT pruned_through FROM retention '
+      'WHERE owner_id = @owner AND store_id = @store',
+      {'owner': device['owner_id'], 'store': store},
+    );
+    final prunedThrough =
+        (retentionRow?['pruned_through'] as num?)?.toInt() ?? 0;
     if (snapshot != null && cursor < snapSeq) {
       return _json(200, {
         'envelopes': [],
         'next_seq': cursor,
         'latest_seq': latest,
         'log_start_seq': logStart,
+        'pruned_through': prunedThrough,
         'snapshot_required': true,
       });
     }
@@ -1080,6 +1108,7 @@ ORDER BY relay_seq ASC LIMIT @limit
       'next_seq': next,
       'latest_seq': latest,
       'log_start_seq': logStart,
+      'pruned_through': prunedThrough,
       'snapshot_required': false,
     });
   }
@@ -2492,12 +2521,13 @@ ON CONFLICT (owner_id) DO UPDATE SET
   Future<Response> _adminIdentities(Request request) async {
     if (!_admin(request)) return _error(401, 'Admin token diperlukan.');
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
-    final rows = await db.query(
-      ownerId.isEmpty
-          ? 'SELECT * FROM owner_identities ORDER BY created_at'
-          : 'SELECT * FROM owner_identities WHERE owner_id = @owner ORDER BY created_at',
-      {'owner': ownerId},
-    );
+    final rows = ownerId.isEmpty
+        ? await db.query('SELECT * FROM owner_identities ORDER BY created_at')
+        : await db.query(
+            'SELECT * FROM owner_identities WHERE owner_id = @owner '
+            'ORDER BY created_at',
+            {'owner': ownerId},
+          );
     return _json(200, rows.map(_identityJson).toList());
   }
 

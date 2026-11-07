@@ -254,6 +254,15 @@ CREATE TABLE IF NOT EXISTS cursors (
 )
 ''',
       '''
+CREATE TABLE IF NOT EXISTS retention (
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL,
+  pruned_through BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, store_id)
+)
+''',
+      '''
 CREATE TABLE IF NOT EXISTS owner_identities (
   email TEXT PRIMARY KEY,
   subject TEXT UNIQUE,

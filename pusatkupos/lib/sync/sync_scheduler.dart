@@ -40,7 +40,6 @@ class SyncScheduler with WidgetsBindingObserver {
       _scheduleNext();
     }).catchError((Object _) {
       if (_started) _scheduleNext();
-      return const Duration(minutes: defaultIntervalMinutes);
     });
     tick();
   }
@@ -74,13 +73,14 @@ class SyncScheduler with WidgetsBindingObserver {
       try {
         await tick(force: true);
       } finally {
-        if (!_started) return;
-        try {
-          _interval = await configuredInterval();
-        } catch (_) {
-          // Pakai interval terakhir bila pengaturan belum dapat dibaca.
+        if (_started) {
+          try {
+            _interval = await configuredInterval();
+          } catch (_) {
+            // Pakai interval terakhir bila pengaturan belum dapat dibaca.
+          }
+          _scheduleNext();
         }
-        _scheduleNext();
       }
     });
   }

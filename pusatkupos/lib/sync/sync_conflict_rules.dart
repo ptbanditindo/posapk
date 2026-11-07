@@ -206,3 +206,18 @@ class SyncConflictRules {
     return 'gagal_terapkan';
   }
 }
+
+/// Relay memakai satu deret `relay_seq` untuk semua pemilik dan toko. Karena
+/// itu `log_start_seq` bisa jauh di atas kursor perangkat baru tanpa ada data
+/// yang hilang. `pruned_through` adalah batas yang dicatat relay hanya saat
+/// retensi benar-benar menghapus amplop; relay lama belum mengirimkannya.
+bool relayHistoryPruned({
+  required int cursor,
+  required int logStart,
+  int? prunedThrough,
+}) {
+  if (prunedThrough != null) {
+    return prunedThrough > 0 && prunedThrough > cursor;
+  }
+  return cursor > 0 && logStart > 0 && logStart > cursor + 1;
+}

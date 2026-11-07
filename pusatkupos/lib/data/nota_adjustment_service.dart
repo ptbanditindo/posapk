@@ -166,7 +166,7 @@ class NotaAdjustmentService {
       await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
       await txn.insert('permission_audits', {
         'actor': actor.label,
-        'target_account_id': actor?.employeeId,
+        'target_account_id': actor.employeeId,
         'action': 'koreksi_nota',
         'detail_json': jsonEncode({
           'nota_sync_id': notaSyncId,

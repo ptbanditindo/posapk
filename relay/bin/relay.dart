@@ -70,7 +70,17 @@ Future<void> main(List<String> arguments) async {
         final rows = await db.query(
           'SELECT owner_id, owner_public_key, license_plan, license_period_end, license_store_limit FROM owners ORDER BY created_at',
         );
-        print(jsonEncode(rows));
+        print(jsonEncode([
+          for (final row in rows)
+            {
+              ...row,
+              'license_period_end': row['license_period_end'] is DateTime
+                  ? (row['license_period_end'] as DateTime)
+                      .toUtc()
+                      .toIso8601String()
+                  : row['license_period_end'],
+            },
+        ]));
         break;
       case 'owner':
         await _createOwner(db, command);

@@ -363,6 +363,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       }
                       return;
                     }
+                    if (!context.mounted) return;
                     final secret = await _askApprovalSecret(context, settings);
                     if (secret == null) return;
                     asked = true;

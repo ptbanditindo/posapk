@@ -180,8 +180,9 @@ class ReceiptService {
 
     void meta() {
       bool on(String key) => template.metaFields[key] ?? true;
-      if (on('no_nota'))
+      if (on('no_nota')) {
         builder.field(template.label('no_nota'), record.noNota);
+      }
       if (on('tanggal')) {
         builder.field(
           template.label('tanggal'),

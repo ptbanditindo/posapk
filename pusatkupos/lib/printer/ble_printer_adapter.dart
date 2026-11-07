@@ -84,7 +84,7 @@ class BlePrinterAdapter extends PrinterAdapter {
     final device = BluetoothDevice.fromId(printer.address);
     if (_device?.remoteId.str == device.remoteId.str &&
         _characteristic != null &&
-        await device.isConnected) {
+        device.isConnected) {
       return;
     }
     await disconnect(printer);

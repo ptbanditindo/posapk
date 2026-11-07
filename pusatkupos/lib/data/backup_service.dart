@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart' hide Hmac;
@@ -733,7 +732,7 @@ class BackupService {
         );
       }
       if (format == _backupFormat) {
-        return _restoreMultiStore(archive, manifest, passphrase);
+        return await _restoreMultiStore(archive, manifest, passphrase);
       }
       final payloadName = '${manifest['payload'] ?? 'pusatkupos.db'}';
       final payloadFile = archive.files

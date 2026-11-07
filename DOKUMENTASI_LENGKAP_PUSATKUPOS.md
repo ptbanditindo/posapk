@@ -62,6 +62,7 @@ utuh; hanya tingkat judul yang disesuaikan agar hierarki dokumen konsisten.
   - 11. Artefak
   - 12. Prioritas tindak lanjut
   - 13. Uji peran kustom dan pembatasan akses (06 Nov 2026)
+  - 14. Perbaikan lanjutan (07 Nov 2026)
 
 ---
 
@@ -2381,6 +2382,10 @@ Snapshot hanya diterima bila: perangkat berjenis owner, putaran lengkap dan tida
 5. Tambahkan jalur UI untuk enroll token/pairing pada deployment lokal/on-prem.
 6. Uji unggah snapshot dan backup file pada build Android/desktop (tidak bisa di web).
 7. Samakan informasi Kembalian antara struk dan dialog nota (opsional).
+
+**Status 7 November 2026:** butir 1–4 dan 7 sudah diperbaiki; rincian pada §14.
+Butir 5 belum diuji ulang lewat UI dan butir 6 masih menunggu perangkat native.
+
 ---
 
 ### 13. Uji peran kustom dan pembatasan akses (06 Nov 2026)
@@ -2418,3 +2423,29 @@ Snapshot hanya diterima bila: perangkat berjenis owner, putaran lengkap dan tida
 - Definisi peran disimpan pada `store_settings.role_permissions_json` sehingga ikut tersinkron dan tidak menambah entitas baru.
 - Peran kustom dimulai tanpa akses sampai owner mengaturnya; peran bawaan memakai peta default dengan fallback.
 - Peran yang masih dipakai akun (aktif maupun nonaktif) tidak bisa dihapus.
+
+---
+
+### 14. Perbaikan lanjutan (07 Nov 2026)
+
+#### 14.1 Yang diperbaiki
+
+| Temuan | Perbaikan | Bukti |
+|---|---|---|
+| `relay_seq` global membuat pemilik baru dianggap kehilangan riwayat | Relay mencatat batas retensi nyata di tabel `retention` dan mengirim `pruned_through` pada feed. Klien memakai sinyal itu; heuristik lama hanya dipakai untuk relay versi lama saat kursor sudah berjalan. | Uji unit `relay_prune_test.dart` (6 kasus) dan pemeriksaan e2e `pruned_through` |
+| Body 413 memutus koneksi saat unggah | Sisa body dibaca (dibatasi) sebelum membalas 413. | E2E `body terlalu besar 413` lulus |
+| `_adminIdentities` mengirim parameter tak terpakai sehingga 500 | Query tanpa `owner_id` tidak lagi mengirim parameter. | E2E `admin daftar identitas 200` lulus |
+| `list-owners` gagal karena `DateTime` tidak dapat di-JSON-kan | `license_period_end` diserialisasi ke ISO-8601. | Perintah dijalankan dan mengembalikan JSON |
+| Dialog "Nota tersimpan" tidak menampilkan Kembalian | Baris Kembalian muncul untuk pembayaran tunai yang melebihi total, sama dengan struk. | Pemeriksaan kode |
+
+#### 14.2 Verifikasi
+
+- `dart analyze` pada `pusatkupos/lib` dan `relay/bin|lib|tool`: **0 issues**.
+- `flutter test`: **12/12 lulus** (akses peran dan deteksi pemangkasan relay).
+- Relay e2e: **82/82 lulus**, termasuk pairing perangkat, login karyawan pada owner terdaftar, `pruned_through`, 413, dan admin identitas.
+
+#### 14.3 Yang belum dikerjakan
+
+- Uji ulang pairing dan login karyawan lewat UI aplikasi dengan owner terdaftar (API sudah lulus).
+- Sapu ulang gating peran dan uji matriks akses.
+- Uji unggah snapshot/backup dan cetak pada perangkat Android/desktop.

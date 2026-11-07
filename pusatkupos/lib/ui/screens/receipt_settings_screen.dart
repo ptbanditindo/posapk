@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -716,7 +715,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                           Uint8List.fromList(bytes),
                           height: 72,
                           fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) =>
+                          errorBuilder: (_, _, _) =>
                               const SizedBox.shrink(),
                         ),
                       ),
