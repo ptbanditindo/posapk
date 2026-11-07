@@ -172,6 +172,12 @@ class ServiceRecordSummary {
     required this.totalPartCents,
     required this.diskonCents,
     required this.totalCents,
+    this.koreksiJasaCents = 0,
+    this.koreksiPartCents = 0,
+    this.koreksiDiskonCents = 0,
+    this.totalAsliCents,
+    this.totalReturCents = 0,
+    this.totalKoreksiCents = 0,
     required this.bayarCents,
     required this.statusBayar,
     required this.metodeBayar,
@@ -186,6 +192,7 @@ class ServiceRecordSummary {
     this.jenisTransaksi = 'servis_langsung',
     this.jatuhTempo,
     this.totalDibayarCents = 0,
+    this.sisaBayarTersimpanCents,
   });
 
   final int id;
@@ -199,6 +206,12 @@ class ServiceRecordSummary {
   final int totalPartCents;
   final int diskonCents;
   final int totalCents;
+  final int koreksiJasaCents;
+  final int koreksiPartCents;
+  final int koreksiDiskonCents;
+  final int? totalAsliCents;
+  final int totalReturCents;
+  final int totalKoreksiCents;
   final int bayarCents;
   final String statusBayar;
   final String metodeBayar;
@@ -213,6 +226,17 @@ class ServiceRecordSummary {
   final DateTime? jatuhTempo;
   final int totalDibayarCents;
 
+  /// Sisa piutang hasil `recalculateRecordTotals`. Bila tersedia, nilai ini
+  /// menjadi acuan badge jatuh tempo karena sudah memperhitungkan koreksi dan
+  /// retur dengan rumus yang sama seperti database.
+  final int? sisaBayarTersimpanCents;
+
+  /// Komponen setelah koreksi dialokasikan, sehingga
+  /// Jasa + Part - Diskon = Total sebelum retur.
+  int get jasaEfektifCents => biayaJasaCents + koreksiJasaCents;
+  int get partEfektifCents => totalPartCents + koreksiPartCents;
+  int get diskonEfektifCents => diskonCents + koreksiDiskonCents;
+
   bool get isVoid => voidedAt != null;
 
   bool get jatuhTempoLewat {
@@ -224,6 +248,8 @@ class ServiceRecordSummary {
   }
 
   int get sisaBayarCents {
+    final tersimpan = sisaBayarTersimpanCents;
+    if (tersimpan != null) return tersimpan;
     final paid = totalDibayarCents > 0 ? totalDibayarCents : bayarCents;
     return totalCents - paid > 0 ? totalCents - paid : 0;
   }
@@ -257,7 +283,16 @@ class ServiceRecordSummary {
         biayaJasaCents: row['biaya_jasa'] as int? ?? 0,
         totalPartCents: row['total_part'] as int? ?? 0,
         diskonCents: row['diskon'] as int? ?? 0,
-        totalCents: row['total_servis'] as int? ?? 0,
+        koreksiJasaCents: (row['koreksi_jasa'] as num?)?.toInt() ?? 0,
+        koreksiPartCents: (row['koreksi_part'] as num?)?.toInt() ?? 0,
+        koreksiDiskonCents: (row['koreksi_diskon'] as num?)?.toInt() ?? 0,
+        totalCents:
+            (row['total_efektif'] as num?)?.toInt() ??
+            row['total_servis'] as int? ??
+            0,
+        totalAsliCents: row['total_servis'] as int?,
+        totalReturCents: (row['total_retur'] as num?)?.toInt() ?? 0,
+        totalKoreksiCents: (row['total_koreksi'] as num?)?.toInt() ?? 0,
         bayarCents: row['bayar'] as int? ?? 0,
         statusBayar: (row['status_bayar'] as String?) ?? 'LUNAS',
         metodeBayar: (row['metode_bayar'] as String?) ?? 'CASH',
@@ -281,6 +316,7 @@ class ServiceRecordSummary {
             ? null
             : DateTime.tryParse(row['jatuh_tempo'] as String),
         totalDibayarCents: row['total_dibayar'] as int? ?? 0,
+        sisaBayarTersimpanCents: (row['sisa_bayar'] as num?)?.toInt(),
       );
 }
 
@@ -381,6 +417,8 @@ class SaleReturnItemRow {
     required this.hargaSatuanCents,
     required this.subtotalCents,
     this.qtyMilli = 0,
+    this.qtyAsalMilli,
+    this.modalSatuanCents = 0,
   });
 
   final String lineType;
@@ -390,6 +428,8 @@ class SaleReturnItemRow {
   final int hargaSatuanCents;
   final int subtotalCents;
   final int qtyMilli;
+  final int? qtyAsalMilli;
+  final int modalSatuanCents;
 
   int get milli => qtyMilli > 0 ? qtyMilli : jumlah * 1000;
   String get qtyLabel => formatQuantity(milli, 3);
@@ -403,6 +443,9 @@ class SaleReturnRow {
     required this.waktu,
     required this.totalCents,
     required this.alasan,
+    this.status = 'AKTIF',
+    this.totalRefundCents = 0,
+    this.totalModalKembaliCents = 0,
     this.items = const [],
   });
 
@@ -412,7 +455,12 @@ class SaleReturnRow {
   final DateTime waktu;
   final int totalCents;
   final String alasan;
+  final String status;
+  final int totalRefundCents;
+  final int totalModalKembaliCents;
   final List<SaleReturnItemRow> items;
+
+  bool get isVoid => status == 'VOID';
 
   factory SaleReturnRow.fromRow(
     Map<String, Object?> row, {
@@ -426,6 +474,10 @@ class SaleReturnRow {
           DateTime.now(),
       totalCents: (row['total'] as num?)?.toInt() ?? 0,
       alasan: row['alasan'] as String? ?? '',
+      status: row['status'] as String? ?? 'AKTIF',
+      totalRefundCents: (row['total_refund'] as num?)?.toInt() ?? 0,
+      totalModalKembaliCents:
+          (row['total_modal_kembali'] as num?)?.toInt() ?? 0,
       items: items,
     );
   }
@@ -632,6 +684,9 @@ class DashboardData {
     required this.receivableCents,
     required this.recent,
     this.negativeStockCount = 0,
+    this.todayGrossCents = 0,
+    this.todayReturCents = 0,
+    this.todayCashCents = 0,
   });
 
   final List<ServiceRecordSummary> todayRecords;
@@ -641,4 +696,12 @@ class DashboardData {
   final int receivableCents;
   final List<ServiceRecordSummary> recent;
   final int negativeStockCount;
+
+  /// Omzet setelah koreksi sebelum retur.
+  final int todayGrossCents;
+  final int todayReturCents;
+
+  /// Seluruh uang yang diterima hari ini (tunai/transfer, sudah dikurangi
+  /// refund) menurut tanggal pembayaran.
+  final int todayCashCents;
 }

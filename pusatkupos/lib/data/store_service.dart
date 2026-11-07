@@ -118,6 +118,7 @@ class StoreService {
       },
       copyOwner: true,
       copyLicense: true,
+      copyAccounts: true,
     );
     final record = StoreRecord(
       storeId: storeId,

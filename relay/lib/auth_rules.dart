@@ -29,6 +29,7 @@ Map<String, Object?> envelopeHintFields({
 const Map<String, Set<String>> baseRolePermissions = {
   'KASIR': {
     'buat_nota',
+    'retur',
     'buat_estimasi',
     'buat_order',
     'ubah_status',
@@ -39,6 +40,7 @@ const Map<String, Set<String>> baseRolePermissions = {
   'MEKANIK': {'ubah_status'},
   'SUPERVISOR': {
     'buat_nota',
+    'retur',
     'buat_estimasi',
     'buat_order',
     'ubah_status',
@@ -48,6 +50,7 @@ const Map<String, Set<String>> baseRolePermissions = {
   },
   'KEDUANYA': {
     'buat_nota',
+    'retur',
     'buat_estimasi',
     'buat_order',
     'ubah_status',
@@ -71,6 +74,7 @@ bool employeeEntityAllowed({
           (baseRolePermissions[roleBase]?.contains(permission) ?? false));
   if (entity == 'supplier_followup') return allowed('followup');
   if (entity == 'nota') {
+    if (action == 'retur') return allowed('retur');
     if (action == 'void') return allowed('void');
     if (action == 'warranty' || action == 'taken') {
       return allowed('ubah_status');

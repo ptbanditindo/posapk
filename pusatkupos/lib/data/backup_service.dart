@@ -20,6 +20,9 @@ import 'store_registry.dart';
 
 const int _maxRestoredDatabaseBytes = 512 * 1024 * 1024;
 const int _maxManifestBytes = 1024 * 1024;
+const int _maxBackupArchiveBytes =
+    _maxRestoredDatabaseBytes + _maxManifestBytes;
+const int _restoreDiskMarginBytes = 32 * 1024 * 1024;
 const int _maxTelegramBytes = 50 * 1024 * 1024;
 const int _keepAutoBackups = 30;
 const int _backupFormat = 3;
@@ -31,6 +34,9 @@ const String _autoPassphraseKey = 'backup.auto_passphrase';
 const Duration telegramRetryInterval = Duration(minutes: 10);
 const List<String> _requiredRestoreTables = [
   'app_settings',
+  'employee_accounts',
+  'employee_store_access',
+  'document_counters',
   'customers',
   'vehicle_or_units',
   'stock_items',
@@ -51,6 +57,7 @@ class BackupSettings {
     required this.telegramEnabled,
     required this.telegramChatId,
     required this.telegramTokenConfigured,
+    required this.passphraseConfigured,
   });
 
   final bool autoEnabled;
@@ -58,6 +65,7 @@ class BackupSettings {
   final bool telegramEnabled;
   final String telegramChatId;
   final bool telegramTokenConfigured;
+  final bool passphraseConfigured;
 
   bool get telegramReady =>
       telegramEnabled &&
@@ -88,12 +96,15 @@ class BackupService {
     final telegram = await db.getSetting('backup.telegram_enabled') ?? '0';
     final chat = await db.getSetting('backup.telegram_chat') ?? '';
     final token = await SecureStore.instance.read(_telegramTokenKey) ?? '';
+    final passphrase =
+        await SecureStore.instance.read(_autoPassphraseKey) ?? '';
     return BackupSettings(
       autoEnabled: auto == '1',
       jam: jam,
       telegramEnabled: telegram == '1',
       telegramChatId: chat,
       telegramTokenConfigured: token.trim().isNotEmpty,
+      passphraseConfigured: passphrase.trim().length >= 8,
     );
   }
 
@@ -384,6 +395,9 @@ class BackupService {
       return _exportPlainDatabase();
     }
     if (!db.databaseEncrypted) {
+      // Toko nonaktif bisa memiliki WAL yang belum di-checkpoint; buka
+      // sebentar lalu checkpoint agar salinan tidak kehilangan transaksi.
+      await db.checkpointDatabaseAt(store.databasePath);
       return platform.readFile(store.databasePath);
     }
     final temp = await platform.temporaryPath(
@@ -666,6 +680,7 @@ class BackupService {
   /// True bila arsip memerlukan passphrase buatan pengguna.
   Future<bool> needsPassphrase(String path) async {
     try {
+      if (await platform.fileSize(path) > _maxBackupArchiveBytes) return false;
       final archive = ZipDecoder().decodeBytes(await platform.readFile(path));
       final manifest = _readManifest(archive);
       if (manifest == null) return false;
@@ -701,6 +716,53 @@ class BackupService {
     }
   }
 
+  /// Total ukuran deklarasi (setelah dekompresi) seluruh isi arsip.
+  /// Diperiksa sebelum isi berkas benar-benar dibaca agar arsip raksasa
+  /// tidak memenuhi memori atau disk.
+  int _archiveDeclaredBytes(Archive archive) {
+    var total = 0;
+    for (final file in archive.files) {
+      if (file.isFile) total += file.size;
+    }
+    return total;
+  }
+
+  String? _archiveSizeError(Archive archive) {
+    if (_archiveDeclaredBytes(archive) > _maxBackupArchiveBytes) {
+      return 'Total isi arsip melebihi batas 512 MB.';
+    }
+    return null;
+  }
+
+  String _megabytes(int bytes) => (bytes / (1024 * 1024)).ceil().toString();
+
+  Future<void> _discardStagedRestores(
+    List<_PendingStoreRestore> restored,
+  ) async {
+    for (final store in restored) {
+      await platform.deleteFile(store.tempPath);
+      await platform.deleteDatabaseSidecars(store.tempPath);
+    }
+  }
+
+  /// Pemeriksaan ruang disk sebelum staging. [payloadBytes] adalah total
+  /// database hasil dekompresi; ruang dihitung dua kali untuk staging dan
+  /// berkas pengganti, dan [existingBytes] dua kali untuk database lama yang
+  /// tetap ada selama pertukaran beserta salinan pengamannya.
+  Future<String?> _checkRestoreDiskSpace({
+    required String directory,
+    required int payloadBytes,
+    required int existingBytes,
+  }) async {
+    final needed =
+        payloadBytes * 2 + existingBytes * 2 + _restoreDiskMarginBytes;
+    final free = await platform.freeDiskBytes(directory);
+    if (free == null || free >= needed) return null;
+    return 'Ruang penyimpanan tidak cukup: tersedia '
+        '${_megabytes(free)} MB, dibutuhkan sekitar '
+        '${_megabytes(needed)} MB.';
+  }
+
   Future<BackupResult> restoreBackup({String? path, String? passphrase}) async {
     if (kIsWeb) {
       return const BackupResult(
@@ -713,8 +775,18 @@ class BackupService {
       return const BackupResult(ok: false, message: 'Restore dibatalkan.');
     }
     try {
+      if (await platform.fileSize(pickedPath) > _maxBackupArchiveBytes) {
+        return const BackupResult(
+          ok: false,
+          message: 'Berkas backup melebihi batas 512 MB.',
+        );
+      }
       final bytes = await platform.readFile(pickedPath);
       final archive = ZipDecoder().decodeBytes(bytes);
+      final sizeError = _archiveSizeError(archive);
+      if (sizeError != null) {
+        return BackupResult(ok: false, message: sizeError);
+      }
       final manifest = _readManifest(archive);
       if (manifest == null) {
         return const BackupResult(
@@ -806,27 +878,36 @@ class BackupService {
 
       final db = AppDatabase.instance;
       final targetPath = db.databasePath;
-      final plainPath = await platform.temporaryPath(
-        'pusatkupos_restore_${DateTime.now().microsecondsSinceEpoch}.db',
+      final diskError = await _checkRestoreDiskSpace(
+        directory: p.dirname(targetPath),
+        payloadBytes: payload.length,
+        existingBytes: await platform.fileSize(targetPath),
       );
+      if (diskError != null) {
+        return BackupResult(ok: false, message: diskError);
+      }
+      // Staging berada di direktori yang sama dengan database aktif agar
+      // pertukaran cukup memakai rename pada volume yang sama.
+      final plainPath = '$targetPath.restore.plain';
       final newPath = '$targetPath.restore.tmp';
       try {
         await platform.deleteFile(plainPath);
-        await platform.writeDatabase(plainPath, payload);
+        await platform.deleteDatabaseSidecars(plainPath);
         await platform.deleteFile(newPath);
         await platform.deleteDatabaseSidecars(newPath);
         if (db.databaseEncrypted) {
+          await platform.writeDatabase(plainPath, payload);
           await db.createEncryptedCopy(plainPath, newPath);
           await db.validateEncryptedCopy(
             newPath,
             requiredTables: _requiredRestoreTables,
           );
         } else {
+          await platform.writeDatabase(newPath, payload);
           await db.validatePlainCopy(
-            plainPath,
+            newPath,
             requiredTables: _requiredRestoreTables,
           );
-          await platform.writeDatabase(newPath, payload);
         }
       } catch (error) {
         await platform.deleteFile(plainPath);
@@ -857,11 +938,14 @@ class BackupService {
         if (result.toLowerCase() != 'ok') {
           throw StateError('Integritas database hasil restore gagal: $result');
         }
+        await platform.commitReplacedDatabase(targetPath);
       } catch (error) {
         await db.close();
-        if (safetyCopy != null) {
+        final rolledBack = await platform.rollbackReplacedDatabase(targetPath);
+        if (!rolledBack && safetyCopy != null) {
           try {
             await platform.replaceDatabase(targetPath, safetyCopy);
+            await platform.commitReplacedDatabase(targetPath);
           } catch (_) {
             // Biarkan error asli dilaporkan; salinan pengaman tetap ada.
           }
@@ -927,140 +1011,176 @@ class BackupService {
     final restored = <_PendingStoreRestore>[];
     final usedPaths = <String>{};
     final usedStoreIds = <String>{};
-    for (final raw in rawStores) {
-      if (raw is! Map) {
-        return const BackupResult(
-          ok: false,
-          message: 'Entri toko pada arsip tidak sah.',
-        );
-      }
-      final entry = Map<String, dynamic>.from(raw);
-      final label = '${entry['nama'] ?? entry['store_id'] ?? 'toko'}';
-      final payloadName = '${entry['payload'] ?? ''}';
-      final payloadFile = archive.files
-          .where((file) => file.name == payloadName)
-          .firstOrNull;
-      if (payloadFile == null) {
-        return BackupResult(
-          ok: false,
-          message: 'Berkas database toko $label tidak ditemukan.',
-        );
-      }
-      if (payloadFile.size > _maxRestoredDatabaseBytes) {
-        return BackupResult(
-          ok: false,
-          message: 'Berkas database toko $label terlalu besar.',
-        );
-      }
-      var payload = List<int>.from(payloadFile.content as List<int>);
-      if (payload.length > _maxRestoredDatabaseBytes) {
-        return BackupResult(
-          ok: false,
-          message: 'Berkas database toko $label terlalu besar.',
-        );
-      }
-      final cipher = entry['cipher'];
-      if (cipher is! Map) {
-        return BackupResult(
-          ok: false,
-          message: 'Metadata enkripsi toko $label tidak lengkap.',
-        );
-      }
-      final meta = Map<String, dynamic>.from(cipher);
-      var secret = passphrase?.trim() ?? '';
-      if (secret.isEmpty && '${meta['scope']}' == 'auto') {
-        secret = await _autoPassphrase();
-      }
-      if (secret.isEmpty) {
-        return const BackupResult(
-          ok: false,
-          message:
-              'Backup terkunci passphrase. Masukkan passphrase yang '
-              'dipakai saat membuat backup.',
-        );
-      }
-      try {
-        payload = await _decryptPayload(payload, meta, secret);
-      } catch (_) {
-        return const BackupResult(
-          ok: false,
-          message: 'Passphrase salah atau berkas backup rusak.',
-        );
-      }
-      if (sha256.convert(payload).toString() != '${entry['sha256'] ?? ''}') {
-        return BackupResult(
-          ok: false,
-          message: 'Checksum toko $label tidak cocok.',
-        );
-      }
-      if (!_looksLikeSqlite(payload)) {
-        return BackupResult(
-          ok: false,
-          message: 'Berkas database toko $label tidak sah.',
-        );
-      }
-      var storeId = '${entry['store_id'] ?? ''}'.trim();
-      var databaseId = '${entry['database_id'] ?? ''}'.trim();
-      if (databaseId.isEmpty) {
-        databaseId = newSyncId();
-      }
-      databaseId = databaseId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-      if (storeId.isEmpty || usedStoreIds.contains(storeId)) {
-        storeId = 'toko_${newSyncId()}';
-      }
-      final existing = StoreRegistry.instance.isOpen
-          ? await StoreRegistry.instance.byId(storeId)
-          : null;
-      var targetPath =
-          existing?.databasePath ?? p.join(root, 'stores', '$databaseId.db');
-      while (usedPaths.contains(targetPath)) {
-        databaseId = newSyncId();
-        targetPath = p.join(root, 'stores', '$databaseId.db');
-      }
-      usedStoreIds.add(storeId);
-      usedPaths.add(targetPath);
-
-      final plainPath = await platform.temporaryPath(
-        'pusatkupos_restore_${DateTime.now().microsecondsSinceEpoch}.db',
+    final declaredBytes = _archiveDeclaredBytes(archive);
+    if (declaredBytes > _maxBackupArchiveBytes) {
+      return const BackupResult(
+        ok: false,
+        message: 'Total isi arsip melebihi batas 512 MB.',
       );
-      final newPath = '$targetPath.restore.tmp';
-      try {
-        await platform.ensureParentDirectory(targetPath);
-        await platform.deleteFile(plainPath);
-        await platform.writeDatabase(plainPath, payload);
-        await platform.deleteFile(newPath);
-        await platform.deleteDatabaseSidecars(newPath);
-        if (db.databaseEncrypted) {
-          await db.createEncryptedCopy(plainPath, newPath);
-          await db.validateEncryptedCopy(
-            newPath,
-            requiredTables: _requiredRestoreTables,
-          );
-        } else {
-          await db.validatePlainCopy(
-            plainPath,
-            requiredTables: _requiredRestoreTables,
-          );
-          await platform.writeDatabase(newPath, payload);
+    }
+    try {
+      await platform.ensureParentDirectory(
+        p.join(root, 'stores', 'staging.db'),
+      );
+      var existingBytes = 0;
+      if (StoreRegistry.instance.isOpen) {
+        try {
+          for (final store in await StoreRegistry.instance.stores()) {
+            existingBytes += await platform.fileSize(store.databasePath);
+          }
+        } catch (_) {
+          // Estimasi ukuran data lama bersifat best-effort.
         }
-      } catch (error) {
-        await platform.deleteFile(plainPath);
-        await platform.deleteFile(newPath);
-        return BackupResult(ok: false, message: 'Toko $label ditolak: $error');
-      } finally {
-        await platform.deleteFile(plainPath);
       }
-      restored.add(
-        _PendingStoreRestore(
-          storeId: storeId,
-          databaseId: databaseId,
-          nama: label,
-          alamat: '${entry['alamat'] ?? ''}',
-          createdAt: '${entry['created_at'] ?? ''}',
-          targetPath: targetPath,
-          tempPath: newPath,
-        ),
+      final diskError = await _checkRestoreDiskSpace(
+        directory: root,
+        payloadBytes: declaredBytes,
+        existingBytes: existingBytes,
       );
+      if (diskError != null) {
+        return BackupResult(ok: false, message: diskError);
+      }
+    } catch (_) {
+      // Pemeriksaan ruang disk tidak boleh memblokir bila tidak tersedia.
+    }
+
+    var totalPayloadBytes = 0;
+    try {
+      for (final raw in rawStores) {
+        if (raw is! Map) {
+          throw const _RestoreRejected(
+            'Entri toko pada arsip tidak sah.',
+          );
+        }
+        final entry = Map<String, dynamic>.from(raw);
+        final label = '${entry['nama'] ?? entry['store_id'] ?? 'toko'}';
+        final payloadName = '${entry['payload'] ?? ''}';
+        final payloadFile = archive.files
+            .where((file) => file.name == payloadName)
+            .firstOrNull;
+        if (payloadFile == null) {
+          throw _RestoreRejected(
+            'Berkas database toko $label tidak ditemukan.',
+          );
+        }
+        if (payloadFile.size > _maxRestoredDatabaseBytes) {
+          throw _RestoreRejected(
+            'Berkas database toko $label terlalu besar.',
+          );
+        }
+        var payload = List<int>.from(payloadFile.content as List<int>);
+        if (payload.length > _maxRestoredDatabaseBytes) {
+          throw _RestoreRejected(
+            'Berkas database toko $label terlalu besar.',
+          );
+        }
+        final cipher = entry['cipher'];
+        if (cipher is! Map) {
+          throw _RestoreRejected(
+            'Metadata enkripsi toko $label tidak lengkap.',
+          );
+        }
+        final meta = Map<String, dynamic>.from(cipher);
+        var secret = passphrase?.trim() ?? '';
+        if (secret.isEmpty && '${meta['scope']}' == 'auto') {
+          secret = await _autoPassphrase();
+        }
+        if (secret.isEmpty) {
+          throw const _RestoreRejected(
+            'Backup terkunci passphrase. Masukkan passphrase yang '
+            'dipakai saat membuat backup.',
+          );
+        }
+        try {
+          payload = await _decryptPayload(payload, meta, secret);
+        } catch (_) {
+          throw const _RestoreRejected(
+            'Passphrase salah atau berkas backup rusak.',
+          );
+        }
+        if (sha256.convert(payload).toString() != '${entry['sha256'] ?? ''}') {
+          throw _RestoreRejected('Checksum toko $label tidak cocok.');
+        }
+        if (!_looksLikeSqlite(payload)) {
+          throw _RestoreRejected(
+            'Berkas database toko $label tidak sah.',
+          );
+        }
+        totalPayloadBytes += payload.length;
+        if (totalPayloadBytes > _maxRestoredDatabaseBytes) {
+          throw const _RestoreRejected(
+            'Total database hasil dekompresi melebihi batas 512 MB.',
+          );
+        }
+        var storeId = '${entry['store_id'] ?? ''}'.trim();
+        var databaseId = '${entry['database_id'] ?? ''}'.trim();
+        if (databaseId.isEmpty) {
+          databaseId = newSyncId();
+        }
+        databaseId = databaseId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+        if (storeId.isEmpty || usedStoreIds.contains(storeId)) {
+          storeId = 'toko_${newSyncId()}';
+        }
+        final existing = StoreRegistry.instance.isOpen
+            ? await StoreRegistry.instance.byId(storeId)
+            : null;
+        var targetPath =
+            existing?.databasePath ?? p.join(root, 'stores', '$databaseId.db');
+        while (usedPaths.contains(targetPath)) {
+          databaseId = newSyncId();
+          targetPath = p.join(root, 'stores', '$databaseId.db');
+        }
+        usedStoreIds.add(storeId);
+        usedPaths.add(targetPath);
+
+        // Staging di direktori toko yang sama agar rename tidak lintas volume.
+        final plainPath = '$targetPath.restore.plain';
+        final newPath = '$targetPath.restore.tmp';
+        try {
+          await platform.ensureParentDirectory(targetPath);
+          await platform.deleteFile(plainPath);
+          await platform.deleteDatabaseSidecars(plainPath);
+          await platform.deleteFile(newPath);
+          await platform.deleteDatabaseSidecars(newPath);
+          if (db.databaseEncrypted) {
+            await platform.writeDatabase(plainPath, payload);
+            await db.createEncryptedCopy(plainPath, newPath);
+            await db.validateEncryptedCopy(
+              newPath,
+              requiredTables: _requiredRestoreTables,
+            );
+          } else {
+            await platform.writeDatabase(newPath, payload);
+            await db.validatePlainCopy(
+              newPath,
+              requiredTables: _requiredRestoreTables,
+            );
+          }
+        } catch (error) {
+          await platform.deleteFile(plainPath);
+          await platform.deleteFile(newPath);
+          throw _RestoreRejected('Toko $label ditolak: $error');
+        } finally {
+          await platform.deleteFile(plainPath);
+        }
+        restored.add(
+          _PendingStoreRestore(
+            storeId: storeId,
+            databaseId: databaseId,
+            nama: label,
+            alamat: '${entry['alamat'] ?? ''}',
+            createdAt: '${entry['created_at'] ?? ''}',
+            targetPath: targetPath,
+            tempPath: newPath,
+          ),
+        );
+      }
+    } on _RestoreRejected catch (error) {
+      await _discardStagedRestores(restored);
+      return BackupResult(ok: false, message: error.message);
+    } catch (_) {
+      await _discardStagedRestores(restored);
+      rethrow;
     }
 
     await db.checkpoint();
@@ -1082,12 +1202,18 @@ class BackupService {
         await platform.replaceDatabase(store.targetPath, store.tempPath);
         replaced.add(store.targetPath);
       }
+      for (final path in replaced) {
+        await platform.commitReplacedDatabase(path);
+      }
     } catch (error) {
       for (final path in replaced) {
+        final rolledBack = await platform.rollbackReplacedDatabase(path);
+        if (rolledBack) continue;
         final copy = safety[path];
         if (copy == null) continue;
         try {
           await platform.replaceDatabase(path, copy);
+          await platform.commitReplacedDatabase(path);
         } catch (_) {
           // Biarkan error asli dilaporkan.
         }
@@ -1188,6 +1314,14 @@ class BackupService {
     );
     return rows.first['seq'] as int? ?? 0;
   }
+}
+
+/// Penolakan restore yang sudah memiliki pesan siap tampil; dipakai agar
+/// seluruh berkas staging dapat dibersihkan sebelum keluar dari proses.
+class _RestoreRejected implements Exception {
+  const _RestoreRejected(this.message);
+
+  final String message;
 }
 
 class _PendingStoreRestore {

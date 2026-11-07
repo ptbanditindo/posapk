@@ -26,9 +26,30 @@ class Operator {
   final bool mustChangePassword;
 
   bool get isOwner => kind == 'owner';
-  bool get canWriteMoney => can('buat_nota');
+  bool get isViewer => kind == 'viewer';
+  bool get canWriteMoney => !isViewer && can('buat_nota');
   bool get canVoid => can('void');
-  bool can(String permission) => isOwner || permissions.contains(permission);
+  bool can(String permission) => isOwner ? true : (isViewer ? false : permissions.contains(permission));
+
+  Operator withAccess({
+    required String role,
+    required Set<String> permissions,
+    required List<String> extraPermissions,
+    required List<String> storeIds,
+  }) =>
+      Operator(
+        kind: kind,
+        role: role,
+        label: label,
+        employeeId: employeeId,
+        employeeSyncId: employeeSyncId,
+        username: username,
+        permissions: permissions,
+        extraPermissions: extraPermissions,
+        deviceId: deviceId,
+        storeIds: storeIds,
+        mustChangePassword: mustChangePassword,
+      );
 
   static const owner = Operator(
     kind: 'owner',

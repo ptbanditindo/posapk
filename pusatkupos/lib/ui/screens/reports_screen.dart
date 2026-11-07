@@ -183,7 +183,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Omzet neto',
+                            label: 'Omzet bruto (sebelum retur)',
+                            value: formatRupiah(summary.totalCents),
+                            icon: Icons.receipt_long_outlined,
+                          ),
+                        ),
+                        SizedBox(
+                          width: width,
+                          child: StatCard(
+                            label: 'Omzet neto (setelah retur)',
                             value: formatRupiah(summary.totalNetCents),
                             icon: Icons.payments_outlined,
                             tone: Theme.of(context).colorScheme.tertiary,
@@ -210,7 +218,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Uang diterima neto',
+                            label: 'Kas diterima periode',
                             value: formatRupiah(
                               summary.cashByMethod.values.fold<int>(
                                 0,

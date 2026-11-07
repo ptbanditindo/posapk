@@ -10,15 +10,26 @@ String newNotaPrefix({int length = 6}) {
   ).join();
 }
 
-/// Kode perangkat 3 karakter untuk nomor nota/antrian lokal.
-String newDeviceCode({int length = 3}) {
+/// Kode perangkat untuk nomor nota/antrian lokal.
+///
+/// Enam karakter acak dari alfabet 32 simbol memberi sekitar satu miliar
+/// kombinasi, sehingga dua perangkat tidak mungkin memakai kode yang sama
+/// secara tidak sengaja (kode tiga karakter hanya punya ~32 ribu kombinasi).
+const deviceCodeLength = 6;
+const _deviceCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+final _deviceCodePattern = RegExp(r'^[A-Z0-9]{6,12}$');
+
+String newDeviceCode({int length = deviceCodeLength}) {
   final random = Random.secure();
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return List.generate(
     length,
-    (_) => alphabet[random.nextInt(alphabet.length)],
+    (_) => _deviceCodeAlphabet[random.nextInt(_deviceCodeAlphabet.length)],
   ).join();
 }
+
+/// Kode tersimpan hanya dipakai bila panjang dan karakternya aman; kode lama
+/// tiga karakter dibuat ulang agar nomor dokumen tidak bentrok antardevice.
+bool isStrongDeviceCode(String code) => _deviceCodePattern.hasMatch(code);
 
 String newSyncId() {
   final random = Random.secure();

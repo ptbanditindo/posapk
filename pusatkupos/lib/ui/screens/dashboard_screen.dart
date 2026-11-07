@@ -93,7 +93,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Pendapatan hari ini',
+                          label: 'Omzet bruto hari ini',
+                          value: formatRupiah(data.todayGrossCents),
+                          icon: Icons.receipt_long_outlined,
+                        ),
+                      ),
+                      SizedBox(
+                        width: width,
+                        child: StatCard(
+                          label: 'Omzet neto (setelah retur)',
                           value: formatRupiah(data.todayRevenueCents),
                           icon: Icons.payments_outlined,
                         ),
@@ -101,9 +109,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
+                          label: 'Uang diterima hari ini',
+                          value: formatRupiah(data.todayCashCents),
+                          icon: Icons.savings_outlined,
+                          tone: Colors.green,
+                        ),
+                      ),
+                      SizedBox(
+                        width: width,
+                        child: StatCard(
                           label: 'Transaksi hari ini',
                           value: '${data.todayCount}',
-                          icon: Icons.receipt_long_outlined,
+                          icon: Icons.receipt_outlined,
                           tone: Theme.of(context).colorScheme.tertiary,
                         ),
                       ),

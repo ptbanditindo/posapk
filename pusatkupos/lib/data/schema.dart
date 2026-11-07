@@ -293,7 +293,10 @@ Future<void> createCleanSchema(Database db) async {
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (harga_modal >= 0),
+      CHECK (harga_jual >= 0),
+      CHECK (stok_minimum >= 0)
     )
   ''');
   // Kode hanya unik untuk barang aktif. Barang yang dihapus tidak boleh
@@ -327,7 +330,9 @@ Future<void> createCleanSchema(Database db) async {
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (harga_jual >= 0),
+      CHECK (harga_modal >= 0)
     )
   ''');
   await db.execute(
@@ -368,11 +373,16 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
-      UNIQUE(supplier_id, stock_item_id),
       FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
       FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE
     )
   ''');
+  // Relasi yang dihapus tidak boleh menghalangi penambahan ulang pasangan
+  // supplier+barang yang sama.
+  await db.execute(
+    'CREATE UNIQUE INDEX ux_supplier_item_aktif '
+    'ON supplier_items(supplier_id, stock_item_id) WHERE deleted_at IS NULL',
+  );
   await db.execute(
     'CREATE INDEX ix_supplier_items_deleted ON supplier_items(deleted_at)',
   );
@@ -391,11 +401,15 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
-      UNIQUE(supplier_id, stock_item_id),
       FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
       FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE
     )
   ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX ux_supplier_followup_aktif '
+    'ON supplier_followups(supplier_id, stock_item_id) '
+    'WHERE deleted_at IS NULL',
+  );
   await db.execute(
     'CREATE INDEX ix_supplier_followups_deleted '
     'ON supplier_followups(deleted_at)',
@@ -492,6 +506,8 @@ Future<void> createCleanSchema(Database db) async {
       request_id TEXT UNIQUE,
       jenis_transaksi TEXT NOT NULL DEFAULT 'servis_langsung',
       mode_saat_dibuat_json TEXT NOT NULL DEFAULT '{}',
+      diskon_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      pajak_snapshot_json TEXT NOT NULL DEFAULT '{}',
       work_order_sync_id TEXT,
       estimate_sync_id TEXT,
       total_estimasi_terakhir INTEGER,
@@ -546,7 +562,20 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (biaya_jasa >= 0),
+      CHECK (total_part >= 0),
+      CHECK (diskon >= 0),
+      CHECK (pajak >= 0),
+      CHECK (biaya_lain >= 0),
+      CHECK (total_servis >= 0),
+      CHECK (total_efektif >= 0),
+      CHECK (bayar >= 0),
+      CHECK (kembalian >= 0),
+      CHECK (total_dibayar >= 0),
+      CHECK (sisa_bayar >= 0),
+      CHECK (void_refund >= 0),
       CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (status = 'AKTIF' OR voided_at IS NOT NULL),
       FOREIGN KEY (unit_id) REFERENCES vehicle_or_units(id) ON DELETE SET NULL,
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
     )
@@ -567,6 +596,54 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE INDEX ix_service_records_status '
     'ON service_records(status, waktu_service)',
   );
+  await db.execute(
+    'CREATE INDEX ix_service_records_laporan '
+    'ON service_records(store_id, jenis_transaksi, waktu_service)',
+  );
+  // Nilai final nota dibekukan setelah dibuat. Koreksi, retur, dan void
+  // mengubah kolom ringkasan (total_koreksi/total_retur/total_efektif),
+  // bukan komponen asal, agar struk dan laporan tetap dapat diaudit.
+  await db.execute('''
+    CREATE TRIGGER trg_service_records_komponen_immutable
+    BEFORE UPDATE OF biaya_jasa, total_part, diskon, pajak, biaya_lain,
+      total_servis, total_estimasi_terakhir, mode_saat_dibuat_json,
+      diskon_snapshot_json, pajak_snapshot_json
+    ON service_records
+    FOR EACH ROW
+    WHEN NEW.biaya_jasa IS NOT OLD.biaya_jasa
+      OR NEW.total_part IS NOT OLD.total_part
+      OR NEW.diskon IS NOT OLD.diskon
+      OR NEW.pajak IS NOT OLD.pajak
+      OR NEW.biaya_lain IS NOT OLD.biaya_lain
+      OR NEW.total_servis IS NOT OLD.total_servis
+      OR NEW.total_estimasi_terakhir IS NOT OLD.total_estimasi_terakhir
+      OR NEW.mode_saat_dibuat_json IS NOT OLD.mode_saat_dibuat_json
+      OR NEW.diskon_snapshot_json IS NOT OLD.diskon_snapshot_json
+      OR NEW.pajak_snapshot_json IS NOT OLD.pajak_snapshot_json
+    BEGIN
+      SELECT RAISE(ABORT, 'komponen biaya nota tidak boleh diubah');
+    END
+  ''');
+  // VOID adalah state terminal: nota yang sudah dibatalkan tidak boleh
+  // diaktifkan kembali atau diubah nilai efektifnya.
+  await db.execute('''
+    CREATE TRIGGER trg_service_records_void_final
+    BEFORE UPDATE ON service_records
+    FOR EACH ROW
+    WHEN OLD.status = 'VOID' AND (
+      NEW.status IS NOT 'VOID'
+      OR NEW.voided_at IS NOT OLD.voided_at
+      OR NEW.void_reason IS NOT OLD.void_reason
+      OR NEW.void_refund IS NOT OLD.void_refund
+      OR NEW.total_efektif IS NOT OLD.total_efektif
+      OR NEW.total_koreksi IS NOT OLD.total_koreksi
+      OR NEW.total_retur IS NOT OLD.total_retur
+      OR NEW.sisa_bayar IS NOT OLD.sisa_bayar
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'nota VOID bersifat final');
+    END
+  ''');
 
   await db.execute('''
     CREATE TABLE service_jobs (
@@ -597,6 +674,17 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (jumlah > 0),
+      CHECK (harga >= 0),
+      CHECK (subtotal >= 0),
+      CHECK (harga_jual_terdaftar >= 0),
+      CHECK (harga_batas_saat_transaksi >= 0),
+      CHECK (harga_final >= 0),
+      CHECK (diskon_alokasi >= 0),
+      CHECK (diskon_alokasi <= subtotal),
+      CHECK (diskon_persen_snapshot BETWEEN 0 AND 100),
+      CHECK (qty_retur_milli >= 0),
+      CHECK (qty_retur_milli <= jumlah * 1000),
       FOREIGN KEY (service_record_id) REFERENCES service_records(id)
         ON DELETE CASCADE
     )
@@ -605,6 +693,38 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE INDEX ix_service_jobs_record '
     'ON service_jobs(service_record_id)',
   );
+  await db.execute(
+    'CREATE INDEX ix_service_jobs_sync ON service_jobs(sync_id)',
+  );
+  // Snapshot baris jasa dibekukan; hanya qty retur yang boleh bertambah.
+  await db.execute('''
+    CREATE TRIGGER trg_service_jobs_snapshot_immutable
+    BEFORE UPDATE OF service_record_id, harga_jasa_id, harga_jasa_sync_id,
+      deskripsi, jumlah, harga, subtotal, harga_jual_terdaftar,
+      harga_batas_saat_transaksi, harga_final, diskon_alokasi,
+      diskon_persen_snapshot, interval_servis_bulan,
+      komisi_mode_snapshot, komisi_nilai_snapshot
+    ON service_jobs
+    FOR EACH ROW
+    WHEN NEW.service_record_id IS NOT OLD.service_record_id
+      OR NEW.harga_jasa_id IS NOT OLD.harga_jasa_id
+      OR NEW.harga_jasa_sync_id IS NOT OLD.harga_jasa_sync_id
+      OR NEW.deskripsi IS NOT OLD.deskripsi
+      OR NEW.jumlah IS NOT OLD.jumlah
+      OR NEW.harga IS NOT OLD.harga
+      OR NEW.subtotal IS NOT OLD.subtotal
+      OR NEW.harga_jual_terdaftar IS NOT OLD.harga_jual_terdaftar
+      OR NEW.harga_batas_saat_transaksi IS NOT OLD.harga_batas_saat_transaksi
+      OR NEW.harga_final IS NOT OLD.harga_final
+      OR NEW.diskon_alokasi IS NOT OLD.diskon_alokasi
+      OR NEW.diskon_persen_snapshot IS NOT OLD.diskon_persen_snapshot
+      OR NEW.interval_servis_bulan IS NOT OLD.interval_servis_bulan
+      OR NEW.komisi_mode_snapshot IS NOT OLD.komisi_mode_snapshot
+      OR NEW.komisi_nilai_snapshot IS NOT OLD.komisi_nilai_snapshot
+    BEGIN
+      SELECT RAISE(ABORT, 'snapshot baris jasa bersifat final');
+    END
+  ''');
 
   await db.execute('''
     CREATE TABLE service_parts (
@@ -618,7 +738,7 @@ Future<void> createCleanSchema(Database db) async {
       nama_part TEXT NOT NULL,
       satuan TEXT NOT NULL DEFAULT 'pcs',
       jumlah INTEGER NOT NULL,
-      jumlah_milli INTEGER,
+      jumlah_milli INTEGER NOT NULL,
       qty_retur_milli INTEGER NOT NULL DEFAULT 0,
       harga_satuan INTEGER NOT NULL,
       subtotal INTEGER NOT NULL,
@@ -636,6 +756,18 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (jumlah_milli > 0),
+      CHECK (harga_satuan >= 0),
+      CHECK (subtotal >= 0),
+      CHECK (harga_modal >= 0),
+      CHECK (harga_jual_terdaftar >= 0),
+      CHECK (harga_batas_saat_transaksi >= 0),
+      CHECK (harga_final >= 0),
+      CHECK (diskon_alokasi >= 0),
+      CHECK (diskon_alokasi <= subtotal),
+      CHECK (diskon_persen_snapshot BETWEEN 0 AND 100),
+      CHECK (qty_retur_milli >= 0),
+      CHECK (qty_retur_milli <= jumlah_milli),
       FOREIGN KEY (service_record_id) REFERENCES service_records(id)
         ON DELETE CASCADE
     )
@@ -644,6 +776,39 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE INDEX ix_service_parts_record '
     'ON service_parts(service_record_id)',
   );
+  await db.execute(
+    'CREATE INDEX ix_service_parts_sync ON service_parts(sync_id)',
+  );
+  // Snapshot baris part dibekukan; hanya qty retur yang boleh bertambah.
+  await db.execute('''
+    CREATE TRIGGER trg_service_parts_snapshot_immutable
+    BEFORE UPDATE OF service_record_id, stock_item_id, stock_sync_id,
+      nama_part, satuan, jumlah, jumlah_milli, harga_satuan, subtotal,
+      harga_modal, harga_jual_terdaftar, harga_batas_saat_transaksi,
+      harga_final, diskon_alokasi, diskon_persen_snapshot,
+      interval_servis_bulan
+    ON service_parts
+    FOR EACH ROW
+    WHEN NEW.service_record_id IS NOT OLD.service_record_id
+      OR NEW.stock_item_id IS NOT OLD.stock_item_id
+      OR NEW.stock_sync_id IS NOT OLD.stock_sync_id
+      OR NEW.nama_part IS NOT OLD.nama_part
+      OR NEW.satuan IS NOT OLD.satuan
+      OR NEW.jumlah IS NOT OLD.jumlah
+      OR NEW.jumlah_milli IS NOT OLD.jumlah_milli
+      OR NEW.harga_satuan IS NOT OLD.harga_satuan
+      OR NEW.subtotal IS NOT OLD.subtotal
+      OR NEW.harga_modal IS NOT OLD.harga_modal
+      OR NEW.harga_jual_terdaftar IS NOT OLD.harga_jual_terdaftar
+      OR NEW.harga_batas_saat_transaksi IS NOT OLD.harga_batas_saat_transaksi
+      OR NEW.harga_final IS NOT OLD.harga_final
+      OR NEW.diskon_alokasi IS NOT OLD.diskon_alokasi
+      OR NEW.diskon_persen_snapshot IS NOT OLD.diskon_persen_snapshot
+      OR NEW.interval_servis_bulan IS NOT OLD.interval_servis_bulan
+    BEGIN
+      SELECT RAISE(ABORT, 'snapshot baris part bersifat final');
+    END
+  ''');
 
   await db.execute('''
     CREATE TABLE service_payments (
@@ -658,9 +823,10 @@ Future<void> createCleanSchema(Database db) async {
       nominal INTEGER NOT NULL,
       waktu TEXT NOT NULL,
       operator TEXT NOT NULL DEFAULT 'Pemilik',
-      request_id TEXT UNIQUE,
+      request_id TEXT NOT NULL UNIQUE,
       alokasi_json TEXT NOT NULL DEFAULT '{}',
       kas_kategori TEXT NOT NULL DEFAULT 'PENJUALAN',
+      kas_shift_id TEXT,
       reference_no TEXT,
       catatan TEXT,
       voided_at TEXT,
@@ -669,6 +835,12 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (jenis IN ('DP', 'PELUNASAN', 'REFUND')),
+      CHECK (metode IN ('CASH', 'TRANSFER')),
+      CHECK (
+        (jenis = 'REFUND' AND nominal < 0)
+        OR (jenis <> 'REFUND' AND nominal > 0)
+      ),
       FOREIGN KEY (service_record_id) REFERENCES service_records(id)
         ON DELETE CASCADE
     )
@@ -676,6 +848,10 @@ Future<void> createCleanSchema(Database db) async {
   await db.execute(
     'CREATE INDEX ix_service_payments_record '
     'ON service_payments(service_record_id, waktu)',
+  );
+  await db.execute(
+    'CREATE INDEX ix_service_payments_shift '
+    'ON service_payments(kas_shift_id) WHERE kas_shift_id IS NOT NULL',
   );
 
   // Buku kas: setiap pembayaran/refund menghasilkan satu baris kas yang dapat
@@ -692,13 +868,16 @@ Future<void> createCleanSchema(Database db) async {
       sumber_sync_id TEXT NOT NULL,
       nominal INTEGER NOT NULL,
       metode TEXT NOT NULL DEFAULT 'CASH',
+      kas_shift_id TEXT,
       operator TEXT,
       catatan TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (nominal <> 0),
+      CHECK (metode IN ('CASH', 'TRANSFER'))
     )
   ''');
   await db.execute(
@@ -796,7 +975,7 @@ Future<void> createCleanSchema(Database db) async {
       nota_sync_id TEXT NOT NULL,
       no_nota TEXT NOT NULL,
       no_retur TEXT NOT NULL DEFAULT '',
-      request_id TEXT,
+      request_id TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL DEFAULT 'AKTIF',
       total INTEGER NOT NULL DEFAULT 0,
       total_modal_kembali INTEGER NOT NULL DEFAULT 0,
@@ -810,6 +989,9 @@ Future<void> createCleanSchema(Database db) async {
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
       CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (total >= 0),
+      CHECK (total_modal_kembali >= 0),
+      CHECK (total_refund >= 0),
       FOREIGN KEY (service_record_id) REFERENCES service_records(id)
         ON DELETE CASCADE
     )
@@ -818,10 +1000,37 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE INDEX ix_sale_returns_nota '
     'ON sale_returns(service_record_id)',
   );
-  await db.execute(
-    'CREATE UNIQUE INDEX ux_sale_returns_request '
-    'ON sale_returns(store_id, request_id) WHERE request_id IS NOT NULL',
-  );
+  // Retur bersifat append-only: identitas dan nilai baris tidak boleh diubah
+  // setelah dibuat. `total_refund` hanya boleh diisi sekali dari nol.
+  await db.execute('''
+    CREATE TRIGGER trg_sale_returns_immutable
+    BEFORE UPDATE OF service_record_id, nota_sync_id, no_nota, no_retur,
+      request_id, status, total, total_modal_kembali, alasan, voided_at
+    ON sale_returns
+    FOR EACH ROW
+    WHEN NEW.service_record_id IS NOT OLD.service_record_id
+      OR NEW.nota_sync_id IS NOT OLD.nota_sync_id
+      OR NEW.no_nota IS NOT OLD.no_nota
+      OR NEW.no_retur IS NOT OLD.no_retur
+      OR NEW.request_id IS NOT OLD.request_id
+      OR NEW.status IS NOT OLD.status
+      OR NEW.total IS NOT OLD.total
+      OR NEW.total_modal_kembali IS NOT OLD.total_modal_kembali
+      OR NEW.alasan IS NOT OLD.alasan
+      OR NEW.voided_at IS NOT OLD.voided_at
+    BEGIN
+      SELECT RAISE(ABORT, 'retur bersifat final');
+    END
+  ''');
+  await db.execute('''
+    CREATE TRIGGER trg_sale_returns_refund_sekali
+    BEFORE UPDATE OF total_refund ON sale_returns
+    FOR EACH ROW
+    WHEN OLD.total_refund <> 0 AND NEW.total_refund IS NOT OLD.total_refund
+    BEGIN
+      SELECT RAISE(ABORT, 'refund retur sudah dibukukan');
+    END
+  ''');
   await db.execute('''
     CREATE TABLE sale_return_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -835,7 +1044,7 @@ Future<void> createCleanSchema(Database db) async {
       service_part_sync_id TEXT,
       deskripsi TEXT NOT NULL,
       jumlah INTEGER NOT NULL,
-      jumlah_milli INTEGER,
+      jumlah_milli INTEGER NOT NULL,
       qty_asal_milli INTEGER,
       harga_satuan INTEGER NOT NULL DEFAULT 0,
       subtotal INTEGER NOT NULL DEFAULT 0,
@@ -847,6 +1056,13 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (line_type IN ('jasa', 'part')),
+      CHECK (line_sync_id <> ''),
+      CHECK (jumlah_milli > 0),
+      CHECK (qty_asal_milli IS NULL OR (qty_asal_milli >= 0 AND jumlah_milli <= qty_asal_milli)),
+      CHECK (harga_satuan >= 0),
+      CHECK (subtotal >= 0),
+      CHECK (modal_satuan >= 0),
       FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE
     )
   ''');
@@ -858,6 +1074,50 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE UNIQUE INDEX ux_sale_return_line '
     'ON sale_return_items(return_id, line_type, line_sync_id)',
   );
+  await db.execute('''
+    CREATE TRIGGER trg_sale_return_items_immutable
+    BEFORE UPDATE OF return_id, line_type, line_sync_id, service_job_sync_id,
+      service_part_sync_id, deskripsi, jumlah, jumlah_milli, qty_asal_milli,
+      harga_satuan, subtotal, modal_satuan, stock_item_id, stock_sync_id
+    ON sale_return_items
+    FOR EACH ROW
+    WHEN NEW.return_id IS NOT OLD.return_id
+      OR NEW.line_type IS NOT OLD.line_type
+      OR NEW.line_sync_id IS NOT OLD.line_sync_id
+      OR NEW.service_job_sync_id IS NOT OLD.service_job_sync_id
+      OR NEW.service_part_sync_id IS NOT OLD.service_part_sync_id
+      OR NEW.deskripsi IS NOT OLD.deskripsi
+      OR NEW.jumlah IS NOT OLD.jumlah
+      OR NEW.jumlah_milli IS NOT OLD.jumlah_milli
+      OR NEW.qty_asal_milli IS NOT OLD.qty_asal_milli
+      OR NEW.harga_satuan IS NOT OLD.harga_satuan
+      OR NEW.subtotal IS NOT OLD.subtotal
+      OR NEW.modal_satuan IS NOT OLD.modal_satuan
+      OR NEW.stock_item_id IS NOT OLD.stock_item_id
+      OR NEW.stock_sync_id IS NOT OLD.stock_sync_id
+    BEGIN
+      SELECT RAISE(ABORT, 'baris retur bersifat final');
+    END
+  ''');
+  // Batas retur dihitung lintas semua retur aktif untuk baris nota yang sama,
+  // bukan hanya di dalam satu dokumen retur.
+  await db.execute('''
+    CREATE TRIGGER trg_sale_return_items_batas
+    BEFORE INSERT ON sale_return_items
+    FOR EACH ROW
+    WHEN NEW.qty_asal_milli IS NOT NULL AND NEW.qty_asal_milli >= 0
+      AND NEW.jumlah_milli + COALESCE((
+        SELECT SUM(ri.jumlah_milli)
+        FROM sale_return_items ri
+        JOIN sale_returns sr ON sr.id = ri.return_id
+        WHERE sr.deleted_at IS NULL AND ri.deleted_at IS NULL
+          AND ri.line_type = NEW.line_type
+          AND ri.line_sync_id = NEW.line_sync_id
+      ), 0) > NEW.qty_asal_milli
+    BEGIN
+      SELECT RAISE(ABORT, 'qty retur melebihi qty terjual');
+    END
+  ''');
 
   await db.execute('''
     CREATE TABLE service_record_mechanics (
@@ -926,7 +1186,10 @@ Future<void> createCleanSchema(Database db) async {
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (nominal >= 0),
+      CHECK (terbayar >= 0),
+      CHECK (terbayar <= nominal)
     )
   ''');
   await db.execute('''
@@ -958,6 +1221,14 @@ Future<void> createCleanSchema(Database db) async {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
+      CHECK (nominal >= 0),
+      CHECK (potongan_hutang >= 0),
+      CHECK (cicilan_hutang >= 0),
+      CHECK (bonus >= 0),
+      CHECK (komisi_total >= 0),
+      CHECK (kas_keluar >= 0),
+      CHECK (metode IN ('CASH', 'TRANSFER')),
+      CHECK (cycle_key <> ''),
       UNIQUE(employee_sync_id, cycle_start)
     )
   ''');
@@ -970,6 +1241,10 @@ Future<void> createCleanSchema(Database db) async {
   );
   await db.execute(
     'CREATE INDEX ix_salary_employee ON salary_payments(employee_sync_id)',
+  );
+  await db.execute(
+    'CREATE UNIQUE INDEX ux_salary_cycle_key '
+    "ON salary_payments(cycle_key) WHERE cycle_key <> ''",
   );
 
   // ---------------------------------------------------------------------------
@@ -1048,7 +1323,7 @@ Future<void> createCleanSchema(Database db) async {
       deskripsi TEXT NOT NULL,
       satuan TEXT NOT NULL DEFAULT 'pcs',
       jumlah INTEGER NOT NULL,
-      jumlah_milli INTEGER,
+      jumlah_milli INTEGER NOT NULL,
       harga_jual_terdaftar INTEGER NOT NULL DEFAULT 0,
       harga_batas_saat_transaksi INTEGER NOT NULL DEFAULT 0,
       harga_final INTEGER NOT NULL DEFAULT 0,
@@ -1060,9 +1335,20 @@ Future<void> createCleanSchema(Database db) async {
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (COALESCE(jumlah_milli, jumlah * 1000) > 0),
+      CHECK (harga_jual_terdaftar >= 0),
+      CHECK (harga_batas_saat_transaksi >= 0),
+      CHECK (harga_final >= 0),
+      CHECK (harga_modal >= 0),
+      CHECK (diskon_alokasi >= 0),
+      CHECK (subtotal >= 0)
     )
   ''');
+  await db.execute(
+    'CREATE INDEX ix_estimate_items_estimate '
+    'ON estimate_items(estimate_sync_id)',
+  );
 
   await db.execute('''
     CREATE TABLE work_orders (
@@ -1269,11 +1555,13 @@ Future<void> createCleanSchema(Database db) async {
       resolved_at TEXT
     )
   ''');
-  // Satu konflik terbuka per entitas+alasan; konflik berulang memperbarui
-  // baris yang sama agar tidak membanjiri daftar tinjauan.
+  // Satu konflik tertunda per entitas+alasan; konflik berulang memperbarui
+  // baris yang sama agar tidak membanjiri daftar tinjauan. Status `review`
+  // ikut dijaga karena datanya sudah diterapkan dan hanya menunggu keputusan.
   await db.execute(
-    'CREATE UNIQUE INDEX ux_sync_conflict_open '
-    "ON sync_conflicts(entity, entity_id, reason) WHERE status = 'open'",
+    'CREATE UNIQUE INDEX ux_sync_conflict_pending '
+    'ON sync_conflicts(entity, entity_id, reason) '
+    "WHERE status IN ('open', 'review')",
   );
   await db.execute('''
     CREATE TABLE device_sync_status (

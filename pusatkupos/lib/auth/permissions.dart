@@ -1,6 +1,7 @@
 import 'operator.dart';
 
 const permissionVoid = 'void';
+const permissionRetur = 'retur';
 const permissionChangeServicePrice = 'ubah_harga_jasa';
 const permissionChangeStock = 'ubah_stok';
 const permissionStockIn = 'stok_masuk';

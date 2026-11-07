@@ -12,6 +12,10 @@ Future<List<int>> readFile(String path) async {
 
 Future<bool> fileExists(String path) async => false;
 
+Future<int> fileSize(String path) async => 0;
+
+Future<int?> freeDiskBytes(String directory) async => null;
+
 Future<void> ensureParentDirectory(String path) async {}
 
 Future<String?> backupExistingDatabase(String path) async {
@@ -25,6 +29,12 @@ Future<void> deleteDatabaseSidecars(String path) async {
 Future<void> replaceDatabase(String path, String tempPath) async {
   throw UnsupportedError('Restore file tidak tersedia di platform ini.');
 }
+
+Future<String?> recoverInterruptedRestore(String path) async => null;
+
+Future<bool> commitReplacedDatabase(String path) async => false;
+
+Future<bool> rollbackReplacedDatabase(String path) async => false;
 
 Future<String> temporaryPath(String name) async {
   throw UnsupportedError('Berkas sementara tidak tersedia di platform ini.');

@@ -37,7 +37,8 @@ class SaleReturnService {
     required int recordId,
     required List<ReturnLineInput> items,
     required String alasan,
-    Operator? actor,
+    required Operator actor,
+    required String requestId,
     Future<void> Function(Transaction txn, int id)? enqueue,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
         enqueueCommission,
@@ -49,17 +50,29 @@ class SaleReturnService {
     if (items.isEmpty) {
       throw ArgumentError('Pilih minimal satu baris yang diretur.');
     }
-    if (actor != null) {
-      Permissions.require(actor, permissionVoid);
+    final cleanRequest = requestId.trim();
+    if (cleanRequest.isEmpty) {
+      throw ArgumentError('Kunci idempoten retur wajib diisi.');
     }
+    Permissions.require(actor, permissionRetur);
     final settings = await StoreSettingsService.instance.ensure();
-    final role = actor?.role ?? 'owner';
-    if (actor != null &&
-        !actor.isOwner &&
-        !settings.roleAllows(role, 'void')) {
+    final role = actor.role;
+    if (!actor.isOwner && !settings.roleAllows(role, 'retur')) {
       throw StateError('Peran $role tidak berhak membuat retur.');
     }
     return AppDatabase.instance.db.transaction((txn) async {
+      final existing = await txn.query(
+        'sale_returns',
+        columns: ['id'],
+        where: 'request_id = ?',
+        whereArgs: [cleanRequest],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        final id = existing.first['id'] as int;
+        if (enqueue != null) await enqueue(txn, id);
+        return id;
+      }
       final recordRows = await txn.query(
         'service_records',
         where: 'id = ?',
@@ -130,9 +143,12 @@ class SaleReturnService {
         'nota_sync_id': notaSyncId,
         'no_nota': noNota,
         'no_retur': noRetur,
+        'request_id': cleanRequest,
+        'status': 'AKTIF',
         'total': total,
+        'total_modal_kembali': modalTotal,
         'alasan': cleanReason,
-        'dibuat_oleh': actor?.label ?? 'Pemilik',
+        'dibuat_oleh': actor.label,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': now,
@@ -143,51 +159,93 @@ class SaleReturnService {
         final qtyMilli = line['jumlah_retur_milli'] as int;
         final refund = line['refund'] as int;
         final itemSyncId = newSyncId();
+        final stockItemId = line['stock_item_id'] as int?;
+        Map<String, Object?>? stockRow;
+        var stockSyncId = line['stock_sync_id'] as String?;
+        if (lineType == 'part' && stockItemId != null) {
+          final rows = await txn.query(
+            'stock_items',
+            where: 'id = ?',
+            whereArgs: [stockItemId],
+            limit: 1,
+          );
+          if (rows.isNotEmpty) {
+            stockRow = rows.first;
+            stockSyncId = rows.first['sync_id'] as String?;
+          }
+        }
         await txn.insert('sale_return_items', {
           'sync_id': itemSyncId,
           'return_id': returnId,
           'line_type': lineType,
           'line_sync_id': line['sync_id'] as String? ?? '',
+          'service_job_sync_id': lineType == 'jasa'
+              ? line['sync_id'] as String?
+              : null,
+          'service_part_sync_id': lineType == 'part'
+              ? line['sync_id'] as String?
+              : null,
           'deskripsi': line['deskripsi'] as String? ?? '',
           'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
-          'harga_satuan': qtyMilli == 0 ? 0 : (refund * 1000 / qtyMilli).round(),
+          'qty_asal_milli': (line['qty_milli'] as num?)?.toInt() ?? 0,
+          'harga_satuan': qtyMilli == 0
+              ? 0
+              : (refund * 1000 / qtyMilli).round(),
           'subtotal': refund,
           'modal_satuan': line['modal_satuan'] as int? ?? 0,
-          'stock_item_id': line['stock_item_id'] as int?,
+          'stock_item_id': stockItemId,
+          'stock_sync_id': stockSyncId,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'created_at': now,
           'updated_at': now,
         });
-        if (lineType != 'part') continue;
-        final stockItemId = line['stock_item_id'] as int?;
-        if (stockItemId == null) continue;
-        final stockRows = await txn.query(
-          'stock_items',
-          where: 'id = ?',
-          whereArgs: [stockItemId],
-          limit: 1,
+        if (lineType == 'jasa') {
+          await txn.rawUpdate(
+            'UPDATE service_jobs SET qty_retur_milli = '
+            'qty_retur_milli + ?, updated_at = ? WHERE sync_id = ?',
+            [qtyMilli, now, line['sync_id']],
+          );
+          continue;
+        }
+        await txn.rawUpdate(
+          'UPDATE service_parts SET qty_retur_milli = '
+          'qty_retur_milli + ?, updated_at = ? WHERE sync_id = ?',
+          [qtyMilli, now, line['sync_id']],
         );
-        if (stockRows.isEmpty) continue;
-        final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ??
-            ((stockRows.first['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        if (stockItemId == null || stockRow == null) continue;
+        final before = (stockRow['jumlah_milli'] as num?)?.toInt() ??
+            ((stockRow['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         final nextMilli = before + qtyMilli;
+        final stockHlc = await AppDatabase.instance.nextSyncHlc(txn);
         await txn.update(
           'stock_items',
-          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
+          {
+            'jumlah': wholeQuantity(nextMilli),
+            'jumlah_milli': nextMilli,
+            'sync_hlc_wall': stockHlc.wall,
+            'sync_hlc_counter': stockHlc.counter,
+            'updated_at': now,
+          },
           where: 'id = ?',
           whereArgs: [stockItemId],
         );
         await txn.insert('stock_movements', {
-          'sync_id': 'retur-$returnSyncId-$itemSyncId',
+          'sync_id': newSyncId(),
           'stock_item_id': stockItemId,
+          'stock_sync_id': stockSyncId,
           'nama_item': line['deskripsi'] as String? ?? '',
           'jenis': 'MASUK',
           'jumlah': wholeQuantity(qtyMilli),
           'jumlah_milli': qtyMilli,
-          'alasan': 'Retur $noNota',
+          'stok_sebelum_milli': before,
+          'stok_sesudah_milli': nextMilli,
+          'sumber_entity': 'sale_return_item',
+          'sumber_sync_id': itemSyncId,
           'service_record_id': recordId,
+          'operator': actor.label,
+          'alasan': 'Retur $noNota',
           'created_at': now,
           'updated_at': now,
         });
@@ -218,20 +276,41 @@ class SaleReturnService {
       final refundable = paidSoFar - (owedAfter < 0 ? 0 : owedAfter);
       final cashRefund = refundable.clamp(0, total).toInt();
       if (cashRefund > 0) {
+        final refundSyncId = newSyncId();
         await txn.insert('service_payments', {
-          'sync_id': newSyncId(),
+          'sync_id': refundSyncId,
           'service_record_id': recordId,
           'jenis': 'REFUND',
           'metode': record['metode_bayar'] ?? 'CASH',
           'nominal': -cashRefund,
           'waktu': now,
-          'operator': actor?.label ?? 'Pemilik',
+          'operator': actor.label,
           'request_id': 'retur-$returnSyncId',
+          'kas_kategori': 'REFUND',
+          'catatan': 'Retur $noRetur',
+          'created_at': now,
+          'updated_at': now,
+        });
+        await txn.insert('cash_ledger', {
+          'sync_id': newSyncId(),
+          'waktu': now,
+          'kategori': 'REFUND',
+          'sumber_entity': 'service_payment',
+          'sumber_sync_id': refundSyncId,
+          'nominal': -cashRefund,
+          'metode': record['metode_bayar'] ?? 'CASH',
+          'operator': actor.label,
           'catatan': 'Retur $noRetur',
           'created_at': now,
           'updated_at': now,
         });
       }
+      await txn.update(
+        'sale_returns',
+        {'total_refund': cashRefund, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [returnId],
+      );
       await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
       await AppDatabase.instance.recalculateRecordCommissions(
         txn,
@@ -239,8 +318,9 @@ class SaleReturnService {
         enqueueCommission: enqueueCommission,
       );
       await txn.insert('permission_audits', {
-        'actor': actor?.label ?? 'Pemilik',
-        'target_account_id': actor?.employeeId,
+        'sync_id': newSyncId(),
+        'actor': actor.label,
+        'target_account_id': actor.employeeId,
         'action': 'retur_nota',
         'detail_json': jsonEncode({
           'no_nota': noNota,
@@ -251,6 +331,7 @@ class SaleReturnService {
           'alasan': cleanReason,
         }),
         'created_at': now,
+        'updated_at': now,
       });
       if (enqueue != null) await enqueue(txn, returnId);
       return returnId;
@@ -363,9 +444,12 @@ class SaleReturnService {
               deskripsi: item['deskripsi'] as String? ?? '',
               jumlah: (item['jumlah'] as num?)?.toInt() ?? 0,
               qtyMilli: (item['jumlah_milli'] as num?)?.toInt() ?? 0,
+              qtyAsalMilli: (item['qty_asal_milli'] as num?)?.toInt(),
               hargaSatuanCents:
                   (item['harga_satuan'] as num?)?.toInt() ?? 0,
               subtotalCents: (item['subtotal'] as num?)?.toInt() ?? 0,
+              modalSatuanCents:
+                  (item['modal_satuan'] as num?)?.toInt() ?? 0,
             ),
           )
           .toList(),

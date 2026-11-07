@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../auth/operator.dart';
+import '../data/app_database.dart';
 import '../data/pin_service.dart';
 import '../data/session_service.dart';
 import '../data/store_settings.dart';
@@ -74,21 +77,58 @@ class _PinGateState extends State<PinGate> {
       }
       final profile = widget.profile;
       var permissions = profile.permissions;
-      if (!profile.isOwner) {
+      var role = profile.role;
+      var extras = profile.extraPermissions;
+      if (!profile.isOwner && !profile.isViewer) {
+        // Akun nonaktif tidak boleh membuka sesi walau PIN lokal benar.
+        final employeeSync = profile.employeeSyncId ?? '';
+        if (employeeSync.isNotEmpty) {
+          final rows = await AppDatabase.instance.db.query(
+            'employee_accounts',
+            columns: ['aktif', 'role_base', 'extra_permissions_json'],
+            where: 'sync_id = ?',
+            whereArgs: [employeeSync],
+            limit: 1,
+          );
+          if (rows.isNotEmpty && (rows.first['aktif'] as int? ?? 1) == 0) {
+            setState(() {
+              _error = 'Akun karyawan ini sudah dinonaktifkan pemilik.';
+              _busy = false;
+            });
+            return;
+          }
+          if (rows.isNotEmpty) {
+            role = '${rows.first['role_base'] ?? profile.role}';
+            final raw = rows.first['extra_permissions_json'];
+            if (raw is String && raw.trim().isNotEmpty) {
+              try {
+                final decoded = jsonDecode(raw);
+                if (decoded is List) {
+                  extras = decoded.map((item) => '$item').toList();
+                }
+              } on FormatException {
+                extras = const [];
+              }
+            }
+          }
+        }
         // Hitung ulang agar perubahan akses peran langsung berlaku saat
         // perangkat dibuka, termasuk sesi lama yang belum punya kunci menu.
         final settings = await StoreSettingsService.instance.ensure();
-        permissions = settings
-            .accessFor(profile.role, extras: profile.extraPermissions)
-            .toList();
+        permissions = settings.accessFor(role, extras: extras).toList();
       }
       AppState.instance.setOperator(
         Operator(
-          kind: profile.isOwner ? 'owner' : 'employee',
-          role: profile.isOwner ? 'owner' : profile.role,
+          kind: profile.isViewer
+              ? 'viewer'
+              : (profile.isOwner ? 'owner' : 'employee'),
+          role: profile.isViewer
+              ? 'VIEWER'
+              : (profile.isOwner ? 'owner' : role),
           label: profile.nama,
           employeeSyncId: profile.employeeSyncId,
           username: profile.username,
+          extraPermissions: extras,
           permissions: permissions.toSet(),
           storeIds: profile.storeIds,
           mustChangePassword: profile.mustChangePassword,

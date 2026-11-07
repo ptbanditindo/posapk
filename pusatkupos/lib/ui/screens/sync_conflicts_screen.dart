@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/money.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
 const _reasonLabels = {
   'versi_lokal_lebih_baru': 'Versi lokal lebih baru',
   'harga_dikunci_owner': 'Harga jasa dikunci pemilik',
+  'harga_tidak_valid': 'Harga barang/jasa tidak valid',
+  'harga_di_bawah_batas': 'Harga di bawah batas',
   'stok_negatif': 'Stok menjadi negatif',
   'tanda_tangan_tidak_valid': 'Tanda tangan tidak valid',
   'dekripsi_gagal': 'Data tidak dapat dibuka',
@@ -17,7 +20,86 @@ const _reasonLabels = {
   'nota_butuh_induk': 'Nota induk belum tersedia',
   'gagal_terapkan': 'Perubahan gagal diterapkan',
   'retryable': 'Perubahan tertunda',
+  'pembayaran_melebihi_total': 'Pembayaran melebihi total efektif',
+  'gaji_ganda': 'Gaji siklus dibayar lebih dari sekali',
+  'retur_pada_nota_void': 'Retur pada nota VOID',
+  'retur_melebihi_qty': 'Retur melebihi qty terjual',
+  'retur_baris_tidak_ditemukan': 'Baris retur tidak ditemukan',
+  'retur_tidak_valid': 'Data retur tidak valid',
+  'koreksi_pada_nota_void': 'Koreksi pada nota VOID',
+  'koreksi_di_bawah_batas': 'Koreksi di bawah batas',
+  'void_setelah_retur': 'Void setelah retur aktif',
+  'pengirim_dicabut': 'Perangkat pengirim sudah dicabut',
+  'akun_pengirim_nonaktif': 'Akun pengirim tidak aktif',
+  'peran_viewer_hanya_baca': 'Peran viewer hanya baca',
+  'hanya_owner': 'Hanya pemilik yang boleh',
+  'hapus_order_hanya_owner': 'Hapus order hanya oleh pemilik',
+  'komisi_akun_hilang': 'Akun mekanik komisi tidak ditemukan',
+  'komisi_tanpa_snapshot': 'Tarif komisi nota tidak tersedia',
+  'kode_barang_bentrok': 'Kode barang bentrok',
+  'kode_barang_kosong': 'Barang tanpa kode',
+  'no_nota_bentrok': 'Nomor nota bentrok',
+  'rekonsiliasi_beda': 'Rekonsiliasi berbeda',
 };
+
+String _reasonLabel(String reason) {
+  if (reason.startsWith('peran_tidak_berhak')) {
+    return 'Peran pengirim tidak berhak';
+  }
+  return _reasonLabels[reason] ?? reason;
+}
+
+const _detailLabels = {
+  'no_nota': 'No. nota',
+  'employee_nama': 'Karyawan',
+  'cycle_start': 'Awal siklus',
+  'cycle_end': 'Akhir siklus',
+  'tanggal': 'Tanggal',
+  'nominal_masuk': 'Nominal masuk',
+  'nominal_tersimpan': 'Nominal tersimpan',
+  'kas_keluar': 'Kas keluar',
+  'potongan_hutang': 'Potongan hutang',
+  'total_efektif': 'Total efektif',
+  'total_dibayar': 'Total dibayar',
+  'kelebihan': 'Kelebihan bayar',
+  'retur_aktif': 'Retur aktif',
+  'void_refund': 'Refund void',
+  'stok_sebelum_milli': 'Stok sebelum (×1000)',
+  'stok_sesudah_milli': 'Stok sesudah (×1000)',
+  'terjual_milli': 'Terjual (×1000)',
+  'sudah_retur_milli': 'Sudah diretur (×1000)',
+  'retur_masuk_milli': 'Retur masuk (×1000)',
+  'harga_modal': 'Harga modal',
+  'harga_jual': 'Harga jual',
+  'kode_asal': 'Kode asal',
+  'kode_baru': 'Kode baru',
+  'sender_device_id': 'Perangkat pengirim',
+  'sender_account': 'Akun pengirim',
+  'sender_kind': 'Jenis pengirim',
+};
+
+bool _isMoneyKey(String key) =>
+    key == 'nominal' ||
+    key == 'kas_keluar' ||
+    key == 'kelebihan' ||
+    key == 'potongan_hutang' ||
+    key == 'void_refund' ||
+    key.startsWith('nominal_') ||
+    key.startsWith('total_') ||
+    key.startsWith('harga_');
+
+String _detailLabel(String key) => _detailLabels[key] ?? key;
+
+String _detailValue(String key, Object? value) {
+  if (value == null) return '-';
+  if (value is bool) return value ? 'Ya' : 'Tidak';
+  if (value is num && _isMoneyKey(key)) return formatRupiah(value.toInt());
+  if (value is List || value is Map) {
+    return const JsonEncoder.withIndent(' ').convert(value);
+  }
+  return '$value';
+}
+
 
 String _statusLabel(Map<String, Object?> row) {
   final resolved = row['resolved_at'] != null;
@@ -177,7 +259,7 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final detail = _detail(row);
     final canRetry = !resolved && row['inbox_id'] != null;
     return SectionCard(
-      title: _reasonLabels[reason] ?? reason,
+      title: _reasonLabel(reason),
       subtitle:
           '${row['entity'] ?? ''} ${row['entity_id'] ?? ''} · ${_statusLabel(row)}',
       child: Column(
@@ -203,9 +285,15 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
               children: [
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(detail),
-                    style: const TextStyle(fontSize: 11),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final entry in detail.entries)
+                        _line(
+                          _detailLabel(entry.key),
+                          _detailValue(entry.key, entry.value),
+                        ),
+                    ],
                   ),
                 ),
               ],

@@ -541,6 +541,7 @@ class _PosScreenState extends State<PosScreen> {
       ];
 
   Future<EstimateRecord?> _createEstimateWithApproval() async {
+    final actor = AppState.instance.requireOperator;
     final settings = _settings;
     String? ownerPin;
     String? approverSecret;
@@ -555,7 +556,7 @@ class _PosScreenState extends State<PosScreen> {
           alasanDiskon: _diskonCents > 0 ? 'Diskon estimasi' : null,
           ownerPin: ownerPin,
           approverSecret: approverSecret,
-          actor: _actor,
+          actor: actor,
           enqueue: (txn, syncId) => SyncService.instance.enqueueEstimate(
             syncId,
             txn: txn,

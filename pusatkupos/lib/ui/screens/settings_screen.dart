@@ -31,7 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _backupChat = TextEditingController();
   final _backupToken = TextEditingController();
   final _backupPassphrase = TextEditingController();
-  bool _backupPassphraseVisible = false;
+  bool _backupPassphraseConfigured = false;
   bool _fiturKaryawan = true;
   bool _fiturSupplier = true;
   bool _busy = false;
@@ -56,7 +56,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadBackup() async {
     final settings = await BackupService.instance.loadSettings();
     final status = await BackupService.instance.status();
-    final passphrase = await BackupService.instance.autoPassphrase();
     if (!mounted) return;
     setState(() {
       _backupAuto = settings.autoEnabled;
@@ -64,7 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _backupTelegram = settings.telegramEnabled;
       _backupChat.text = settings.telegramChatId;
       _backupTokenConfigured = settings.telegramTokenConfigured;
-      _backupPassphrase.text = passphrase;
+      _backupPassphraseConfigured = settings.passphraseConfigured;
       _backupStatus = status;
     });
   }
@@ -111,6 +110,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         autoPassphrase: _backupPassphrase.text,
       );
       _backupToken.clear();
+      _backupPassphrase.clear();
       await _loadBackup();
       if (!mounted) return;
       showSnack(context, 'Pengaturan backup disimpan.');
@@ -250,6 +250,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     controller.dispose();
     return result;
+  }
+
+  Future<String?> _askOwnerPin() async {
+    final controller = TextEditingController();
+    String? error;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('Konfirmasi pemilik'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Masukkan PIN pemilik untuk menyalin passphrase backup. '
+                'Passphrase tidak ditampilkan di layar.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'PIN pemilik',
+                  errorText: error,
+                ),
+                onSubmitted: (_) =>
+                    Navigator.pop(context, controller.text.trim()),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.isEmpty) {
+                  setLocal(() => error = 'Masukkan PIN pemilik.');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Lanjut'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Future<void> _copyStoredPassphrase() async {
+    if (!await PinService.instance.isConfigured()) {
+      if (!mounted) return;
+      showSnack(
+        context,
+        'Atur PIN pemilik terlebih dahulu untuk membuka passphrase.',
+        error: true,
+      );
+      return;
+    }
+    final pin = await _askOwnerPin();
+    if (pin == null || !mounted) return;
+    final verification = await PinService.instance.verifyDetailed(pin);
+    if (!mounted) return;
+    switch (verification) {
+      case PinVerification.ok:
+      case PinVerification.weakLegacyPin:
+        final value = await BackupService.instance.autoPassphrase();
+        await Clipboard.setData(ClipboardData(text: value));
+        if (!mounted) return;
+        showSnack(
+          context,
+          'Passphrase disalin. Hapus clipboard setelah dipakai.',
+        );
+      case PinVerification.locked:
+        showSnack(
+          context,
+          'Terlalu banyak percobaan. Coba lagi nanti.',
+          error: true,
+        );
+      case PinVerification.wrong:
+        showSnack(context, 'PIN pemilik salah.', error: true);
+    }
   }
 
   Future<void> _backup() async {
@@ -833,52 +922,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 10),
                 TextField(
                   controller: _backupPassphrase,
-                  obscureText: !_backupPassphraseVisible,
+                  obscureText: true,
                   decoration: InputDecoration(
-                    labelText: 'Passphrase backup otomatis',
-                    helperText:
-                        'Minimal 8 karakter. Simpan di tempat aman agar arsip '
-                        'backup dapat dipulihkan di perangkat lain.',
-                    suffixIcon: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: _backupPassphraseVisible
-                              ? 'Sembunyikan'
-                              : 'Tampilkan',
-                          icon: Icon(
-                            _backupPassphraseVisible
-                                ? Icons.visibility_off_outlined
-                                : Icons.visibility_outlined,
-                          ),
-                          onPressed: () => setState(
-                            () => _backupPassphraseVisible =
-                                !_backupPassphraseVisible,
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Salin passphrase',
-                          icon: const Icon(Icons.copy_outlined),
-                          onPressed: () async {
-                            await Clipboard.setData(
-                              ClipboardData(
-                                text: _backupPassphrase.text.trim(),
-                              ),
-                            );
-                            if (!context.mounted) return;
-                            showSnack(context, 'Passphrase disalin.');
-                          },
-                        ),
-                      ],
-                    ),
+                    labelText: 'Passphrase backup baru (opsional)',
+                    helperText: _backupPassphraseConfigured
+                        ? 'Passphrase tersimpan tidak ditampilkan. Isi hanya '
+                              'bila ingin menggantinya (minimal 8 karakter).'
+                        : 'Belum ada passphrase tersimpan. Minimal 8 karakter; '
+                              'kosongkan bila tidak diperlukan.',
+                    suffixIcon: _backupPassphraseConfigured
+                        ? IconButton(
+                            tooltip: 'Salin passphrase (perlu PIN pemilik)',
+                            icon: const Icon(Icons.copy_outlined),
+                            onPressed: _backupBusy
+                                ? null
+                                : _copyStoredPassphrase,
+                          )
+                        : null,
                   ),
                 ),
                 if (_backupTelegram)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
-                      'Telegram hanya menerima arsip terenkripsi. Tanpa '
-                      'passphrase ini, backup tidak dapat dipulihkan.',
+                      'Telegram hanya menerima arsip terenkripsi. Passphrase '
+                      'tidak dapat dibaca dari layar; tanpa passphrase ini, '
+                      'backup tidak dapat dipulihkan di perangkat lain.',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),

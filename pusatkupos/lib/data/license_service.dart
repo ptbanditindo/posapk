@@ -12,6 +12,8 @@ import 'secure_store.dart';
 
 const _ownerAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 const _recoveryIterations = 600000;
+const _serverTimeKey = 'license.server_time';
+const _serverTimeLocalKey = 'license.server_time_local';
 
 class LicenseService {
   LicenseService._();
@@ -23,6 +25,58 @@ class LicenseService {
 
   LicenseClaims? _cachedClaims;
   String? _cachedToken;
+  DateTime? _anchorServer;
+  DateTime? _anchorLocal;
+  bool _anchorLoaded = false;
+
+  /// Waktu acuan pemeriksaan lisensi. Bila relay pernah memberi `server_time`,
+  /// waktu server dipakai sebagai titik awal dan jam perangkat hanya dihitung
+  /// maju; memundurkan jam perangkat tidak memperpanjang lisensi.
+  Future<DateTime> effectiveNowUtc() async {
+    await _loadAnchor();
+    final local = DateTime.now().toUtc();
+    final server = _anchorServer;
+    if (server == null) return local;
+    final anchorLocal = _anchorLocal;
+    if (anchorLocal == null) return server.isAfter(local) ? server : local;
+    final elapsed = local.difference(anchorLocal);
+    if (elapsed.isNegative) return server;
+    final projected = server.add(elapsed);
+    return projected.isAfter(server) ? projected : server;
+  }
+
+  Future<void> _loadAnchor() async {
+    if (_anchorLoaded) return;
+    _anchorLoaded = true;
+    _anchorServer = DateTime.tryParse(
+      await AppDatabase.instance.getSetting(_serverTimeKey) ?? '',
+    )?.toUtc();
+    _anchorLocal = DateTime.tryParse(
+      await AppDatabase.instance.getSetting(_serverTimeLocalKey) ?? '',
+    )?.toUtc();
+  }
+
+  /// Simpan waktu server terakhir yang diterima. Waktu tidak pernah mundur
+  /// agar respons relay lama atau jam yang dimundurkan tidak melemahkan
+  /// pengecekan masa berlaku.
+  Future<void> noteServerTime(Object? value) async {
+    final server = DateTime.tryParse('$value')?.toUtc();
+    if (server == null) return;
+    await _loadAnchor();
+    final current = _anchorServer;
+    if (current != null && current.isAfter(server)) return;
+    final local = DateTime.now().toUtc();
+    _anchorServer = server;
+    _anchorLocal = local;
+    await AppDatabase.instance.setSetting(
+      _serverTimeKey,
+      server.toIso8601String(),
+    );
+    await AppDatabase.instance.setSetting(
+      _serverTimeLocalKey,
+      local.toIso8601String(),
+    );
+  }
 
   Future<Map<String, Object?>?> owner() async {
     final rows = await AppDatabase.instance.db.query(
@@ -148,14 +202,16 @@ class LicenseService {
     );
     _cachedToken = token.trim();
     _cachedClaims = claims;
-    return claims;
+    return claims.at(await effectiveNowUtc());
   }
 
   Future<LicenseClaims?> verifiedClaims({bool force = false}) async {
     final row = await license();
     final token = row?['token'] as String? ?? '';
     if (token.isEmpty) return null;
-    if (!force && token == _cachedToken) return _cachedClaims;
+    if (!force && token == _cachedToken) {
+      return _cachedClaims?.at(await effectiveNowUtc());
+    }
     try {
       final claims = await verifier.verify(token);
       final localOwner = await ownerId();
@@ -165,7 +221,7 @@ class LicenseService {
       }
       _cachedToken = token;
       _cachedClaims = claims;
-      return claims;
+      return claims.at(await effectiveNowUtc());
     } catch (_) {
       return null;
     }
@@ -175,12 +231,13 @@ class LicenseService {
     final ownerRow = await owner();
     final licenseRow = await license();
     final claims = await verifiedClaims();
+    final now = await effectiveNowUtc();
     final storedEnd = DateTime.tryParse(
       licenseRow?['period_end'] as String? ?? '',
     );
     final expired = claims != null
         ? !claims.aktif
-        : storedEnd != null && storedEnd.isBefore(DateTime.now());
+        : storedEnd != null && storedEnd.isBefore(now);
     return {
       'owner_id': ownerRow?['owner_id'] ?? '',
       'owner_public_key': ownerRow?['public_key'] ?? '',

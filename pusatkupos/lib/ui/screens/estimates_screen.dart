@@ -64,12 +64,19 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
     _EstimatesData data,
     Map<String, Object?> row,
   ) async {
-    final role = AppState.instance.operator?.role ?? 'owner';
+    final role = AppState.instance.operator?.role ?? '';
+    final isOwner = AppState.instance.isOwner;
     final canConvert = data.settings.roleAllows(role, 'buat_nota');
+    final canManage = isOwner ||
+        (AppState.instance.can('buat_estimasi') &&
+            data.settings.roleCanSelect(role, transactionEstimasiSaja));
     final action = await showDialog<_EstimateAction>(
       context: context,
-      builder: (_) =>
-          _EstimateDetailDialog(row: row, canConvert: canConvert),
+      builder: (_) => _EstimateDetailDialog(
+        row: row,
+        canConvert: canConvert,
+        canManage: canManage,
+      ),
     );
     if (action == null || !mounted) return;
     switch (action) {
@@ -112,7 +119,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
     try {
       await OrderService.instance.cancelEstimate(
         syncId,
-        actor: AppState.instance.operator,
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, estimateSyncId) =>
             SyncService.instance.enqueueEstimate(estimateSyncId, txn: txn),
       );
@@ -151,7 +158,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
       if (jenis == 'part' && stockSync.isNotEmpty) {
         final stockRows = await AppDatabase.instance.db.query(
           'stock_items',
-          where: 'sync_id = ?',
+          where: 'sync_id = ? AND deleted_at IS NULL',
           whereArgs: [stockSync],
           limit: 1,
         );
@@ -209,7 +216,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
           diskonCents: draft.diskonCents,
           ownerPin: ownerPin,
           approverSecret: approverSecret,
-          actor: AppState.instance.operator,
+          actor: AppState.instance.requireOperator,
           enqueue: (txn, estimateSyncId) =>
               SyncService.instance.enqueueEstimate(estimateSyncId, txn: txn),
         );
@@ -280,7 +287,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
           bayarCents: draft.bayarCents,
           ownerPin: ownerPin,
           approverSecret: approverSecret,
-          actor: AppState.instance.operator,
+          actor: AppState.instance.requireOperator,
           enqueueNote: (txn, id) =>
               SyncService.instance.enqueueNote(id, txn: txn),
           enqueueEstimate: (txn, estimateSyncId) =>
@@ -600,10 +607,15 @@ class _EstimateCard extends StatelessWidget {
 }
 
 class _EstimateDetailDialog extends StatefulWidget {
-  const _EstimateDetailDialog({required this.row, required this.canConvert});
+  const _EstimateDetailDialog({
+    required this.row,
+    required this.canConvert,
+    required this.canManage,
+  });
 
   final Map<String, Object?> row;
   final bool canConvert;
+  final bool canManage;
 
   @override
   State<_EstimateDetailDialog> createState() => _EstimateDetailDialogState();
@@ -744,12 +756,12 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Tutup'),
         ),
-        if (state == 'aktif')
+        if (state == 'aktif' && widget.canManage)
           TextButton(
             onPressed: () => Navigator.pop(context, _EstimateAction.cancel),
             child: const Text('Batalkan'),
           ),
-        if (state == 'aktif')
+        if (state == 'aktif' && widget.canManage)
           OutlinedButton.icon(
             onPressed: () => Navigator.pop(context, _EstimateAction.revise),
             icon: const Icon(Icons.edit_note_outlined),

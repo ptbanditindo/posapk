@@ -130,10 +130,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
     }
   }
 
-  Future<void> _pushAccountsToServer() async {
+  Future<void> _pushAccountsToServer({bool silent = false}) async {
     final api = await _ownerApi();
     if (api == null) {
-      if (mounted) {
+      if (!silent && mounted) {
         showSnack(
           context,
           'Perangkat ini belum terhubung ke server akun.',
@@ -144,16 +144,20 @@ class _PremiumScreenState extends State<PremiumScreen> {
     }
     final store = await SyncService.instance.storeId();
     final settings = await StoreSettingsService.instance.ensure();
-    setState(() => _busy = true);
+    if (!silent) setState(() => _busy = true);
     try {
       var count = 0;
-      for (final account in _accounts.where((row) => row['aktif'] == 1)) {
+      // Akun nonaktif juga wajib dikirim agar relay mencabut sesinya.
+      for (final account in _accounts) {
+        final syncId = '${account['sync_id'] ?? ''}';
+        final username = '${account['username'] ?? ''}';
+        if (syncId.isEmpty || username.isEmpty) continue;
         final stores = _jsonList(account['store_ids_json']);
         final role = '${account['role_base'] ?? 'KASIR'}';
         final extras = _jsonList(account['extra_permissions_json']);
         await api.saveAccount(
-          syncId: '${account['sync_id'] ?? ''}',
-          username: '${account['username'] ?? ''}',
+          syncId: syncId,
+          username: username,
           nama: '${account['nama'] ?? ''}',
           role: role,
           permissions: settings.accessFor(role, extras: extras).toList(),
@@ -165,19 +169,21 @@ class _PremiumScreenState extends State<PremiumScreen> {
               (account['password_iterations'] as num?)?.toInt() ?? 600000,
           aktif: account['aktif'] == 1,
           permissionVersion:
-              (account['permission_version'] as num?)?.toInt() ?? 0,
+              (account['permission_version'] as num?)?.toInt() ?? 1,
           permissionsExplicit: true,
         );
         count++;
       }
       await _refreshRelayAccess();
-      if (mounted) {
+      if (!silent && mounted) {
         showSnack(context, '$count akun dikirim ke server akun.');
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal mengirim akun: $error', error: true);
+      if (!silent && mounted) {
+        showSnack(context, 'Gagal mengirim akun: $error', error: true);
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (!silent && mounted) setState(() => _busy = false);
     }
   }
 
@@ -452,8 +458,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
         role: input.role,
         password: input.password,
         extraPermissions: input.permissions,
+        enqueue: (txn, syncId) =>
+            SyncService.instance.enqueueEmployee(syncId, txn: txn),
       );
       await _load();
+      await _pushAccountsToServer(silent: true);
       if (mounted) {
         showSnack(
           context,
@@ -487,8 +496,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
         storeIds: _jsonList(account['store_ids_json']).isEmpty
             ? const ['utama']
             : _jsonList(account['store_ids_json']),
+        enqueue: (txn, syncId) =>
+            SyncService.instance.enqueueEmployee(syncId, txn: txn),
       );
       await _load();
+      await _pushAccountsToServer(silent: true);
       if (mounted) showSnack(context, 'Akun ${input.username} diperbarui.');
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal mengubah akun: $error', error: true);

@@ -244,6 +244,23 @@ CREATE TABLE IF NOT EXISTS invites (
 )
 ''',
       '''
+CREATE TABLE IF NOT EXISTS account_store_access (
+  owner_id TEXT NOT NULL,
+  store_id TEXT NOT NULL,
+  account_sync_id TEXT NOT NULL,
+  role_base TEXT NOT NULL DEFAULT 'KASIR',
+  extra_permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  permissions_explicit BOOLEAN NOT NULL DEFAULT false,
+  aktif BOOLEAN NOT NULL DEFAULT true,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, store_id, account_sync_id),
+  FOREIGN KEY (owner_id, account_sync_id)
+    REFERENCES accounts(owner_id, sync_id) ON DELETE CASCADE
+)
+''',
+      'CREATE INDEX IF NOT EXISTS ix_account_store_access_account ON account_store_access(owner_id, account_sync_id)',
+      '''
 CREATE TABLE IF NOT EXISTS cursors (
   owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
   device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,

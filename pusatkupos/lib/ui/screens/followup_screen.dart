@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/followup_service.dart';
+import '../../state/app_state.dart';
 import '../widgets.dart';
 
 class FollowupScreen extends StatefulWidget {
@@ -92,7 +93,10 @@ class _FollowupScreenState extends State<FollowupScreen> {
     );
     if (!ok) return;
     try {
-      final attempt = await FollowupService.instance.followUp(row.id);
+      final attempt = await FollowupService.instance.followUp(
+        row.id,
+        actor: AppState.instance.requireOperator,
+      );
       if (!mounted) return;
       setState(() => _quota = attempt.quota);
       await _showMessage(attempt);
@@ -246,6 +250,7 @@ class _FollowupScreenState extends State<FollowupScreen> {
       await FollowupService.instance.changeStatus(
         row.id,
         status: status,
+        actor: AppState.instance.requireOperator,
         alasan: alasan,
         janjiBayar: status == 'JANJI_BAYAR' ? tanggal : null,
         tanggalService: status == 'AKAN_DATANG' ? tanggal : null,
@@ -702,7 +707,8 @@ class _FollowupScreenState extends State<FollowupScreen> {
             const SizedBox(height: 8),
             Row(
               children: [
-                if (row.status != 'ARSIP') ...[
+                if (row.status != 'ARSIP' &&
+                    AppState.instance.can('followup')) ...[
                   FilledButton.tonalIcon(
                     onPressed:
                         row.bisaFollowup ? () => _remind(row) : null,
@@ -717,7 +723,8 @@ class _FollowupScreenState extends State<FollowupScreen> {
                   label: const Text('Detail'),
                 ),
                 const Spacer(),
-                if (options.isNotEmpty)
+                if (options.isNotEmpty &&
+                    AppState.instance.can('followup'))
                   PopupMenuButton<String>(
                     tooltip: 'Ubah status',
                     onSelected: (value) => _changeStatus(row, value),

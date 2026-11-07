@@ -8,6 +8,7 @@ Future<Uint8List> exportSnapshotBytes(
   Database db, {
   required List<String> dropTables,
   required String settingsWhere,
+  List<String> sanitize = const [],
 }) async {
   final dir = await Directory.systemTemp.createTemp('pusatkupos_snapshot_');
   final target = p.join(dir.path, 'snapshot.db');
@@ -17,6 +18,9 @@ Future<Uint8List> exportSnapshotBytes(
     try {
       for (final table in dropTables) {
         await copy.execute('DROP TABLE IF EXISTS "$table"');
+      }
+      for (final statement in sanitize) {
+        await copy.execute(statement);
       }
       await copy.delete('app_settings', where: settingsWhere);
     } finally {
@@ -33,6 +37,7 @@ Future<Map<String, int>> importSnapshotBytes(
   Database target, {
   required List<String> tables,
   required List<String> deleteOrder,
+  Future<void> Function(Transaction txn)? afterImport,
 }) async {
   final dir = await Directory.systemTemp.createTemp('pusatkupos_snapshot_');
   final path = p.join(dir.path, 'snapshot.db');
@@ -68,6 +73,7 @@ Future<Map<String, int>> importSnapshotBytes(
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
+      await afterImport?.call(txn);
       return counts;
     });
   } finally {

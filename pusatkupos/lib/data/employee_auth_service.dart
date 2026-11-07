@@ -246,6 +246,101 @@ class EmployeeAuthService {
           ? grants
           : account['extra_permissions'],
     );
+    final employeeSync =
+        account['sync_id'] as String? ?? 'relay-${account['username']}';
+    final namaAkun = '${account['nama'] ?? username}';
+    final usernameAkun = '${account['username'] ?? username}';
+    final explicit =
+        account['permissions_explicit'] == true ? 1 : 0;
+    final aktif = account['aktif'] == false ? 0 : 1;
+    if (aktif == 0) {
+      throw EmployeeAuthException(
+        'Akun karyawan ini sudah dinonaktifkan pemilik.',
+      );
+    }
+    // Salinan akun lokal diperlukan agar komisi, payroll, dan pemilihan
+    // mekanik tetap bekerja walau perangkat sedang offline.
+    final existingAccount = await AppDatabase.instance.db.query(
+      'employee_accounts',
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [employeeSync],
+      limit: 1,
+    );
+    if (existingAccount.isEmpty) {
+      await AppDatabase.instance.db.insert('employee_accounts', {
+        'sync_id': employeeSync,
+        'username': usernameAkun,
+        'nama': namaAkun,
+        'role_base': role,
+        'extra_permissions_json': jsonEncode(extras),
+        'store_ids_json': jsonEncode(storeIds),
+        'password_hash': 'relay',
+        'password_salt': 'relay',
+        'must_change_password': account['must_change_password'] == true ? 1 : 0,
+        'aktif': aktif,
+        'permissions_explicit': explicit,
+        'created_at': nowIso(),
+        'updated_at': nowIso(),
+      });
+    } else {
+      await AppDatabase.instance.db.update(
+        'employee_accounts',
+        {
+          'username': usernameAkun,
+          'nama': namaAkun,
+          'role_base': role,
+          'extra_permissions_json': jsonEncode(extras),
+          'store_ids_json': jsonEncode(storeIds),
+          'aktif': aktif,
+          'permissions_explicit': explicit,
+          'must_change_password': account['must_change_password'] == true
+              ? 1
+              : 0,
+          'updated_at': nowIso(),
+        },
+        where: 'sync_id = ?',
+        whereArgs: [employeeSync],
+      );
+    }
+    await AppDatabase.instance.db.update(
+      'devices',
+      {'employee_sync_id': employeeSync},
+      where: 'id = ?',
+      whereArgs: [localId],
+    );
+    for (final storeId in storeIds) {
+      final access = await AppDatabase.instance.db.query(
+        'employee_store_access',
+        columns: ['id'],
+        where: 'store_id = ? AND employee_sync_id = ?',
+        whereArgs: [storeId, employeeSync],
+        limit: 1,
+      );
+      final payload = {
+        'role_base': role,
+        'extra_permissions_json': jsonEncode(extras),
+        'permissions_explicit': explicit,
+        'aktif': aktif,
+        'updated_at': nowIso(),
+      };
+      if (access.isEmpty) {
+        await AppDatabase.instance.db.insert('employee_store_access', {
+          'sync_id': newSyncId(),
+          'store_id': storeId,
+          'employee_sync_id': employeeSync,
+          'created_at': nowIso(),
+          ...payload,
+        });
+      } else {
+        await AppDatabase.instance.db.update(
+          'employee_store_access',
+          payload,
+          where: 'id = ?',
+          whereArgs: [access.first['id']],
+        );
+      }
+    }
     final settings = await StoreSettingsService.instance.ensure();
     final profile = SessionProfile(
       mode: 'employee',

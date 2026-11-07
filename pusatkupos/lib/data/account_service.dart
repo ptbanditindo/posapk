@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
+import 'package:sqflite/sqflite.dart';
 
 import '../auth/operator.dart';
 import '../core/dates.dart';
@@ -49,6 +50,71 @@ class AccountService {
     }
   }
 
+  /// Menyelaraskan akses toko eksplisit dengan data akun.
+  ///
+  /// Toko yang tidak lagi ditugaskan dinonaktifkan (bukan dihapus) agar
+  /// pencabutan akses tetap dapat diaudit dan tidak terhidupkan kembali oleh
+  /// snapshot lama.
+  static Future<void> syncStoreAccess(
+    DatabaseExecutor db, {
+    required String employeeSyncId,
+    required String role,
+    required List<String> extraPermissions,
+    required bool explicit,
+    required bool aktif,
+    required List<String> storeIds,
+    int version = 1,
+  }) async {
+    if (employeeSyncId.isEmpty) return;
+    final now = nowIso();
+    final desired = storeIds.where((id) => id.trim().isNotEmpty).toSet();
+    final existing = await db.query(
+      'employee_store_access',
+      where: 'employee_sync_id = ?',
+      whereArgs: [employeeSyncId],
+    );
+    final byStore = {
+      for (final row in existing) '${row['store_id']}': row,
+    };
+    final payload = {
+      'role_base': role,
+      'extra_permissions_json': jsonEncode(extraPermissions),
+      'permissions_explicit': explicit ? 1 : 0,
+      'aktif': aktif ? 1 : 0,
+      'version': version,
+      'updated_at': now,
+    };
+    for (final storeId in desired) {
+      final row = byStore[storeId];
+      if (row == null) {
+        await db.insert('employee_store_access', {
+          'sync_id': newSyncId(),
+          'store_id': storeId,
+          'employee_sync_id': employeeSyncId,
+          'created_at': now,
+          ...payload,
+        });
+      } else {
+        await db.update(
+          'employee_store_access',
+          payload,
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+    }
+    for (final entry in byStore.entries) {
+      if (desired.contains(entry.key)) continue;
+      if ((entry.value['aktif'] as int? ?? 1) == 0) continue;
+      await db.update(
+        'employee_store_access',
+        {'aktif': 0, 'version': version, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [entry.value['id']],
+      );
+    }
+  }
+
   Future<Map<String, Object?>> createAccount({
     required String username,
     required String nama,
@@ -57,6 +123,7 @@ class AccountService {
     List<String> extraPermissions = const [],
     List<String> storeIds = const ['utama'],
     String actor = 'owner',
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
     if (!await LicenseService.instance.isPremium()) {
       throw StateError(
@@ -84,8 +151,12 @@ class AccountService {
     final salt = _newSalt();
     final hash = await _derive(password, salt, _iterations);
     final now = nowIso();
+    final syncId = newSyncId();
+    final hlc = await AppDatabase.instance.nextSyncHlc(AppDatabase.instance.db);
     final id = await AppDatabase.instance.db.insert('employee_accounts', {
-      'sync_id': newSyncId(),
+      'sync_id': syncId,
+      'sync_hlc_wall': hlc.wall,
+      'sync_hlc_counter': hlc.counter,
       'username': clean,
       'nama': nama.trim().isEmpty ? clean : nama.trim(),
       'role_base': role,
@@ -101,12 +172,22 @@ class AccountService {
       'created_at': now,
       'updated_at': now,
     });
+    await syncStoreAccess(
+      AppDatabase.instance.db,
+      employeeSyncId: syncId,
+      role: role,
+      extraPermissions: extraPermissions,
+      explicit: true,
+      aktif: true,
+      storeIds: storeIds,
+    );
     await recordAudit(
       actor: actor,
       targetAccountId: id,
       action: 'buat akun',
       detail: {'username': clean, 'role': role},
     );
+    if (enqueue != null) await enqueue(AppDatabase.instance.db, syncId);
     return (await _accountById(id))!;
   }
 
@@ -125,12 +206,19 @@ class AccountService {
       limit: 1,
     );
     final now = nowIso();
+    final extras = _remoteExtras(account);
+    final rawStores = account['store_ids'];
+    final storeIds = rawStores is List
+        ? rawStores.map((item) => '$item').toList()
+        : _jsonList(rawStores);
+    final version =
+        (account['permission_version'] as num?)?.toInt() ?? 1;
     final values = {
       'sync_id': syncId,
       'username': username,
       'nama': (account['nama'] as String? ?? username).trim(),
       'role_base': account['role_base'] as String? ?? 'KASIR',
-      'extra_permissions_json': jsonEncode(_remoteExtras(account)),
+      'extra_permissions_json': jsonEncode(extras),
       'store_ids_json': jsonEncode(account['store_ids'] ?? []),
       'password_hash': account['password_hash'] as String? ?? '',
       'password_salt': account['password_salt'] as String? ?? '',
@@ -138,8 +226,7 @@ class AccountService {
           (account['password_iterations'] as num?)?.toInt() ?? _iterations,
       'must_change_password': 1,
       'aktif': account['aktif'] == false ? 0 : 1,
-      'permission_version':
-          (account['permission_version'] as num?)?.toInt() ?? 1,
+      'permission_version': version,
       'permissions_explicit':
           account['permissions_explicit'] == true ? 1 : 0,
       'updated_at': now,
@@ -151,6 +238,16 @@ class AccountService {
         where: 'id = ?',
         whereArgs: [existing.first['id']],
       );
+      await syncStoreAccess(
+        db,
+        employeeSyncId: syncId,
+        role: '${values['role_base']}',
+        extraPermissions: extras,
+        explicit: values['permissions_explicit'] == 1,
+        aktif: values['aktif'] == 1,
+        storeIds: storeIds,
+        version: version,
+      );
       return existing.first['id'] as int;
     }
     final id = await db.insert('employee_accounts', {
@@ -158,6 +255,16 @@ class AccountService {
       'created_at': now,
       'updated_at': now,
     });
+    await syncStoreAccess(
+      db,
+      employeeSyncId: syncId,
+      role: '${values['role_base']}',
+      extraPermissions: extras,
+      explicit: values['permissions_explicit'] == 1,
+      aktif: values['aktif'] == 1,
+      storeIds: storeIds,
+      version: version,
+    );
     await recordAudit(
       actor: 'relay',
       targetAccountId: id,
@@ -181,14 +288,21 @@ class AccountService {
     final current = (rows.first['permission_version'] as int?) ?? 0;
     final incoming = (account['permission_version'] as num?)?.toInt() ?? 0;
     if (incoming < current) return;
+    final extras = _remoteExtras(account);
+    final rawStores = account['store_ids'];
+    final storeIds = rawStores is List
+        ? rawStores.map((item) => '$item').toList()
+        : _jsonList(rawStores);
+    final role = account['role_base'] as String? ?? 'KASIR';
+    final aktif = account['aktif'] != false;
     await AppDatabase.instance.db.update(
       'employee_accounts',
       {
         'nama': account['nama'],
-        'role_base': account['role_base'],
-        'extra_permissions_json': jsonEncode(_remoteExtras(account)),
+        'role_base': role,
+        'extra_permissions_json': jsonEncode(extras),
         'store_ids_json': jsonEncode(account['store_ids'] ?? []),
-        'aktif': account['aktif'] == false ? 0 : 1,
+        'aktif': aktif ? 1 : 0,
         'permission_version': incoming,
         'permissions_explicit':
             account['permissions_explicit'] == true ? 1 : 0,
@@ -196,6 +310,16 @@ class AccountService {
       },
       where: 'id = ?',
       whereArgs: [rows.first['id']],
+    );
+    await syncStoreAccess(
+      AppDatabase.instance.db,
+      employeeSyncId: syncId,
+      role: role,
+      extraPermissions: extras,
+      explicit: account['permissions_explicit'] == true,
+      aktif: aktif,
+      storeIds: storeIds,
+      version: incoming,
     );
   }
 
@@ -207,11 +331,15 @@ class AccountService {
     List<String> extraPermissions = const [],
     List<String> storeIds = const ['utama'],
     String actor = 'owner',
+    Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
     final before = await _accountById(id);
     if (before == null) throw StateError('Akun tidak ditemukan.');
     await _requireKnownRole(role);
     role = canonicalRole(role);
+    final hlc = await AppDatabase.instance.nextSyncHlc(AppDatabase.instance.db);
+    final nextVersion =
+        ((before['permission_version'] as int?) ?? 1) + 1;
     await AppDatabase.instance.db.update(
       'employee_accounts',
       {
@@ -220,12 +348,24 @@ class AccountService {
         'aktif': aktif ? 1 : 0,
         'extra_permissions_json': jsonEncode(extraPermissions),
         'store_ids_json': jsonEncode(storeIds),
-        'permission_version': ((before['permission_version'] as int?) ?? 1) + 1,
+        'permission_version': nextVersion,
         'permissions_explicit': 1,
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'updated_at': nowIso(),
       },
       where: 'id = ?',
       whereArgs: [id],
+    );
+    await syncStoreAccess(
+      AppDatabase.instance.db,
+      employeeSyncId: before['sync_id'] as String? ?? '',
+      role: role,
+      extraPermissions: extraPermissions,
+      explicit: true,
+      aktif: aktif,
+      storeIds: storeIds,
+      version: nextVersion,
     );
     await recordAudit(
       actor: actor,
@@ -235,10 +375,14 @@ class AccountService {
         'sebelum': {
           'role': before['role_base'],
           'aktif': before['aktif'],
+          'toko': _jsonList(before['store_ids_json']),
         },
-        'sesudah': {'role': role, 'aktif': aktif},
+        'sesudah': {'role': role, 'aktif': aktif, 'toko': storeIds},
       },
     );
+    if (enqueue != null) {
+      await enqueue(AppDatabase.instance.db, before['sync_id'] as String? ?? '');
+    }
     return (await _accountById(id))!;
   }
 
@@ -464,11 +608,13 @@ class AccountService {
     Map<String, Object?> detail = const {},
   }) async {
     await AppDatabase.instance.db.insert('permission_audits', {
+      'sync_id': newSyncId(),
       'actor': actor,
       'target_account_id': targetAccountId,
       'action': action,
       'detail_json': jsonEncode(detail),
       'created_at': nowIso(),
+      'updated_at': nowIso(),
     });
   }
 

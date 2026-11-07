@@ -10,6 +10,9 @@ import 'snapshot_platform_stub.dart'
     if (dart.library.io) 'snapshot_platform_io.dart';
 
 const snapshotTables = [
+  'employee_accounts',
+  'employee_store_access',
+  'document_counters',
   'customers',
   'vehicle_or_units',
   'stock_items',
@@ -42,6 +45,9 @@ const snapshotTables = [
 ];
 
 const snapshotDeleteOrder = [
+  'employee_store_access',
+  'employee_accounts',
+  'document_counters',
   'service_payments',
   'sale_return_items',
   'sale_returns',
@@ -76,7 +82,6 @@ const snapshotDeleteOrder = [
 const snapshotLocalTables = [
   'owner_identity',
   'license',
-  'employee_accounts',
   'permission_audits',
   'devices',
   'login_guards',
@@ -86,7 +91,6 @@ const snapshotLocalTables = [
   'applied_deltas',
   'sync_conflicts',
   'device_sync_status',
-  'document_counters',
 ];
 
 const snapshotLocalSettingsWhere =
@@ -107,6 +111,12 @@ extension SnapshotDatabase on AppDatabase {
       db,
       dropTables: snapshotLocalTables,
       settingsWhere: snapshotLocalSettingsWhere,
+      sanitize: const [
+        // Akun ikut snapshot untuk komisi/komisi/payroll, tetapi kredensial
+        // lokal tidak boleh ikut tersebar.
+        'UPDATE employee_accounts SET password_hash = '', '
+            'password_salt = '', pin_hash = NULL, pin_salt = NULL',
+      ],
     );
     final checksum = sha256Hex(raw);
     final (ciphertext, nonce) = await encryptPayload(storeKey, raw);
@@ -224,35 +234,55 @@ extension SnapshotDatabase on AppDatabase {
     if (sha256Hex(raw) != checksum) {
       throw StateError('Checksum snapshot tidak cocok.');
     }
+    final localCounters = await db.query('document_counters');
+    final localAccounts = await db.query(
+      'employee_accounts',
+      columns: [
+        'id',
+        'sync_id',
+        'password_hash',
+        'password_salt',
+        'password_iterations',
+        'pin_hash',
+        'pin_salt',
+        'pin_iterations',
+      ],
+    );
     final counts = await importSnapshotBytes(
       Uint8List.fromList(raw),
       db,
       tables: snapshotTables,
       deleteOrder: snapshotDeleteOrder,
-    );
-    // Snapshot adalah titik awal baru: kunci idempotensi lama tidak boleh
-    // menahan amplop yang tidak lagi termuat di dalam snapshot.
-    await db.delete('applied_deltas');
-    await db.insert(
-      'sync_cursor',
-      {
-        'store_id': storeId,
-        'device_id': deviceId,
-        'last_seq': storeSeq,
-        'updated_at': nowIso(),
+      afterImport: (txn) async {
+        await _preserveLocalCounters(txn, localCounters);
+        await _preserveLocalCredentials(txn, localAccounts);
+        await _remapAccountReferences(txn, localAccounts);
+        // Snapshot adalah titik awal baru: kunci idempotensi lama tidak boleh
+        // menahan amplop yang tidak lagi termuat di dalam snapshot.
+        await txn.delete('applied_deltas');
+        await txn.insert(
+          'sync_cursor',
+          {
+            'store_id': storeId,
+            'device_id': deviceId,
+            'last_seq': storeSeq,
+            'updated_at': nowIso(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        await txn.insert(
+          'applied_deltas',
+          {
+            'idempotency_key': marker,
+            'store_id': storeId,
+            'envelope_id': snapshotId,
+            'entity': 'snapshot',
+            'entity_id': storeId,
+            'applied_at': nowIso(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
       },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-    await db.insert(
-      'applied_deltas',
-      {
-        'idempotency_key': marker,
-        'envelope_id': snapshotId,
-        'entity': 'snapshot',
-        'entity_id': storeId,
-        'applied_at': nowIso(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
     );
     return {
       'applied': true,
@@ -260,5 +290,156 @@ extension SnapshotDatabase on AppDatabase {
       'store_seq': storeSeq,
       'tables': counts,
     };
+  }
+}
+
+/// Snapshot menimpa seluruh tabel, termasuk counter dokumen milik perangkat
+/// ini. Counter lokal dikembalikan ke nilai tertinggi agar nomor dokumen yang
+/// sudah terbit tidak dipakai ulang setelah bootstrap.
+Future<void> _preserveLocalCounters(
+  DatabaseExecutor txn,
+  List<Map<String, Object?>> localCounters,
+) async {
+  for (final row in localCounters) {
+    final deviceId = '${row['device_id'] ?? ''}';
+    final docType = '${row['doc_type'] ?? ''}';
+    final tanggal = '${row['tanggal'] ?? ''}';
+    if (deviceId.isEmpty || docType.isEmpty || tanggal.isEmpty) continue;
+    final localLast = (row['terakhir'] as num?)?.toInt() ?? 0;
+    final existing = await txn.query(
+      'document_counters',
+      columns: ['terakhir'],
+      where: 'device_id = ? AND doc_type = ? AND tanggal = ?',
+      whereArgs: [deviceId, docType, tanggal],
+      limit: 1,
+    );
+    final current = existing.isEmpty
+        ? 0
+        : (existing.first['terakhir'] as num?)?.toInt() ?? 0;
+    if (localLast > current) {
+      await txn.insert(
+        'document_counters',
+        {...row, 'terakhir': localLast},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+}
+
+/// Kredensial akun sengaja dikosongkan di dalam snapshot. Bila perangkat ini
+/// masih menyimpan kredensial lokal untuk akun yang sama (password atau PIN),
+/// pertahankan agar sesi luring tidak hilang setelah bootstrap.
+Future<void> _preserveLocalCredentials(
+  DatabaseExecutor txn,
+  List<Map<String, Object?>> localAccounts,
+) async {
+  for (final row in localAccounts) {
+    final syncId = '${row['sync_id'] ?? ''}';
+    if (syncId.isEmpty) continue;
+    final passwordHash = '${row['password_hash'] ?? ''}';
+    final pinHash = '${row['pin_hash'] ?? ''}';
+    if (passwordHash.isEmpty && pinHash.isEmpty) continue;
+    final imported = await txn.query(
+      'employee_accounts',
+      columns: ['id', 'password_hash'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (imported.isEmpty) continue;
+    if ('${imported.first['password_hash'] ?? ''}'.isNotEmpty) continue;
+    await txn.update(
+      'employee_accounts',
+      {
+        'password_hash': row['password_hash'],
+        'password_salt': row['password_salt'],
+        'password_iterations': row['password_iterations'],
+        'pin_hash': row['pin_hash'],
+        'pin_salt': row['pin_salt'],
+        'pin_iterations': row['pin_iterations'],
+      },
+      where: 'id = ?',
+      whereArgs: [imported.first['id']],
+    );
+  }
+}
+
+/// `employee_accounts.id` adalah autoincrement lokal yang ikut tersalin dari
+/// perangkat sumber. Tabel lokal yang menyimpan referensi integer ke akun
+/// (`devices.employee_account_id`, `permission_audits.target_account_id`)
+/// dipetakan ulang lewat `sync_id` agar tidak menunjuk akun yang salah
+/// setelah snapshot diterapkan.
+Future<void> _remapAccountReferences(
+  DatabaseExecutor txn,
+  List<Map<String, Object?>> localAccounts,
+) async {
+  final syncIdByLocalId = <int, String>{};
+  final newIdBySyncId = <String, int>{};
+  for (final row in localAccounts) {
+    final id = (row['id'] as num?)?.toInt();
+    if (id == null) continue;
+    final syncId = '${row['sync_id'] ?? ''}'.trim();
+    syncIdByLocalId[id] = syncId;
+    if (syncId.isEmpty) continue;
+    final imported = await txn.query(
+      'employee_accounts',
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (imported.isEmpty) continue;
+    final newId = (imported.first['id'] as num?)?.toInt();
+    if (newId != null) newIdBySyncId[syncId] = newId;
+  }
+  Future<int?> targetFor(int ref, String preferredSyncId) async {
+    final syncId = preferredSyncId.isNotEmpty
+        ? preferredSyncId
+        : syncIdByLocalId[ref] ?? '';
+    if (syncId.isEmpty) return null;
+    final cached = newIdBySyncId[syncId];
+    if (cached != null) return cached;
+    final imported = await txn.query(
+      'employee_accounts',
+      columns: ['id'],
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    return imported.isEmpty ? null : (imported.first['id'] as num?)?.toInt();
+  }
+
+  final devices = await txn.query(
+    'devices',
+    columns: ['id', 'employee_account_id', 'employee_sync_id'],
+  );
+  for (final device in devices) {
+    final ref = (device['employee_account_id'] as num?)?.toInt();
+    if (ref == null) continue;
+    final target = await targetFor(ref, '${device['employee_sync_id'] ?? ''}');
+    if (target == ref) continue;
+    await txn.update(
+      'devices',
+      {'employee_account_id': target},
+      where: 'id = ?',
+      whereArgs: [device['id']],
+    );
+  }
+
+  final audits = await txn.query(
+    'permission_audits',
+    columns: ['id', 'target_account_id'],
+  );
+  for (final audit in audits) {
+    final ref = (audit['target_account_id'] as num?)?.toInt();
+    if (ref == null) continue;
+    final target = await targetFor(ref, '');
+    if (target == ref) continue;
+    await txn.update(
+      'permission_audits',
+      {'target_account_id': target},
+      where: 'id = ?',
+      whereArgs: [audit['id']],
+    );
   }
 }

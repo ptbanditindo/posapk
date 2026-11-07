@@ -27,6 +27,7 @@ class LicenseClaims {
     required this.storeLimit,
     required this.issuedAt,
     required this.raw,
+    this.nowOverride,
   });
 
   final String ownerId;
@@ -36,9 +37,25 @@ class LicenseClaims {
   final DateTime issuedAt;
   final Map<String, Object?> raw;
 
-  bool get aktif => periodEnd.isAfter(DateTime.now().toUtc());
+  /// Waktu acuan dari relay (waktu server + berjalan sejak terakhir terlihat)
+  /// agar jam perangkat yang dimundurkan tidak memperpanjang lisensi.
+  final DateTime? nowOverride;
+
+  DateTime get nowUtc => nowOverride ?? DateTime.now().toUtc();
+
+  bool get aktif => periodEnd.isAfter(nowUtc);
 
   bool get premium => plan == 'premium' && aktif;
+
+  LicenseClaims at(DateTime now) => LicenseClaims(
+        ownerId: ownerId,
+        plan: plan,
+        periodEnd: periodEnd,
+        storeLimit: storeLimit,
+        issuedAt: issuedAt,
+        raw: raw,
+        nowOverride: now.toUtc(),
+      );
 }
 
 abstract class LicenseVerifier {

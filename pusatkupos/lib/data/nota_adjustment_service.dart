@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'approval_service.dart';
 import 'price_rules.dart';
@@ -18,6 +19,9 @@ class NotaAdjustment {
     required this.nilaiSelisih,
     required this.nilaiBaru,
     required this.alasan,
+    this.nominalJasa = 0,
+    this.nominalPart = 0,
+    this.diskon = 0,
     this.dibuatOleh,
     this.disetujuiOleh,
     required this.createdAt,
@@ -28,6 +32,12 @@ class NotaAdjustment {
   final String notaSyncId;
   final int nilaiSelisih;
   final int nilaiBaru;
+
+  /// Alokasi koreksi terhadap komponen nota asli. Ketiganya dihitung dari
+  /// `nilai_baru - total_servis` sehingga Jasa + Part - Diskon = Total.
+  final int nominalJasa;
+  final int nominalPart;
+  final int diskon;
   final String alasan;
   final String? dibuatOleh;
   final String? disetujuiOleh;
@@ -39,6 +49,9 @@ class NotaAdjustment {
     notaSyncId: row['nota_sync_id'] as String,
     nilaiSelisih: (row['nilai_selisih'] as num?)?.toInt() ?? 0,
     nilaiBaru: (row['nilai_baru'] as num?)?.toInt() ?? 0,
+    nominalJasa: (row['nominal_jasa'] as num?)?.toInt() ?? 0,
+    nominalPart: (row['nominal_part'] as num?)?.toInt() ?? 0,
+    diskon: (row['diskon'] as num?)?.toInt() ?? 0,
     alasan: row['alasan'] as String? ?? '',
     dibuatOleh: row['dibuat_oleh'] as String?,
     disetujuiOleh: row['disetujui_oleh'] as String?,
@@ -128,7 +141,13 @@ class NotaAdjustmentService {
     return db.transaction((txn) async {
       final current = await txn.query(
         'service_records',
-        columns: ['voided_at', 'status'],
+        columns: [
+          'voided_at',
+          'status',
+          'total_servis',
+          'biaya_jasa',
+          'total_part',
+        ],
         where: 'id = ?',
         whereArgs: [recordId],
         limit: 1,
@@ -150,11 +169,20 @@ class NotaAdjustmentService {
         );
       }
       final now = nowIso();
+      final allocation = _splitAdjustment(
+        target: target,
+        totalServis: (current.first['total_servis'] as num?)?.toInt() ?? 0,
+        biayaJasa: (current.first['biaya_jasa'] as num?)?.toInt() ?? 0,
+        totalPart: (current.first['total_part'] as num?)?.toInt() ?? 0,
+      );
       final id = await txn.insert('nota_adjustments', {
         'sync_id': newSyncId(),
         'nota_sync_id': notaSyncId,
         'nilai_selisih': delta,
         'nilai_baru': target,
+        'nominal_jasa': allocation.$1,
+        'nominal_part': allocation.$2,
+        'diskon': 0,
         'alasan': cleanReason,
         'dibuat_oleh': actor.label,
         'disetujui_oleh': ownerApproved ? approver : null,
@@ -165,6 +193,7 @@ class NotaAdjustmentService {
       });
       await AppDatabase.instance.recalculateRecordTotals(txn, recordId);
       await txn.insert('permission_audits', {
+        'sync_id': newSyncId(),
         'actor': actor.label,
         'target_account_id': actor.employeeId,
         'action': 'koreksi_nota',
@@ -176,6 +205,7 @@ class NotaAdjustmentService {
           'disetujui_oleh': approver,
         }),
         'created_at': now,
+        'updated_at': now,
       });
       if (enqueue != null) await enqueue(txn, id);
       return id;
@@ -188,6 +218,22 @@ class NotaAdjustmentService {
       [recordId, recordId],
     );
     return (rows.first['modal'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Alokasi koreksi disimpan terhadap komponen nota asli (bukan selisih
+  /// antarkoreksi) agar baris koreksi terakhir selalu memenuhi
+  /// Jasa + Part - Diskon = Total.
+  static (int, int) _splitAdjustment({
+    required int target,
+    required int totalServis,
+    required int biayaJasa,
+    required int totalPart,
+  }) {
+    final adjustment = target - totalServis;
+    final bruto = biayaJasa + totalPart;
+    if (bruto <= 0) return (adjustment, 0);
+    final jasa = (adjustment * biayaJasa) ~/ bruto;
+    return (jasa, adjustment - jasa);
   }
 
   /// Koreksi cepat memakai selisih (boleh negatif untuk retur).
@@ -306,14 +352,45 @@ class NotaAdjustmentService {
       whereArgs: [notaSync],
       limit: 1,
     );
-    if (record.isEmpty || record.first['voided_at'] != null) {
+    if (record.isEmpty) {
+      // Koreksi bisa tiba sebelum nota induknya; amplop harus dicoba lagi,
+      // bukan dianggap selesai sehingga koreksi hilang permanen.
+      throw RetryableSyncException(
+        'Koreksi menunggu nota asal ($notaSync).',
+        code: 'koreksi_tanpa_nota',
+      );
+    }
+    if (record.first['voided_at'] != null ||
+        '${record.first['status']}' == 'VOID') {
+      // Nota VOID bersifat terminal dan tidak lagi memiliki nilai efektif.
+      // Pemanggil mencatat konflik agar koreksi yang tidak dapat diterapkan
+      // tetap terlihat oleh pemilik.
       return;
     }
+    final nilaiBaru = (payload['nilai_baru'] as num?)?.toInt() ?? 0;
+    final hasAllocation =
+        payload.containsKey('nominal_jasa') ||
+        payload.containsKey('nominal_part');
+    final allocation = hasAllocation
+        ? (
+            (payload['nominal_jasa'] as num?)?.toInt() ?? 0,
+            (payload['nominal_part'] as num?)?.toInt() ?? 0,
+          )
+        : _splitAdjustment(
+            target: nilaiBaru,
+            totalServis:
+                (record.first['total_servis'] as num?)?.toInt() ?? 0,
+            biayaJasa: (record.first['biaya_jasa'] as num?)?.toInt() ?? 0,
+            totalPart: (record.first['total_part'] as num?)?.toInt() ?? 0,
+          );
     await txn.insert('nota_adjustments', {
       'sync_id': syncId,
       'nota_sync_id': notaSync,
       'nilai_selisih': payload['nilai_selisih'] ?? 0,
-      'nilai_baru': payload['nilai_baru'] ?? 0,
+      'nilai_baru': nilaiBaru,
+      'nominal_jasa': allocation.$1,
+      'nominal_part': allocation.$2,
+      'diskon': (payload['diskon'] as num?)?.toInt() ?? 0,
       'alasan': payload['alasan'] ?? 'Koreksi dari perangkat lain',
       'dibuat_oleh': payload['dibuat_oleh'],
       'disetujui_oleh': payload['disetujui_oleh'],

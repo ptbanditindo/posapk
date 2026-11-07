@@ -103,7 +103,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
         keluhan: draft.keluhan,
         mekanikSyncId: draft.mekanikSyncId,
         mekanikNama: draft.mekanikNama,
-        actor: AppState.instance.operator,
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, syncId) =>
             SyncService.instance.enqueueWorkOrder(syncId, txn: txn),
         enqueueStatus: (txn, syncId) =>

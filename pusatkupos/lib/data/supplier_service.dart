@@ -34,7 +34,8 @@ class SupplierService {
     final rows = await AppDatabase.instance.db.rawQuery(
       '''
       SELECT s.*,
-        (SELECT COUNT(*) FROM supplier_items i WHERE i.supplier_id = s.id)
+        (SELECT COUNT(*) FROM supplier_items i
+          WHERE i.supplier_id = s.id AND i.deleted_at IS NULL)
           AS jumlah_barang
       FROM suppliers s
       WHERE s.deleted_at IS NULL
@@ -97,7 +98,6 @@ class SupplierService {
           'suppliers',
           {
             ...payload,
-            'deleted_at': null,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
           },
@@ -127,14 +127,19 @@ class SupplierService {
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
-      await txn.delete(
+      final now = nowIso();
+      // Relasi disimpan sebagai tombstone agar penghapusan tidak hilang saat
+      // supplier dipulihkan atau saat payload sinkronisasi datang terlambat.
+      await txn.update(
         'supplier_items',
-        where: 'supplier_id = ?',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'supplier_id = ? AND deleted_at IS NULL',
         whereArgs: [id],
       );
-      await txn.delete(
+      await txn.update(
         'supplier_followups',
-        where: 'supplier_id = ?',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'supplier_id = ? AND deleted_at IS NULL',
         whereArgs: [id],
       );
       await txn.update(
@@ -156,7 +161,7 @@ class SupplierService {
     final rows = await AppDatabase.instance.db.query(
       'supplier_items',
       columns: ['supplier_id'],
-      where: 'stock_item_id = ?',
+      where: 'stock_item_id = ? AND deleted_at IS NULL',
       whereArgs: [stockItemId],
     );
     return rows.map((row) => row['supplier_id'] as int).toSet();
@@ -172,31 +177,49 @@ class SupplierService {
       final current = await txn.query(
         'supplier_items',
         columns: ['supplier_id'],
-        where: 'stock_item_id = ?',
+        where: 'stock_item_id = ? AND deleted_at IS NULL',
         whereArgs: [stockItemId],
       );
       final existing = current
           .map((row) => row['supplier_id'] as int)
           .toSet();
+      final now = nowIso();
       for (final supplierId in existing.difference(supplierIds)) {
-        await txn.delete(
+        await txn.update(
           'supplier_items',
-          where: 'supplier_id = ? AND stock_item_id = ?',
+          {'deleted_at': now, 'updated_at': now},
+          where:
+              'supplier_id = ? AND stock_item_id = ? AND deleted_at IS NULL',
           whereArgs: [supplierId, stockItemId],
         );
       }
       for (final supplierId in supplierIds.difference(existing)) {
-        await txn.insert(
+        // Pasangan yang pernah dihapus dihidupkan kembali barisnya agar tidak
+        // menumpuk tombstone dan relasi aktif untuk pasangan yang sama.
+        final previous = await txn.query(
           'supplier_items',
-          {
+          columns: ['id'],
+          where: 'supplier_id = ? AND stock_item_id = ?',
+          whereArgs: [supplierId, stockItemId],
+          orderBy: 'id DESC',
+          limit: 1,
+        );
+        if (previous.isNotEmpty) {
+          await txn.update(
+            'supplier_items',
+            {'deleted_at': null, 'updated_at': now},
+            where: 'id = ?',
+            whereArgs: [previous.first['id']],
+          );
+        } else {
+          await txn.insert('supplier_items', {
             'sync_id': newSyncId(),
             'supplier_id': supplierId,
             'stock_item_id': stockItemId,
-            'created_at': nowIso(),
-            'updated_at': nowIso(),
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore,
-        );
+            'created_at': now,
+            'updated_at': now,
+          });
+        }
       }
       final affected = {...existing, ...supplierIds};
       for (final supplierId in affected) {
@@ -230,7 +253,10 @@ class SupplierService {
       JOIN suppliers s ON s.id = i.supplier_id
       LEFT JOIN supplier_followups f
         ON f.supplier_id = s.id AND f.stock_item_id = st.id
+        AND f.deleted_at IS NULL
       WHERE s.deleted_at IS NULL
+        AND i.deleted_at IS NULL
+        AND st.deleted_at IS NULL
         AND COALESCE(st.jumlah_milli, st.jumlah * 1000) <=
         (CASE WHEN st.stok_minimum > 0 THEN st.stok_minimum ELSE 3 END) * 1000
         ${supplierId == null ? '' : 'AND s.id = $supplierId'}
@@ -255,7 +281,10 @@ class SupplierService {
       JOIN stock_items st ON st.id = i.stock_item_id
       LEFT JOIN supplier_followups f
         ON f.supplier_id = i.supplier_id AND f.stock_item_id = i.stock_item_id
+        AND f.deleted_at IS NULL
       WHERE s.deleted_at IS NULL
+        AND i.deleted_at IS NULL
+        AND st.deleted_at IS NULL
         ${supplierId == null ? '' : 'AND s.id = $supplierId'}
       ORDER BY s.nama COLLATE NOCASE, st.nama COLLATE NOCASE
       ''',
@@ -302,6 +331,7 @@ class SupplierService {
           {
             'status': status,
             'catatan': _clean(catatan),
+            'deleted_at': null,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
             'updated_at': now,

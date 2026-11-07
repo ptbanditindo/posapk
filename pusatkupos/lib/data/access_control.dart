@@ -2,7 +2,7 @@
 ///
 /// Peran hanyalah label untuk menandai orang. Jalur yang boleh dibuka
 /// ditentukan oleh peta akses per peran di `store_settings`.
-const builtinRoles = ['KASIR', 'MEKANIK', 'SUPERVISOR'];
+const builtinRoles = ['KASIR', 'MEKANIK', 'SUPERVISOR', 'VIEWER'];
 
 /// Peran lama yang dipertahankan sebagai alias agar data dan sesi lama tetap
 /// terbaca. Penyimpanan baru selalu memakai `SUPERVISOR`.
@@ -12,6 +12,7 @@ const builtinRoleLabels = {
   'KASIR': 'Kasir',
   'MEKANIK': 'Mekanik',
   'SUPERVISOR': 'Supervisor',
+  'VIEWER': 'Pengamat (hanya baca)',
 };
 
 /// Menu yang boleh ditampilkan. Kunci ini dipakai `HomeShell` dan layar lain.
@@ -230,5 +231,49 @@ Map<String, Map<String, bool>> defaultRoleAccess() => {
         'jenis_order_kerja': true,
         'jenis_estimasi_saja': true,
         'jenis_pelunasan_order': true,
+      },
+      'VIEWER': {
+        'lihat_ringkasan': true,
+        'lihat_kasir': false,
+        'lihat_riwayat': true,
+        'lihat_pelanggan': true,
+        'lihat_stok': true,
+        'lihat_order': true,
+        'lihat_jasa': true,
+        'lihat_laporan': true,
+        'lihat_supplier': true,
+        'lihat_followup': true,
+        'lihat_karyawan': false,
+        'lihat_pengaturan': false,
+        'lihat_premium': false,
+        'buat_nota': false,
+        'buat_estimasi': false,
+        'buat_order': false,
+        'ubah_status': false,
+        'void': false,
+        'retur': false,
+        'koreksi': false,
+        'diskon': false,
+        'setujui': false,
+        'ubah_stok': false,
+        'stok_masuk': false,
+        'stok_keluar': false,
+        'opname': false,
+        'ubah_harga_jasa': false,
+        'followup': false,
+        'ubah_pelanggan': false,
+        'ubah_supplier': false,
+        'kelola_jasa': false,
+        'ubah_pengaturan': false,
+        'kelola_akun': false,
+        'kelola_perangkat': false,
+        'lisensi': false,
+        'backup': false,
+        'cetak_laporan': false,
+        'jenis_jual_sparepart': false,
+        'jenis_servis_langsung': false,
+        'jenis_order_kerja': false,
+        'jenis_estimasi_saja': false,
+        'jenis_pelunasan_order': false,
       },
     };

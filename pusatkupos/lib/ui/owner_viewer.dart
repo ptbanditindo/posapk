@@ -831,7 +831,10 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         Row(
           children: [
             Expanded(
-              child: _metric('Pendapatan hari ini', dashboard.todayRevenueCents),
+              child: _metric(
+                'Omzet neto hari ini',
+                dashboard.todayRevenueCents,
+              ),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -987,9 +990,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               _row('Waktu', _dateFormat.format(record.waktu)),
               _row('Status', record.isVoid ? 'VOID' : record.statusBayar),
               const Divider(),
-              _row('Jasa', formatRupiah(record.biayaJasaCents)),
-              _row('Part', formatRupiah(record.totalPartCents)),
-              _row('Diskon', '-${formatRupiah(record.diskonCents)}'),
+              _row('Jasa', formatRupiah(record.jasaEfektifCents)),
+              _row('Part', formatRupiah(record.partEfektifCents)),
+              _row('Diskon', '-${formatRupiah(record.diskonEfektifCents)}'),
+              if (record.totalReturCents > 0)
+                _row('Retur', '-${formatRupiah(record.totalReturCents)}'),
               _row('Total', formatRupiah(record.totalCents)),
               _row('Dibayar', formatRupiah(detail.totalDibayarCents)),
               _row('Sisa', formatRupiah(detail.sisaCents)),
@@ -1024,7 +1029,15 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           Column(
             children: [
               _row('Transaksi', '${today.transaksi}'),
-              _row('Total', formatRupiah(today.totalCents)),
+              _row('Omzet bruto', formatRupiah(today.totalCents)),
+              _row('Retur', '-${formatRupiah(today.returCents)}'),
+              _row('Omzet neto', formatRupiah(today.totalNetCents)),
+              _row('Kas diterima', formatRupiah(
+                today.cashByMethod.values.fold<int>(
+                  0,
+                  (sum, value) => sum + value,
+                ),
+              )),
               _row('Dibayar', formatRupiah(today.dibayarCents)),
               _row('Piutang', formatRupiah(today.piutangCents)),
             ],
@@ -1039,7 +1052,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               _row('Jasa', formatRupiah(all.totalJasaCents)),
               _row('Part', formatRupiah(all.totalPartCents)),
               _row('Diskon', formatRupiah(all.diskonCents)),
-              _row('Total', formatRupiah(all.totalCents)),
+              _row('Omzet bruto', formatRupiah(all.totalCents)),
+              _row('Retur', '-${formatRupiah(all.returCents)}'),
+              _row('Omzet neto', formatRupiah(all.totalNetCents)),
               _row('Dibayar', formatRupiah(all.dibayarCents)),
               _row('Piutang', formatRupiah(all.piutangCents)),
             ],

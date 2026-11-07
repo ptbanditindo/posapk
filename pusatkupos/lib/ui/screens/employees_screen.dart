@@ -387,7 +387,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
               children: _salaryPayments
                   .map(
                     (payment) => _row(
-                      dateId.format(localTime(payment['cycle_start'])),
+                      '${dateId.format(localTime(payment['cycle_start']))}'
+                      '${'${payment['konflik_sync_id'] ?? ''}'.trim().isEmpty ? '' : ' · konflik ganda'}',
                       formatRupiah(
                         (payment['nominal'] as int) -
                             (payment['potongan_hutang'] as int? ?? 0),

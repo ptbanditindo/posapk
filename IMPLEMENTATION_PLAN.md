@@ -259,6 +259,7 @@ Item berikut ditandai **`BLOCKED — NEEDS BUSINESS DECISION`**. Implementasi ha
 | BD-10 | Kode barang unik global per owner atau boleh renumber otomatis? | Unik per toko; konflik dicatat, tidak memblokir antrean | TASK-036 |
 | BD-11 | Apakah perubahan status follow-up boleh menghapus tanggal servis/janji bayar? | Tidak; tanggal dipertahankan kecuali status baru membutuhkan dan dikonfirmasi | TASK-018 |
 | BD-12 | Apakah ada modul pembelian bernilai/utang supplier? | Tidak ada; tidak ada tugas pembelian baru | — |
+| BD-13 | Bila dua perangkat menjual barang terakhir sehingga stok menjadi negatif, apakah penjualan kedua dibatalkan, dipenuhi lewat stok masuk, atau dibiarkan negatif? | Penjualan tidak dibatalkan otomatis: penulisan lokal menolak stok negatif, penerima tetap menerapkan penjualan sah dan mencatat konflik `stok_negatif` untuk ditinjau pemilik | TASK-032, TASK-033 |
 
 ---
 

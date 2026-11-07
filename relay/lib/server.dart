@@ -205,6 +205,35 @@ class RelayServer {
   String? _iso(Object? value) =>
       value is DateTime ? value.toUtc().toIso8601String() : value?.toString();
 
+  String _serverTimeIso() => DateTime.now().toUtc().toIso8601String();
+
+  /// Status lisensi ikut dikirim bersama respons sinkronisasi agar perangkat
+  /// dapat menilai masa berlaku dengan acuan waktu server, bukan jam lokal.
+  Map<String, Object?> _licenseState(Map<String, Object?> ownerRow) {
+    final end = ownerRow['license_period_end'];
+    final periodEnd = end is DateTime
+        ? end.toUtc()
+        : DateTime.now().toUtc().add(const Duration(days: 30));
+    final plan = '${ownerRow['license_plan'] ?? 'free'}';
+    return {
+      'plan': plan,
+      'period_end': periodEnd.toIso8601String(),
+      'store_limit': (ownerRow['license_store_limit'] as num?)?.toInt() ?? 1,
+      'active': plan == 'premium' && periodEnd.isAfter(DateTime.now().toUtc()),
+    };
+  }
+
+  bool _licenseActive(Map<String, Object?> row) =>
+      _licenseState(row)['active'] == true;
+
+  Response _licenseExpired(Map<String, Object?> row) => _json(403, {
+        'detail': 'Masa lisensi owner sudah berakhir. Perpanjang lisensi '
+            'untuk melanjutkan sinkronisasi.',
+        'code': 'license_expired',
+        'server_time': _serverTimeIso(),
+        'license': _licenseState(row),
+      });
+
   Future<Map<String, Object?>?> _deviceAuth(Request request) async {
     final token = request.headers['x-device-token'] ?? '';
     if (token.isEmpty) return null;
@@ -218,6 +247,25 @@ WHERE d.token_hash = @hash AND d.revoked_at IS NULL
       {'hash': _hash(token)},
     );
     if (row == null) return null;
+    final kind = '${row['kind'] ?? ''}';
+    final accountId = '${row['employee_account_id'] ?? ''}';
+    if (kind == 'employee') {
+      final account = accountId.isEmpty
+          ? null
+          : await db.one(
+              'SELECT aktif FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+              {'owner': row['owner_id'], 'sync': accountId},
+            );
+      if (account == null || account['aktif'] != true) {
+        // Akun nonaktif tidak boleh menulis lagi: cabut perangkatnya agar
+        // token lama tidak dapat dipakai sampai pemilik memakainya ulang.
+        await db.execute(
+          'UPDATE devices SET revoked_at = now() WHERE id = @id',
+          {'id': row['id']},
+        );
+        return null;
+      }
+    }
     await db.execute(
       'UPDATE devices SET last_seen_at = now() WHERE id = @id',
       {'id': row['id']},
@@ -313,10 +361,10 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
     final account = accountId.isEmpty
         ? null
         : await tx.one(
-            'SELECT role_base, extra_permissions, permissions_explicit FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+            'SELECT role_base, extra_permissions, permissions_explicit, aktif FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
             {'owner': device['owner_id'], 'sync': accountId},
           );
-    if (account == null) return false;
+    if (account == null || account['aktif'] != true) return false;
     return employeeEntityAllowed(
       entity: entity,
       action: action,
@@ -493,6 +541,8 @@ VALUES (@id, @owner, @nama, @kind, @account, @public, @encrypt, @ownerPublic,
       },
       'token': token,
       'license_token': await _licenseFor(owner),
+      'license': _licenseState(owner),
+      'server_time': _serverTimeIso(),
     });
   }
 
@@ -525,6 +575,7 @@ VALUES (@token, @owner, @expires)
   Future<Response> _putKeyWrap(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    if (!_licenseActive(device)) return _licenseExpired(device);
     final body = await _body(request);
     final store = '${body['store_id'] ?? ''}';
     final target = '${body['device_id'] ?? ''}';
@@ -589,6 +640,7 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
   Future<Response> _submitEnvelope(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    if (!_licenseActive(device)) return _licenseExpired(device);
     final body = await _body(request);
     final store = '${body['store_id'] ?? ''}';
     try {
@@ -615,6 +667,7 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
   Future<Response> _submitEnvelopeBatch(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    if (!_licenseActive(device)) return _licenseExpired(device);
     final body = await _body(request);
     final store = '${body['store_id'] ?? ''}';
     final raw = body['envelopes'];
@@ -1059,6 +1112,8 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
         'log_start_seq': logStart,
         'pruned_through': prunedThrough,
         'snapshot_required': true,
+        'server_time': _serverTimeIso(),
+        'license': _licenseState(device),
       });
     }
     final rows = await db.query(
@@ -1110,6 +1165,8 @@ ORDER BY relay_seq ASC LIMIT @limit
       'log_start_seq': logStart,
       'pruned_through': prunedThrough,
       'snapshot_required': false,
+      'server_time': _serverTimeIso(),
+      'license': _licenseState(device),
     });
   }
 
@@ -1139,7 +1196,12 @@ ON CONFLICT (owner_id, device_id, store_id) DO UPDATE SET
         'seq': lastSeq,
       },
     );
-    return _json(200, {'ok': true, 'cursor': lastSeq});
+    return _json(200, {
+      'ok': true,
+      'cursor': lastSeq,
+      'server_time': _serverTimeIso(),
+      'license': _licenseState(device),
+    });
   }
 
   Future<Response> _devices(Request request) async {
@@ -1149,7 +1211,9 @@ ON CONFLICT (owner_id, device_id, store_id) DO UPDATE SET
       '''
 SELECT d.id, d.owner_id, d.nama, d.kind, d.public_key, d.encryption_key,
        d.store_ids, d.created_at, d.revoked_at, d.last_seen_at,
-       a.role_base, a.extra_permissions, a.permissions_explicit
+       d.employee_account_id,
+       a.role_base, a.extra_permissions, a.permissions_explicit,
+       a.aktif AS akun_aktif
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id
@@ -1171,6 +1235,11 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
         'public_key': row['public_key'],
         'encryption_key': row['encryption_key'],
         'store_ids': stringList(row['store_ids']),
+        'employee_account_id': row['employee_account_id'],
+        // Perangkat pemilik tidak terikat akun karyawan dan selalu aktif.
+        'akun_aktif': '${row['employee_account_id'] ?? ''}'.isEmpty
+            ? true
+            : row['akun_aktif'] == true,
         'created_at': _iso(row['created_at']),
         'last_seen_at': _iso(row['last_seen_at']),
         'revoked_at': _iso(row['revoked_at']),
@@ -1217,6 +1286,8 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
       'cursor': cursor,
       'snapshot_required': snapshot != null && cursor < snapSeq,
       'snapshot': snapshot == null ? null : _snapshotJson(snapshot),
+      'server_time': _serverTimeIso(),
+      'license': _licenseState(device),
     };
     return _json(200, body);
   }
@@ -1483,6 +1554,7 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
   Future<Response> _createSnapshot(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    if (!_licenseActive(device)) return _licenseExpired(device);
     final body = await _body(
       request,
       maxBytes: config.storageLimitBytes + _bodyOverheadBytes,
@@ -1715,6 +1787,8 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
       'permission': _permissionJson(account),
       'owner_public_key': owner['owner_public_key'],
       'license_token': await _licenseFor(owner),
+      'license': _licenseState(owner),
+      'server_time': _serverTimeIso(),
     });
   }
 
@@ -1950,7 +2024,8 @@ ORDER BY created_at DESC LIMIT 1
       'period_end': _iso(owner['license_period_end']),
       'store_limit': (owner['license_store_limit'] as num?)?.toInt() ?? 1,
       'license_token': await _licenseFor(owner),
-      'server_time': DateTime.now().toUtc().toIso8601String(),
+      'license': _licenseState(owner),
+      'server_time': _serverTimeIso(),
       'account': _publicAccountJson(account),
       'permission': _permissionJson(account),
       'stores': await _ownerStores(ownerId),
@@ -2107,7 +2182,7 @@ WHERE owner_id = @owner AND sync_id = @sync
     }
     final permissionsExplicit = payload['permissions_explicit'] == true;
     final existing = await db.one(
-      'SELECT password_hash, password_salt, password_iterations, must_change_password FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
+      'SELECT * FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': syncId},
     );
     final hash = '${body['password_hash'] ?? ''}';
@@ -2188,6 +2263,16 @@ ON CONFLICT (owner_id, sync_id) DO UPDATE SET
 ''',
       values,
     );
+    if (body['aktif'] == false) {
+      await db.execute(
+        '''
+UPDATE devices SET revoked_at = now()
+WHERE owner_id = @owner AND employee_account_id = @sync
+  AND revoked_at IS NULL
+''',
+        {'owner': ownerId, 'sync': syncId},
+      );
+    }
     final row = await db.one(
       'SELECT * FROM accounts WHERE owner_id = @owner AND sync_id = @sync',
       {'owner': ownerId, 'sync': syncId},
@@ -2303,7 +2388,8 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
     final rows = await db.query(
       '''
-SELECT d.*, a.role_base, a.extra_permissions, a.permissions_explicit
+SELECT d.*, a.role_base, a.extra_permissions, a.permissions_explicit,
+       a.aktif AS akun_aktif
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id
@@ -2475,6 +2561,8 @@ ON CONFLICT (owner_id) DO UPDATE SET
         'email': identity.email,
         'plan': plan,
         'period_end': _iso(end),
+        'license': _licenseState(owner),
+        'server_time': _serverTimeIso(),
       });
     }
     await db.execute(
@@ -2515,6 +2603,8 @@ ON CONFLICT (owner_id) DO UPDATE SET
       'owner_public_key': owner['owner_public_key'] ?? '',
       'stores': stores,
       'summary': summary,
+      'license': _licenseState(owner),
+      'server_time': _serverTimeIso(),
     });
   }
 

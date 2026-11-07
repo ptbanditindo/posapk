@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
@@ -13,6 +15,7 @@ import '../sync/relay_client.dart';
 import '../sync/sync_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
+import 'store_settings.dart';
 
 const followupJenis = [
   'prospek',
@@ -689,6 +692,7 @@ class FollowupService {
 
   Future<FollowupAttempt> followUp(
     int itemId, {
+    required Operator actor,
     String? catatan,
     DateTime? now,
   }) async {
@@ -696,6 +700,15 @@ class FollowupService {
     final settings = await loadSettings();
     if (!settings.aktif) {
       throw StateError('Fitur follow up sedang dimatikan.');
+    }
+    if (!actor.isOwner) {
+      Permissions.require(actor, 'followup');
+      final roleSettings = await StoreSettingsService.instance.ensure();
+      if (!roleSettings.roleAllows(actor.role, 'followup')) {
+        throw StateError(
+          'Peran ${actor.role} tidak berhak melakukan follow up.',
+        );
+      }
     }
     final quota = await _localQuota();
     if (quota.locked) {
@@ -733,50 +746,30 @@ class FollowupService {
     final link = waMeLink(phone, message);
     final ids = group.map((row) => row['id'] as int).toList();
     var used = quota.used;
-    final remote = quota.premium
-        ? null
-        : await _syncQuota(localUsed: quota.used, consume: true);
-    if (remote != null) {
-      if (!remote.allowed) {
-        throw StateError(
-          'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis. '
-          'Data lama tetap dapat dibaca dan diekspor.',
-        );
-      }
-      used = remote.used;
-    }
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       if (!quota.premium) {
-        if (remote != null) {
-          await txn.insert(
-            'app_settings',
-            {'key': _quotaKey, 'value': '$used'},
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
-        } else {
-          final currentRows = await txn.query(
-            'app_settings',
-            columns: ['value'],
-            where: 'key = ?',
-            whereArgs: [_quotaKey],
-            limit: 1,
-          );
-          final current = currentRows.isEmpty
-              ? 0
-              : int.tryParse(currentRows.first['value'] as String? ?? '') ?? 0;
-          if (current >= _freeQuotaLimit) {
-            throw StateError(
-              'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis.',
-            );
-          }
-          used = current + 1;
-          await txn.insert(
-            'app_settings',
-            {'key': _quotaKey, 'value': '$used'},
-            conflictAlgorithm: ConflictAlgorithm.replace,
+        final currentRows = await txn.query(
+          'app_settings',
+          columns: ['value'],
+          where: 'key = ?',
+          whereArgs: [_quotaKey],
+          limit: 1,
+        );
+        final current = currentRows.isEmpty
+            ? 0
+            : int.tryParse(currentRows.first['value'] as String? ?? '') ?? 0;
+        if (current >= _freeQuotaLimit) {
+          throw StateError(
+            'Kuota Follow up gratis (20 kredit WhatsApp) sudah habis.',
           );
         }
+        used = current + 1;
+        await txn.insert(
+          'app_settings',
+          {'key': _quotaKey, 'value': '$used'},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       }
       for (final row in group) {
         final currentStatus = row['status'] as String? ?? 'BARU';
@@ -828,6 +821,13 @@ class FollowupService {
         }
       }
     });
+    if (!quota.premium) {
+      // Konsumsi kuota remote setelah commit lokal: kegagalan transaksi
+      // tidak lagi membuang kredit, dan laporan lokal akan disinkronkan
+      // lewat GREATEST pada pemeriksaan berikutnya.
+      final remote = await _syncQuota(localUsed: used, consume: true);
+      if (remote != null) used = remote.used;
+    }
     return FollowupAttempt(
       message: message,
       link: link,
@@ -844,12 +844,23 @@ class FollowupService {
   Future<void> changeStatus(
     int itemId, {
     required String status,
+    required Operator actor,
     String? alasan,
     DateTime? janjiBayar,
     DateTime? tanggalService,
     int? tundaHari,
     DateTime? now,
   }) async {
+    final settings = await loadSettings();
+    if (!actor.isOwner) {
+      Permissions.require(actor, 'followup');
+      final roleSettings = await StoreSettingsService.instance.ensure();
+      if (!roleSettings.roleAllows(actor.role, 'followup')) {
+        throw StateError(
+          'Peran ${actor.role} tidak berhak mengubah status follow up.',
+        );
+      }
+    }
     final moment = now ?? DateTime.now();
     final target = status.trim().toUpperCase();
     if (!followupStatuses.contains(target)) {
@@ -934,19 +945,22 @@ class FollowupService {
     }
 
     final tunda = target == 'MASIH_KENDALA'
-        ? moment.add(
-            Duration(days: tundaHari ?? (await loadSettings()).belumBisaHari),
-          )
+        ? moment.add(Duration(days: tundaHari ?? settings.belumBisaHari))
         : null;
     await AppDatabase.instance.db.transaction((txn) async {
       await txn.update(
         'followup_items',
         {
           'status': target,
-          'tanggal_service':
-              target == 'AKAN_DATANG' ? _isoDay(tanggalService!) : null,
-          'janji_bayar': target == 'JANJI_BAYAR' ? _isoDay(janjiBayar!) : null,
-          'tunda_sampai': tunda == null ? null : _isoMoment(tunda),
+          // Tanggal lama dipertahankan; hanya diganti bila status baru
+          // memang membutuhkan tanggal tersebut.
+          'tanggal_service': target == 'AKAN_DATANG'
+              ? _isoDay(tanggalService!)
+              : item['tanggal_service'],
+          'janji_bayar': target == 'JANJI_BAYAR'
+              ? _isoDay(janjiBayar!)
+              : item['janji_bayar'],
+          'tunda_sampai': tunda == null ? item['tunda_sampai'] : _isoMoment(tunda),
           'no_response_count': {'AKAN_DATANG', 'SELESAI', 'JANJI_BAYAR'}
                   .contains(target)
               ? 0
@@ -955,7 +969,7 @@ class FollowupService {
               ? (target == 'SUDAH_BAYAR'
                   ? 'Sudah bayar.'
                   : (alasan ?? '').trim())
-              : null,
+              : item['alasan_arsip'],
           'updated_at': _isoMoment(moment),
         },
         where: 'id = ?',

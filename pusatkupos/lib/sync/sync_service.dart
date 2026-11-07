@@ -825,6 +825,7 @@ class SyncService {
         'applied_deltas',
         {
           'idempotency_key': idem,
+          'store_id': '${inbox.first['store_id'] ?? ''}',
           'envelope_id': inbox.first['envelope_id'] ?? '',
           'entity': inbox.first['entity'] ?? '',
           'entity_id': inbox.first['entity_id'] ?? '',
@@ -1064,6 +1065,10 @@ class SyncService {
     await _enqueueNoteState(id, 'upsert', txn: txn);
   }
 
+  Future<void> enqueueNoteReturn(int id, {DatabaseExecutor? txn}) async {
+    await _enqueueNoteState(id, 'retur', txn: txn);
+  }
+
   Future<void> enqueueNoteVoid(int id, {DatabaseExecutor? txn}) async {
     await _enqueueNoteState(id, 'void', txn: txn);
   }
@@ -1118,17 +1123,27 @@ class SyncService {
     final syncId = row['sync_id'] as String? ?? '';
     final stockSync = row['stock_sync_id'] as String? ?? '';
     if (syncId.isEmpty || stockSync.isEmpty) return;
+    final movementWall = (row['sync_hlc_wall'] as num?)?.toInt() ?? 0;
+    final movementCounter = (row['sync_hlc_counter'] as num?)?.toInt() ?? 0;
     await enqueue(
       txn: txn,
       entity: 'stock_movement',
       action: 'upsert',
       entityId: syncId,
+      hlcWall: movementWall > 0 ? movementWall : null,
+      hlcCounter: movementWall > 0 ? movementCounter : null,
       payload: {
         'sync_id': syncId,
         'stock_sync_id': stockSync,
         'nama_item': row['nama_item'],
         'jenis': row['jenis'],
         'jumlah_milli': row['jumlah_milli'] ?? (row['jumlah'] as int? ?? 0) * 1000,
+        'stok_sebelum_milli': row['stok_sebelum_milli'],
+        'stok_sesudah_milli': row['stok_sesudah_milli'],
+        'opname_absolut_milli': row['opname_absolut_milli'],
+        'sumber_entity': row['sumber_entity'],
+        'sumber_sync_id': row['sumber_sync_id'],
+        'operator': row['operator'],
         'alasan': row['alasan'],
         'created_at': row['created_at'],
         'record_sync_id': row['record_sync_id'],
@@ -1179,7 +1194,7 @@ class SyncService {
       '''
       SELECT st.sync_id FROM supplier_items i
       JOIN stock_items st ON st.id = i.stock_item_id
-      WHERE i.supplier_id = ?
+      WHERE i.supplier_id = ? AND i.deleted_at IS NULL
       ''',
       [id],
     );
@@ -1219,6 +1234,7 @@ class SyncService {
       JOIN suppliers s ON s.id = f.supplier_id
       JOIN stock_items st ON st.id = f.stock_item_id
       WHERE f.supplier_id = ? AND f.stock_item_id = ?
+        AND f.deleted_at IS NULL
       LIMIT 1
       ''',
       [supplierId, stockItemId],
@@ -1268,8 +1284,17 @@ class SyncService {
         'sync_id': row['sync_id'],
         'record_sync_id': row['record_sync_id'],
         'employee_sync_id': row['employee_sync_id'],
+        'employee_nama_snapshot': row['employee_nama_snapshot'],
+        'mode_snapshot': row['mode_snapshot'],
+        'nilai_snapshot': row['nilai_snapshot'],
+        'dasar_jasa': row['dasar_jasa'],
+        'dasar_barang': row['dasar_barang'],
         'nominal': row['nominal'],
         'nominal_override': row['nominal_override'],
+        'status': row['status'],
+        'voided_at': row['voided_at'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
       },
     );
   }
@@ -1321,8 +1346,15 @@ class SyncService {
       hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
       payload: {
         'sync_id': syncId,
+        'username': row['username'],
         'nama': row['nama'],
         'aktif': row['aktif'] ?? 1,
+        // Peran/izin/toko ikut disebar tanpa kredensial apa pun.
+        'role_base': row['role_base'],
+        'extra_permissions_json': row['extra_permissions_json'],
+        'store_ids_json': row['store_ids_json'],
+        'permissions_explicit': row['permissions_explicit'] ?? 0,
+        'permission_version': row['permission_version'] ?? 1,
         'jenis_imbalan': row['jenis_imbalan'],
         'gaji_bulanan': row['gaji_bulanan'],
         'komisi_mode': row['komisi_mode'],
@@ -1617,6 +1649,9 @@ class SyncService {
         'nota_sync_id': row['nota_sync_id'],
         'nilai_selisih': row['nilai_selisih'],
         'nilai_baru': row['nilai_baru'],
+        'nominal_jasa': row['nominal_jasa'],
+        'nominal_part': row['nominal_part'],
+        'diskon': row['diskon'],
         'alasan': row['alasan'],
         'dibuat_oleh': row['dibuat_oleh'],
         'disetujui_oleh': row['disetujui_oleh'],
@@ -1852,27 +1887,24 @@ class SyncService {
     );
     var applied = inbox.applied;
     var conflictCount = inbox.failed;
-    final cursor = await _cursor(store, deviceId);
-    if (inbox.blockedSeq != null) {
+    var cursor = await _cursor(store, deviceId);
+    int? blockedSeq = inbox.blockedSeq;
+    var blockedError = inbox.lastError;
+    if (blockedSeq != null) {
       // Ada amplop yang belum dapat diterapkan. Cursor tetap di urutan
-      // sebelum amplop itu; amplop sesudahnya boleh diterapkan tetapi belum
-      // diakui sampai celah terisi.
-      final halt = inbox.blockedSeq! > 0 ? inbox.blockedSeq! - 1 : cursor;
+      // sebelum amplop itu, tetapi amplop independen sesudahnya tetap
+      // diterapkan dan diakui sejauh aman; pengakuan penuh menunggu celah
+      // terisi.
+      final halt = blockedSeq > 0 ? blockedSeq - 1 : cursor;
       if (halt > cursor) {
+        cursor = halt;
         await client.ack(storeId: store, lastSeq: halt);
         await _setCursor(store, deviceId, halt);
       }
       await _ackOpenRound(client, store: store, lastSeq: halt);
-      throw StateError(
-        'Sinkronisasi tertahan pada urutan ${inbox.blockedSeq}. '
-        '${inbox.lastError.isEmpty ? 'Amplop belum dapat diterapkan.' : inbox.lastError} '
-        'Akan dicoba lagi otomatis.',
-      );
     }
     var next = cursor;
     var pageCursor = cursor;
-    int? blockedSeq;
-    String blockedError = '';
     var refreshedDevices = false;
     while (true) {
       final feed = await client.feed(storeId: store, sinceSeq: pageCursor);
@@ -1960,6 +1992,9 @@ class SyncService {
           continue;
         }
         if (relaySeq <= pageCursor) continue;
+        // Amplop ini sudah dicoba lewat inbox pada siklus yang sama; jangan
+        // mengulang percobaan hingga jadwal backoff berikutnya.
+        if (inbox.attempted.contains(relaySeq)) continue;
         var key = keys[sender];
         if (key == null && !refreshedDevices) {
           refreshedDevices = true;
@@ -1975,7 +2010,9 @@ class SyncService {
           blockedError = sender.isEmpty
               ? 'Amplop tanpa pengirim.'
               : 'Amplop dari perangkat "$sender" tidak dikenal.';
-          break;
+          // Amplop lain dari pengirim yang dikenal tetap diterapkan; hanya
+          // amplop ini yang menunggu kuncinya tersedia.
+          continue;
         }
         try {
           final didApply = await _applyOnce(
@@ -2008,16 +2045,20 @@ class SyncService {
         }
       }
       final latest = (feed['latest_seq'] as num?)?.toInt() ?? 0;
-      final advance = blockedSeq != null
-          ? (blockedSeq > 0 ? blockedSeq - 1 : pageCursor)
-          : (feed['next_seq'] as int? ?? pageCursor);
-      if (advance > next) next = advance;
-      if (blockedSeq != null) break;
+      final advance = feed['next_seq'] as int? ?? pageCursor;
       if (advance <= pageCursor) break;
       pageCursor = advance;
       if (pageCursor >= latest) break;
     }
-    if (next > 0) {
+    // Pengakuan hanya sampai sebelum amplop pertama yang tertahan. Amplop
+    // sesudahnya sudah diterapkan secara idempoten dan akan diakui pada
+    // siklus berikutnya setelah celah terisi, sehingga satu konflik tidak
+    // menghentikan data independen.
+    final ackSeq = blockedSeq != null
+        ? (blockedSeq > 0 ? blockedSeq - 1 : cursor)
+        : pageCursor;
+    if (ackSeq > 0) {
+      next = ackSeq;
       await client.ack(storeId: store, lastSeq: next);
       await _setCursor(store, deviceId, next);
     }
@@ -2274,6 +2315,7 @@ class SyncService {
           envelope['id'] as String? ?? '',
           storeId: storeId,
           senderProfile: senderProfile ?? SenderProfile.legacy(senderKind),
+          senderDeviceId: envelope['sender_device_id'] as String? ?? '',
         );
         final conflicts = await txn.query(
           'sync_conflicts',
@@ -2297,6 +2339,7 @@ class SyncService {
           'applied_deltas',
           {
             'idempotency_key': idem,
+            'store_id': storeId,
             'envelope_id': envelope['id'] as String? ?? '',
             'entity': data['entity'] ?? '',
             'entity_id': data['entity_id'] ?? '',
@@ -2332,6 +2375,7 @@ class SyncService {
         int applied,
         int failed,
         String lastError,
+        Set<int> attempted,
       })> _retryInbox({
     required String store,
     required String deviceId,
@@ -2355,6 +2399,7 @@ class SyncService {
     var applied = 0;
     var failed = 0;
     var lastError = '';
+    final attempted = <int>{};
     if (permanentRows.isNotEmpty) {
       // Amplop permanen yang belum diselesaikan pengguna tetap menahan ack
       // agar relay tidak menganggapnya sudah diterima.
@@ -2369,10 +2414,13 @@ class SyncService {
           ? now
           : DateTime.tryParse(dueText) ?? now;
       if (due.isAfter(now)) {
+        // Masih dalam backoff: jangan diambil ulang dari feed pada siklus ini.
+        attempted.add(relaySeq);
         blockedSeq ??= relaySeq;
         lastError = row['last_error'] as String? ?? lastError;
         continue;
       }
+      attempted.add(relaySeq);
       final raw = jsonDecode(row['envelope_json'] as String);
       if (raw is! Map) {
         blockedSeq ??= relaySeq;
@@ -2447,6 +2495,7 @@ class SyncService {
       applied: applied,
       failed: failed,
       lastError: lastError,
+      attempted: attempted,
     );
   }
 
@@ -2604,6 +2653,9 @@ class SyncService {
             storeIds: ((device['store_ids'] as List?) ?? const [])
                 .map((item) => '$item')
                 .toList(),
+            revoked: '${device['revoked_at'] ?? ''}'.trim().isNotEmpty,
+            accountActive: device['akun_aktif'] != false,
+            employeeSyncId: '${device['employee_account_id'] ?? ''}',
           ),
     };
   }
@@ -2633,6 +2685,25 @@ class SyncService {
     return localWall == 0 && localCounter == 0;
   }
 
+  Future<String> _uniqueStockCode(
+    DatabaseExecutor txn,
+    String kode,
+  ) async {
+    var suffix = 2;
+    while (true) {
+      final candidate = '$kode-$suffix';
+      final rows = await txn.query(
+        'stock_items',
+        columns: ['id'],
+        where: 'kode = ? AND deleted_at IS NULL',
+        whereArgs: [candidate],
+        limit: 1,
+      );
+      if (rows.isEmpty) return candidate;
+      suffix++;
+    }
+  }
+
   Future<void> _recordConflict(
     DatabaseExecutor txn, {
     required String entity,
@@ -2645,6 +2716,28 @@ class SyncService {
         status == 'open' && SyncConflictRules.isFinal(reason)
             ? 'rejected'
             : status;
+    final existing = await txn.query(
+      'sync_conflicts',
+      columns: ['id'],
+      where: "entity = ? AND entity_id = ? AND reason = ? "
+          "AND status IN ('open', 'review')",
+      whereArgs: [entity, entityId, reason],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      // Konflik yang sama berulang hanya memperbarui rinciannya; indeks unik
+      // parsial menjaga satu baris tertunda per entitas+alasan.
+      await txn.update(
+        'sync_conflicts',
+        {
+          'detail_json': jsonEncode(detail),
+          'last_error': '${detail['error'] ?? ''}',
+        },
+        where: 'id = ?',
+        whereArgs: [existing.first['id']],
+      );
+      return;
+    }
     await txn.insert('sync_conflicts', {
       'entity': entity,
       'entity_id': entityId,
@@ -2654,7 +2747,7 @@ class SyncService {
       'retry_count': 0,
       'last_error': '${detail['error'] ?? ''}',
       'created_at': nowIso(),
-    });
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   Future<void> _apply(
@@ -2663,6 +2756,7 @@ class SyncService {
     String envelopeId, {
     required String storeId,
     SenderProfile senderProfile = const SenderProfile.legacy('unknown'),
+    String senderDeviceId = '',
   }) async {
     final senderKind = senderProfile.kind;
     final entity = data['entity'] as String? ?? '';
@@ -2685,6 +2779,8 @@ class SyncService {
         detail: {
           'envelope_id': envelopeId,
           'sender_kind': senderKind,
+          'sender_device_id': senderDeviceId,
+          'sender_account': senderProfile.employeeSyncId,
           'action': action,
           'error': '',
         },
@@ -2849,6 +2945,27 @@ class SyncService {
         return;
       }
       int cents(Object? value) => (value as num?)?.toInt() ?? 0;
+      final hargaModal = cents(payload['harga_modal']);
+      final hargaJual = cents(payload['harga_jual']);
+      final stokMinimum = cents(payload['stok_minimum']);
+      if (hargaModal < 0 || hargaJual < 0 || stokMinimum < 0) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'harga_tidak_valid',
+          detail: {
+            'envelope_id': envelopeId,
+            'nama': payload['nama'],
+            'harga_modal': payload['harga_modal'],
+            'harga_jual': payload['harga_jual'],
+            'stok_minimum': payload['stok_minimum'],
+            'error': '',
+          },
+          status: 'review',
+        );
+        return;
+      }
       if (!senderProfile.isOwner && rows.isNotEmpty) {
         final current = rows.first;
         final priceChanged =
@@ -2877,25 +2994,91 @@ class SyncService {
       final values = {
         'kode': payload['kode'],
         'nama': payload['nama'],
-        'harga_modal': payload['harga_modal'],
-        'harga_jual': payload['harga_jual'],
-        'stok_minimum': payload['stok_minimum'],
+        'harga_modal': hargaModal,
+        'harga_jual': hargaJual,
+        'stok_minimum': stokMinimum,
         'satuan': payload['satuan'] ?? 'pcs',
         'desimal': payload['desimal'] ?? 0,
-        'deleted_at':
-            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        // Tombstone tidak boleh dibatalkan oleh amplop edit yang datang
+        // belakangan; hanya amplop delete yang boleh menulis `deleted_at`.
+        if (action == 'delete') 'deleted_at': payload['deleted_at'] ?? nowIso(),
         ...hlc,
         'updated_at': payload['updated_at'] ?? nowIso(),
       };
       if (rows.isEmpty) {
-        if ((payload['kode'] as String? ?? '').isEmpty) {
-          throw RetryableSyncException('Barang tanpa kode.');
+        final kode = '${payload['kode'] ?? ''}'.trim();
+        if (kode.isEmpty) {
+          await _recordConflict(
+            txn,
+            entity: entity,
+            entityId: syncId,
+            reason: 'kode_barang_kosong',
+            detail: {
+              'envelope_id': envelopeId,
+              'nama': payload['nama'],
+              'sender_kind': senderKind,
+              'error': '',
+            },
+            status: 'review',
+          );
+          return;
+        }
+        // Kode barang unik per toko. Barang dari perangkat lain dengan kode
+        // yang sama tidak boleh memblokir antrean, jadi diberi kode turunan
+        // dan pemilik mendapat konflik untuk menggabungkan/mengganti kode.
+        var insertedKode = kode;
+        final clash = await txn.query(
+          'stock_items',
+          columns: ['id', 'sync_id', 'nama'],
+          where: 'kode = ? AND deleted_at IS NULL',
+          whereArgs: [kode],
+          limit: 1,
+        );
+        if (clash.isNotEmpty) {
+          insertedKode = await _uniqueStockCode(txn, kode);
+          await _recordConflict(
+            txn,
+            entity: entity,
+            entityId: syncId,
+            reason: 'kode_barang_bentrok',
+            detail: {
+              'kode_asal': kode,
+              'kode_baru': insertedKode,
+              'barang_lama_sync_id': clash.first['sync_id'],
+              'barang_lama_nama': clash.first['nama'],
+              'barang_masuk_nama': payload['nama'],
+              'envelope_id': envelopeId,
+              'error': '',
+            },
+            status: 'review',
+          );
         }
         final milli = (payload['jumlah_milli'] as num?)?.toInt() ??
             ((payload['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        if (milli < 0) {
+          // Barang baru tidak boleh lahir dengan saldo negatif; saldo hanya
+          // berubah lewat pergerakan yang dapat diaudit.
+          await _recordConflict(
+            txn,
+            entity: entity,
+            entityId: syncId,
+            reason: 'stok_negatif',
+            detail: {
+              'envelope_id': envelopeId,
+              'nama': payload['nama'],
+              'jumlah_milli': milli,
+              'sender_kind': senderKind,
+              'sender_device_id': senderDeviceId,
+              'error': '',
+            },
+            status: 'review',
+          );
+          return;
+        }
         await txn.insert('stock_items', {
           'sync_id': syncId,
           ...values,
+          'kode': insertedKode,
           'jumlah': wholeQuantity(milli),
           'jumlah_milli': milli,
           'created_at': nowIso(),
@@ -2945,27 +3128,9 @@ class SyncService {
         recordId = record.isEmpty ? null : record.first['id'] as int;
       }
       final qtyMilli = (payload['jumlah_milli'] as num?)?.toInt() ?? 0;
-      await txn.insert('stock_movements', {
-        'sync_id': syncId,
-        'stock_item_id': stock.first['id'],
-        'nama_item': payload['nama_item'] ?? stock.first['nama'],
-        'jenis': payload['jenis'] ?? 'KOREKSI',
-        'jumlah': wholeQuantity(qtyMilli),
-        'jumlah_milli': qtyMilli,
-        'alasan': payload['alasan'],
-        'service_record_id': recordId,
-        'created_at': payload['created_at'] ?? nowIso(),
-        'updated_at': payload['updated_at'] ?? nowIso(),
-      });
-      final before = StockItem.fromRow(stock.first);
-      final next = before.jumlahMilli + qtyMilli;
-      await txn.update(
-        'stock_items',
-        {'jumlah': wholeQuantity(next), 'jumlah_milli': next},
-        where: 'id = ?',
-        whereArgs: [stock.first['id']],
-      );
-      if (next < 0) {
+      final absoluteMilli =
+          (payload['opname_absolut_milli'] as num?)?.toInt();
+      if (absoluteMilli != null && absoluteMilli < 0) {
         await _recordConflict(
           txn,
           entity: 'stock',
@@ -2973,7 +3138,99 @@ class SyncService {
           reason: 'stok_negatif',
           detail: {
             'movement_sync_id': syncId,
-            'jumlah_milli': next,
+            'opname_absolut_milli': absoluteMilli,
+            'error': '',
+          },
+          status: 'review',
+        );
+        return;
+      }
+      final before = StockItem.fromRow(stock.first);
+      final localWall = (stock.first['sync_hlc_wall'] as num?)?.toInt() ?? 0;
+      final localCounter =
+          (stock.first['sync_hlc_counter'] as num?)?.toInt() ?? 0;
+      final isNewer = wall > localWall ||
+          (wall == localWall && counter > localCounter);
+      // Opname adalah nilai absolut: hanya berlaku bila HLC-nya lebih baru.
+      // Pergerakan delta tetap dijumlahkan karena perubahan bersifat aditif.
+      final applyQuantity = absoluteMilli == null || isNewer;
+      final nextMilli = absoluteMilli ?? before.jumlahMilli + qtyMilli;
+      final stockHlcWall = wall > localWall ? wall : localWall;
+      final stockHlcCounter = wall > localWall
+          ? counter
+          : (wall == localWall && counter > localCounter
+              ? counter
+              : localCounter);
+      await txn.insert('stock_movements', {
+        'sync_id': syncId,
+        'stock_item_id': stock.first['id'],
+        'stock_sync_id': stockSync,
+        'nama_item': payload['nama_item'] ?? stock.first['nama'],
+        'jenis': payload['jenis'] ?? 'KOREKSI',
+        'jumlah': absoluteMilli == null
+            ? wholeQuantity(qtyMilli)
+            : wholeQuantity(nextMilli - before.jumlahMilli),
+        'jumlah_milli': absoluteMilli == null
+            ? qtyMilli
+            : nextMilli - before.jumlahMilli,
+        'stok_sebelum_milli': before.jumlahMilli,
+        'stok_sesudah_milli': nextMilli,
+        'opname_absolut_milli': absoluteMilli,
+        'sumber_entity': payload['sumber_entity'] ??
+            (recordId == null ? 'stock_adjustment' : 'service_record'),
+        'sumber_sync_id': payload['sumber_sync_id'] ?? syncId,
+        'operator': payload['operator'],
+        'alasan': payload['alasan'],
+        'service_record_id': recordId,
+        'sync_hlc_wall': wall,
+        'sync_hlc_counter': counter,
+        'created_at': payload['created_at'] ?? nowIso(),
+        'updated_at': payload['updated_at'] ?? nowIso(),
+      });
+      if (!applyQuantity) {
+        await _recordConflict(
+          txn,
+          entity: 'stock',
+          entityId: stockSync,
+          reason: 'versi_lokal_lebih_baru',
+          detail: {
+            'envelope_id': envelopeId,
+            'movement_sync_id': syncId,
+            'opname_absolut_milli': absoluteMilli,
+            'hlc_wall': wall,
+            'hlc_counter': counter,
+            'lokal_hlc_wall': localWall,
+            'lokal_hlc_counter': localCounter,
+            'error': '',
+          },
+        );
+        return;
+      }
+      await txn.update(
+        'stock_items',
+        {
+          'jumlah': wholeQuantity(nextMilli),
+          'jumlah_milli': nextMilli,
+          'sync_hlc_wall': stockHlcWall,
+          'sync_hlc_counter': stockHlcCounter,
+          'updated_at': nowIso(),
+        },
+        where: 'id = ?',
+        whereArgs: [stock.first['id']],
+      );
+      if (nextMilli < 0) {
+        await _recordConflict(
+          txn,
+          entity: 'stock',
+          entityId: stockSync,
+          reason: 'stok_negatif',
+          detail: {
+            'movement_sync_id': syncId,
+            'record_sync_id': recordSync,
+            'nama_item': payload['nama_item'] ?? stock.first['nama'],
+            'stok_sebelum_milli': before.jumlahMilli,
+            'stok_sesudah_milli': nextMilli,
+            'sumber_entity': payload['sumber_entity'] ?? '',
             'error': '',
           },
           status: 'review',
@@ -2998,10 +3255,29 @@ class SyncService {
         );
         return;
       }
+      final hargaJual = (payload['harga_jual'] as num?)?.toInt() ?? 0;
+      final hargaModal = (payload['harga_modal'] as num?)?.toInt() ?? 0;
+      if (hargaJual < 0 || hargaModal < 0) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: syncId,
+          reason: 'harga_tidak_valid',
+          detail: {
+            'envelope_id': envelopeId,
+            'nama': payload['nama'],
+            'harga_jual': payload['harga_jual'],
+            'harga_modal': payload['harga_modal'],
+            'error': '',
+          },
+          status: 'review',
+        );
+        return;
+      }
       final values = {
         'nama': payload['nama'] ?? '',
-        'harga_jual': payload['harga_jual'] ?? 0,
-        'harga_modal': payload['harga_modal'] ?? 0,
+        'harga_jual': hargaJual,
+        'harga_modal': hargaModal,
         'interval_servis_bulan': payload['interval_servis_bulan'] ?? 0,
         'deleted_at':
             action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
@@ -3054,17 +3330,20 @@ class SyncService {
         'alamat': payload['alamat'],
         'catatan': payload['catatan'],
         'aktif': payload['aktif'] ?? 1,
-        'deleted_at':
-            action == 'delete' ? (payload['deleted_at'] ?? nowIso()) : null,
+        // Tombstone hanya boleh ditulis oleh aksi delete; amplop edit yang
+        // datang belakangan tidak menghidupkan supplier yang sudah dihapus.
+        if (action == 'delete') 'deleted_at': payload['deleted_at'] ?? nowIso(),
         ...hlc,
       };
       final rows = await txn.query(
         'suppliers',
-        columns: ['id'],
+        columns: ['id', 'deleted_at'],
         where: 'sync_id = ?',
         whereArgs: [syncId],
         limit: 1,
       );
+      final supplierDeleted = action == 'delete' ||
+          (rows.isNotEmpty && rows.first['deleted_at'] != null);
       final int supplierId;
       if (rows.isEmpty) {
         supplierId = await txn.insert('suppliers', {
@@ -3082,19 +3361,27 @@ class SyncService {
           whereArgs: [syncId],
         );
       }
-      if (action == 'delete') {
-        await txn.delete(
+      if (supplierDeleted) {
+        // Relasi mengikuti tombstone supplier tanpa menghapus riwayatnya,
+        // sehingga perangkat lain dan payload yang telat tetap konsisten.
+        final now = nowIso();
+        await txn.update(
           'supplier_items',
-          where: 'supplier_id = ?',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'supplier_id = ? AND deleted_at IS NULL',
           whereArgs: [supplierId],
         );
-        await txn.delete(
+        await txn.update(
           'supplier_followups',
-          where: 'supplier_id = ?',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'supplier_id = ? AND deleted_at IS NULL',
           whereArgs: [supplierId],
         );
       } else if (payload['stock_sync_ids'] is List) {
-        final stockIds = <int>[];
+        // Payload supplier membawa penggantian penuh daftar barang; relasi
+        // yang tidak lagi disebut ditandai tombstone, yang disebut kembali
+        // memakai baris lama agar tidak menumpuk duplikat.
+        final stockIds = <int>{};
         for (final raw in payload['stock_sync_ids'] as List) {
           final stockSync = '$raw';
           if (stockSync.isEmpty) continue;
@@ -3107,23 +3394,47 @@ class SyncService {
           );
           if (stock.isNotEmpty) stockIds.add(stock.first['id'] as int);
         }
-        await txn.delete(
+        final now = nowIso();
+        final current = await txn.query(
           'supplier_items',
-          where: 'supplier_id = ?',
+          columns: ['id', 'stock_item_id'],
+          where: 'supplier_id = ? AND deleted_at IS NULL',
           whereArgs: [supplierId],
         );
-        for (final stockId in stockIds) {
-          await txn.insert(
+        for (final row in current) {
+          if (stockIds.contains(row['stock_item_id'])) continue;
+          await txn.update(
             'supplier_items',
-            {
+            {'deleted_at': now, 'updated_at': now},
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+        for (final stockId in stockIds) {
+          final previous = await txn.query(
+            'supplier_items',
+            columns: ['id'],
+            where: 'supplier_id = ? AND stock_item_id = ?',
+            whereArgs: [supplierId, stockId],
+            orderBy: 'id DESC',
+            limit: 1,
+          );
+          if (previous.isEmpty) {
+            await txn.insert('supplier_items', {
               'sync_id': newSyncId(),
               'supplier_id': supplierId,
               'stock_item_id': stockId,
-              'created_at': nowIso(),
-              'updated_at': nowIso(),
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore,
-          );
+              'created_at': now,
+              'updated_at': now,
+            });
+          } else {
+            await txn.update(
+              'supplier_items',
+              {'deleted_at': null, 'updated_at': now},
+              where: 'id = ?',
+              whereArgs: [previous.first['id']],
+            );
+          }
         }
       }
     } else if (entity == 'supplier_followup') {
@@ -3131,14 +3442,14 @@ class SyncService {
       final stockSync = payload['stock_sync_id'] as String? ?? '';
       final supplier = await txn.query(
         'suppliers',
-        columns: ['id'],
+        columns: ['id', 'deleted_at'],
         where: 'sync_id = ?',
         whereArgs: [supplierSync],
         limit: 1,
       );
       final stock = await txn.query(
         'stock_items',
-        columns: ['id'],
+        columns: ['id', 'deleted_at'],
         where: 'sync_id = ?',
         whereArgs: [stockSync],
         limit: 1,
@@ -3149,7 +3460,10 @@ class SyncService {
           code: 'followup_supplier_butuh_induk',
         );
       }
-      if (supplier.first['deleted_at'] != null) return;
+      if (supplier.first['deleted_at'] != null ||
+          stock.first['deleted_at'] != null) {
+        return;
+      }
       if (!await _remoteWins(
         txn,
         table: 'supplier_followups',
@@ -3169,14 +3483,15 @@ class SyncService {
       final values = {
         'status': payload['status'] ?? 'BELUM',
         'catatan': payload['catatan'],
+        'deleted_at': null,
         'updated_at': payload['updated_at'] ?? nowIso(),
         ...hlc,
       };
       final rows = await txn.query(
         'supplier_followups',
         columns: ['id'],
-        where: 'supplier_id = ? AND stock_item_id = ?',
-        whereArgs: [supplier.first['id'], stock.first['id']],
+        where: 'sync_id = ?',
+        whereArgs: [payload['sync_id'] ?? ''],
         limit: 1,
       );
       if (rows.isEmpty) {
@@ -3190,7 +3505,11 @@ class SyncService {
       } else {
         await txn.update(
           'supplier_followups',
-          values,
+          {
+            ...values,
+            'supplier_id': supplier.first['id'],
+            'stock_item_id': stock.first['id'],
+          },
           where: 'id = ?',
           whereArgs: [rows.first['id']],
         );
@@ -3199,7 +3518,7 @@ class SyncService {
       final recordSync = payload['record_sync_id'] as String? ?? '';
       final record = await txn.query(
         'service_records',
-        columns: ['id'],
+        columns: ['id', 'status', 'voided_at'],
         where: 'sync_id = ?',
         whereArgs: [recordSync],
         limit: 1,
@@ -3219,9 +3538,20 @@ class SyncService {
       )) {
         return;
       }
+      final recordVoid = record.first['voided_at'] != null ||
+          '${record.first['status']}' == 'VOID';
       final values = {
-        'nominal': payload['nominal'] ?? 0,
-        'nominal_override': payload['nominal_override'],
+        'employee_nama_snapshot': payload['employee_nama_snapshot'],
+        'mode_snapshot': payload['mode_snapshot'] ?? 'PERSEN',
+        'nilai_snapshot': payload['nilai_snapshot'] ?? 0,
+        'dasar_jasa': payload['dasar_jasa'] ?? 0,
+        'dasar_barang': payload['dasar_barang'] ?? 0,
+        'nominal': recordVoid ? 0 : (payload['nominal'] ?? 0),
+        'nominal_override': recordVoid ? null : payload['nominal_override'],
+        'status': recordVoid ? 'VOID' : (payload['status'] ?? 'AKTIF'),
+        'voided_at': recordVoid
+            ? (payload['voided_at'] ?? nowIso())
+            : payload['voided_at'],
         ...hlc,
       };
       final rows = await txn.query(
@@ -3270,11 +3600,36 @@ class SyncService {
       )) {
         return;
       }
+      final localRow = await txn.query(
+        'employee_accounts',
+        columns: ['permission_version'],
+        where: 'id = ?',
+        whereArgs: [local.first['id']],
+        limit: 1,
+      );
+      final localVersion =
+          (localRow.isEmpty ? 0 : (localRow.first['permission_version'] as num?)?.toInt()) ??
+              0;
+      final incomingVersion =
+          (payload['permission_version'] as num?)?.toInt() ?? 0;
+      final applyPermissions = incomingVersion >= localVersion;
       await txn.update(
         'employee_accounts',
         {
           'nama': payload['nama'],
           'aktif': payload['aktif'] ?? 1,
+          if (payload['username'] != null)
+            'username': payload['username'],
+          if (applyPermissions && payload['role_base'] != null)
+            'role_base': payload['role_base'],
+          if (applyPermissions && payload['extra_permissions_json'] != null)
+            'extra_permissions_json': payload['extra_permissions_json'],
+          if (applyPermissions && payload['store_ids_json'] != null)
+            'store_ids_json': payload['store_ids_json'],
+          if (applyPermissions && payload['permissions_explicit'] != null)
+            'permissions_explicit': payload['permissions_explicit'],
+          if (applyPermissions && incomingVersion > 0)
+            'permission_version': incomingVersion,
           'jenis_imbalan': payload['jenis_imbalan'],
           'gaji_bulanan': payload['gaji_bulanan'],
           'komisi_mode': payload['komisi_mode'],
@@ -3293,6 +3648,18 @@ class SyncService {
         where: 'id = ?',
         whereArgs: [local.first['id']],
       );
+      if (applyPermissions) {
+        await AccountService.syncStoreAccess(
+          txn,
+          employeeSyncId: syncId,
+          role: '${payload['role_base'] ?? 'KASIR'}',
+          extraPermissions: _jsonList(payload['extra_permissions_json']),
+          explicit: payload['permissions_explicit'] == 1,
+          aktif: payload['aktif'] != 0,
+          storeIds: _jsonList(payload['store_ids_json']),
+          version: incomingVersion,
+        );
+      }
     } else if (entity == 'debt') {
       final syncId = payload['sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
@@ -3337,6 +3704,86 @@ class SyncService {
     } else if (entity == 'salary') {
       final syncId = payload['sync_id'] as String? ?? '';
       if (syncId.isEmpty) return;
+      final employeeSync = payload['employee_sync_id'] ?? '';
+      final cycleStart = payload['cycle_start'] ?? '';
+      final nominal = (payload['nominal'] as num?)?.toInt() ?? 0;
+      final potongan = (payload['potongan_hutang'] as num?)?.toInt() ?? 0;
+      final kasKeluar =
+          (payload['kas_keluar'] as num?)?.toInt() ?? (nominal - potongan);
+      final rows = await txn.query(
+        'salary_payments',
+        columns: ['id', 'sync_id', 'nominal'],
+        where: 'employee_sync_id = ? AND cycle_start = ?',
+        whereArgs: [employeeSync, cycleStart],
+        limit: 1,
+      );
+      if (rows.isNotEmpty && '${rows.first['sync_id']}' != syncId) {
+        // Satu siklus hanya dibayar sekali. Pembayaran kedua dari perangkat
+        // lain tidak menimpa baris yang sudah ada; nominalnya dicatat sebagai
+        // konflik agar pemilik dapat meninjau dan mengembalikan uangnya.
+        final existing = await txn.query(
+          'sync_conflicts',
+          columns: ['id'],
+          where: "entity = 'salary' AND entity_id = ? AND reason = ? "
+              "AND status IN ('open', 'review')",
+          whereArgs: [syncId, 'gaji_ganda'],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          await txn.insert('sync_conflicts', {
+            'entity': 'salary',
+            'entity_id': syncId,
+            'reason': 'gaji_ganda',
+            'detail_json': jsonEncode({
+              'employee_sync_id': employeeSync,
+              'employee_nama': payload['employee_nama_snapshot'],
+              'cycle_start': cycleStart,
+              'cycle_end': payload['cycle_end'] ?? cycleStart,
+              'tanggal': payload['tanggal'] ?? cycleStart,
+              'gaji_tersimpan_sync_id': rows.first['sync_id'],
+              'gaji_masuk_sync_id': syncId,
+              'nominal_tersimpan': rows.first['nominal'],
+              'nominal_masuk': nominal,
+              'potongan_hutang': potongan,
+              'kas_keluar': kasKeluar,
+              'metode': payload['metode'] ?? 'CASH',
+            }),
+            'status': 'review',
+            'retry_count': 0,
+            'last_error': '',
+            'created_at': nowIso(),
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+          await txn.update(
+            'salary_payments',
+            {'konflik_sync_id': syncId, 'updated_at': nowIso()},
+            where: 'id = ?',
+            whereArgs: [rows.first['id']],
+          );
+        }
+        // Uang benar-benar keluar di perangkat asal. Catat arus kasnya agar
+        // laporan kas tidak kehilangan pembayaran kedua meski baris gaji
+        // hanya boleh satu per siklus.
+        if (kasKeluar > 0) {
+          await txn.insert(
+            'cash_ledger',
+            {
+              'sync_id': newSyncId(),
+              'waktu': payload['tanggal'] ?? nowIso(),
+              'kategori': 'GAJI',
+              'sumber_entity': 'salary_payment',
+              'sumber_sync_id': syncId,
+              'nominal': -kasKeluar,
+              'metode': payload['metode'] ?? 'CASH',
+              'operator': payload['employee_nama_snapshot'],
+              'catatan': 'Gaji ganda ${payload['periode'] ?? ''}',
+              'created_at': nowIso(),
+              'updated_at': nowIso(),
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+        return;
+      }
       if (!await _remoteWins(
         txn,
         table: 'salary_payments',
@@ -3346,26 +3793,23 @@ class SyncService {
       )) {
         return;
       }
-      final employeeSync = payload['employee_sync_id'] ?? '';
-      final cycleStart = payload['cycle_start'] ?? '';
-      final rows = await txn.query(
-        'salary_payments',
-        columns: ['id'],
-        where: 'employee_sync_id = ? AND cycle_start = ?',
-        whereArgs: [employeeSync, cycleStart],
-        limit: 1,
-      );
       final values = {
         'employee_sync_id': employeeSync,
+        'employee_nama_snapshot': payload['employee_nama_snapshot'],
         'periode': payload['periode'] ?? 'BULANAN',
         'cycle_start': cycleStart,
         'cycle_end': payload['cycle_end'] ?? cycleStart,
+        'cycle_key': payload['cycle_key'] ?? '$employeeSync|$cycleStart',
         'tanggal': payload['tanggal'] ?? cycleStart,
-        'nominal': payload['nominal'] ?? 0,
-        'potongan_hutang': payload['potongan_hutang'] ?? 0,
-        'cicilan_hutang': payload['cicilan_hutang'] ?? 0,
+        'nominal': nominal,
+        'potongan_hutang': potongan,
+        'cicilan_hutang':
+            payload['cicilan_hutang'] ?? payload['potongan_hutang'] ?? 0,
         'bonus': payload['bonus'] ?? 0,
+        'komisi_total': payload['komisi_total'] ?? 0,
+        'kas_keluar': kasKeluar,
         'metode': payload['metode'] ?? 'CASH',
+        'status': payload['status'] ?? 'AKTIF',
         'catatan': payload['catatan'],
         ...hlc,
       };
@@ -3376,6 +3820,25 @@ class SyncService {
           'created_at': payload['created_at'] ?? nowIso(),
           'updated_at': payload['updated_at'] ?? nowIso(),
         });
+        if (kasKeluar > 0) {
+          await txn.insert(
+            'cash_ledger',
+            {
+              'sync_id': newSyncId(),
+              'waktu': payload['tanggal'] ?? nowIso(),
+              'kategori': 'GAJI',
+              'sumber_entity': 'salary_payment',
+              'sumber_sync_id': syncId,
+              'nominal': -kasKeluar,
+              'metode': payload['metode'] ?? 'CASH',
+              'operator': payload['employee_nama_snapshot'],
+              'catatan': 'Gaji ${payload['periode'] ?? ''}',
+              'created_at': nowIso(),
+              'updated_at': nowIso(),
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
       } else {
         await txn.update(
           'salary_payments',
@@ -3419,6 +3882,8 @@ class SyncService {
         txn,
         payload,
         action: action,
+        enqueueCommission: (txn2, commissionId) =>
+            enqueueCommission(commissionId, txn: txn2),
       );
       final record = payload['record'] as Map<String, Object?>? ?? const {};
       final recordSync = '${record['sync_id'] ?? ''}';
@@ -3783,7 +4248,7 @@ class SyncService {
       if (syncId.isEmpty || notaSync.isEmpty) return;
       final record = await txn.query(
         'service_records',
-        columns: ['id'],
+        columns: ['id', 'status', 'voided_at'],
         where: 'sync_id = ?',
         whereArgs: [notaSync],
         limit: 1,
@@ -3793,6 +4258,24 @@ class SyncService {
           'Koreksi menunggu nota asal ($notaSync).',
           code: 'koreksi_tanpa_nota',
         );
+      }
+      if (record.first['voided_at'] != null ||
+          '${record.first['status']}' == 'VOID') {
+        // Koreksi tidak dapat diterapkan ke nota VOID, tetapi tidak boleh
+        // dibuang diam-diam. Konflik menandai koreksi yang tidak terpakai.
+        await _recordConflict(
+          txn,
+          entity: 'nota_adjustment',
+          entityId: syncId,
+          reason: 'koreksi_pada_nota_void',
+          detail: {
+            'nota_sync_id': notaSync,
+            'nilai_baru': payload['nilai_baru'],
+            'error': '',
+          },
+          status: 'review',
+        );
+        return;
       }
       await NotaAdjustmentService.instance.applyRemote(
         txn,
@@ -4208,6 +4691,15 @@ class _ApplyRejected implements Exception {
   const _ApplyRejected(this.reason);
 
   final String reason;
+}
+
+List<String> _jsonList(Object? raw) {
+  if (raw is List) return raw.map((item) => '$item').toList();
+  try {
+    final decoded = jsonDecode('${raw ?? '[]'}');
+    if (decoded is List) return decoded.map((item) => '$item').toList();
+  } catch (_) {}
+  return const [];
 }
 
 Map<String, Object?> _jsonObject(Object? raw) {

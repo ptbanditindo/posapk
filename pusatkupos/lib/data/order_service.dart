@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 
 import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/money.dart';
@@ -204,15 +205,16 @@ class OrderService {
     int masaBerlakuHari = 7,
     String? ownerPin,
     String? approverSecret,
-    Operator? actor,
+    required Operator actor,
     Map<String, Object?>? modeSaatDibuat,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
     final settings = await StoreSettingsService.instance.ensure();
-    final role = actor?.role ?? 'owner';
+    final role = actor.role;
     if (!settings.typeEnabled(transactionEstimasiSaja)) {
       throw StateError('Estimasi sedang dimatikan pemilik.');
     }
+    if (!actor.isOwner) Permissions.require(actor, 'buat_estimasi');
     if (!settings.roleCanSelect(role, transactionEstimasiSaja)) {
       throw StateError('Peran $role tidak berhak membuat estimasi.');
     }
@@ -256,7 +258,7 @@ class OrderService {
           whereArgs: [item.stockItemId],
           limit: 1,
         );
-        if (rows.isEmpty) {
+        if (rows.isEmpty || rows.first['deleted_at'] != null) {
           throw StateError('Barang ${item.deskripsi} tidak ditemukan.');
         }
         final stock = StockItem.fromRow(rows.first);
@@ -283,8 +285,8 @@ class OrderService {
         ),
       );
     }
-    final isOwner = actor?.isOwner ?? true;
-    String? approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
+    final isOwner = actor.isOwner;
+    String? approver = isOwner ? actor.label : null;
     final allocation = PriceRules.allocate(
       lines,
       diskonCents: diskonCents,
@@ -323,8 +325,23 @@ class OrderService {
           limit: 1,
         );
         if (base.isEmpty) throw StateError('Estimasi asal tidak ditemukan.');
+        if ((base.first['status'] as String? ?? '') != 'aktif') {
+          throw StateError('Hanya estimasi aktif yang dapat direvisi.');
+        }
         nomor = base.first['nomor_estimasi'] as String;
         versi = ((base.first['versi'] as num?)?.toInt() ?? 1) + 1;
+        final bentrok = await txn.query(
+          'estimates',
+          columns: ['id'],
+          where: 'nomor_estimasi = ? AND versi = ? AND deleted_at IS NULL',
+          whereArgs: [nomor, versi],
+          limit: 1,
+        );
+        if (bentrok.isNotEmpty) {
+          throw StateError(
+            'Versi $versi untuk $nomor sudah ada. Muat ulang daftar estimasi.',
+          );
+        }
         final baseHlc = await AppDatabase.instance.nextSyncHlc(txn);
         await txn.update(
           'estimates',
@@ -403,7 +420,7 @@ class OrderService {
           modeSaatDibuat ??
               settings.modeSnapshot(jenisTransaksi: transactionEstimasiSaja),
         ),
-        'dibuat_oleh': actor?.label ?? 'Pemilik',
+        'dibuat_oleh': actor.label,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': now,
@@ -504,7 +521,7 @@ class OrderService {
           whereArgs: [stockSync],
           limit: 1,
         );
-        if (stock.isEmpty) {
+        if (stock.isEmpty || stock.first['deleted_at'] != null) {
           throw StateError('Barang estimasi tidak ditemukan.');
         }
         final stockItem = StockItem.fromRow(stock.first);
@@ -602,18 +619,21 @@ class OrderService {
     required String keluhan,
     String? mekanikSyncId,
     String? mekanikNama,
-    Operator? actor,
+    required Operator actor,
     Map<String, Object?>? modeSaatDibuat,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueStatus,
   }) async {
     final settings = await StoreSettingsService.instance.ensure();
-    final role = actor?.role ?? 'owner';
+    final role = actor.role;
     if (!settings.typeEnabled(transactionOrderKerja)) {
       throw StateError('Order kerja sedang dimatikan pemilik.');
     }
-    if (role != 'owner' && !settings.roleAllows(role, 'buat_nota')) {
-      throw StateError('Peran $role tidak berhak membuka order kerja.');
+    if (!actor.isOwner) {
+      Permissions.require(actor, 'buat_order');
+      if (!settings.roleCanSelect(role, transactionOrderKerja)) {
+        throw StateError('Peran $role tidak berhak membuka order kerja.');
+      }
     }
     final snapshot =
         modeSaatDibuat ??
@@ -818,7 +838,7 @@ class OrderService {
           }),
           'status': 'review',
           'created_at': now,
-        });
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       if (enqueueStatus != null) await enqueueStatus(txn, statusSync);
       if (enqueueOrder != null) await enqueueOrder(txn, workOrderSyncId);
@@ -899,9 +919,18 @@ class OrderService {
 
   Future<void> cancelEstimate(
     String syncId, {
-    Operator? actor,
+    required Operator actor,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
+    final settings = await StoreSettingsService.instance.ensure();
+    if (!actor.isOwner) {
+      Permissions.require(actor, 'buat_estimasi');
+      if (!settings.roleCanSelect(actor.role, transactionEstimasiSaja)) {
+        throw StateError(
+          'Peran ${actor.role} tidak berhak membatalkan estimasi.',
+        );
+      }
+    }
     await AppDatabase.instance.db.transaction((txn) async {
       final rows = await txn.query(
         'estimates',
@@ -932,6 +961,19 @@ class OrderService {
         where: 'sync_id = ?',
         whereArgs: [syncId],
       );
+      await txn.insert('permission_audits', {
+        'sync_id': newSyncId(),
+        'actor': actor.label,
+        'target_account_id': actor.employeeId,
+        'action': 'batal_estimasi',
+        'detail_json': jsonEncode({
+          'estimate_sync_id': syncId,
+          'nomor_estimasi': row['nomor_estimasi'],
+          'versi': row['versi'],
+        }),
+        'created_at': nowIso(),
+        'updated_at': nowIso(),
+      });
       if (enqueue != null) await enqueue(txn, syncId);
     });
   }
@@ -948,7 +990,7 @@ class OrderService {
     return AppDatabase.instance.db.rawQuery('''
       SELECT e.*, c.nama AS customer_nama,
         v.nopol, v.merek, v.tipe, v.unit_type,
-        r.no_nota AS nota_nomor, r.total_servis AS nota_total
+        r.no_nota AS nota_nomor, r.total_efektif AS nota_total
       FROM estimates e
       LEFT JOIN customers c ON c.sync_id = e.customer_sync_id
       LEFT JOIN vehicle_or_units v ON v.sync_id = e.unit_sync_id

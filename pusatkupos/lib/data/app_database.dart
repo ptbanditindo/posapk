@@ -17,6 +17,9 @@ import '../core/phone.dart';
 import '../core/quantity.dart';
 import '../sync/crypto.dart';
 import 'approval_service.dart';
+import 'backup_platform_stub.dart'
+    if (dart.library.io) 'backup_platform_io.dart'
+    as backup_platform;
 import 'models.dart';
 import 'price_rules.dart';
 import 'schema.dart';
@@ -29,7 +32,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 4;
+  static const int schemaVersion = 1;
 
   Database? _db;
   String? _path;
@@ -151,9 +154,11 @@ class AppDatabase {
     Map<String, String> settings = const {},
     bool copyOwner = false,
     bool copyLicense = false,
+    bool copyAccounts = false,
   }) async {
     Map<String, Object?>? ownerRow;
     Map<String, Object?>? licenseRow;
+    List<Map<String, Object?>> accountRows = const [];
     if (copyOwner) {
       final rows = await db.query('owner_identity', limit: 1);
       ownerRow = rows.isEmpty ? null : Map.of(rows.first);
@@ -161,6 +166,9 @@ class AppDatabase {
     if (copyLicense) {
       final rows = await db.query('license', limit: 1);
       licenseRow = rows.isEmpty ? null : Map.of(rows.first);
+    }
+    if (copyAccounts) {
+      accountRows = await db.query('employee_accounts');
     }
     final fresh = await databaseFactory.openDatabase(
       path,
@@ -170,7 +178,7 @@ class AppDatabase {
           await db.execute('PRAGMA foreign_keys = ON');
         },
         onCreate: _createSchema,
-        onUpgrade: _upgrade,
+        onDowngrade: _rejectIncompatibleVersion,
       ),
     );
     try {
@@ -185,6 +193,37 @@ class AppDatabase {
       }
       if (licenseRow != null) {
         await fresh.insert('license', licenseRow);
+      }
+      final storeId = settings['sync.store_id'] ?? '';
+      for (final row in accountRows) {
+        final now = nowIso();
+        final account = Map<String, Object?>.of(row)
+          ..remove('id')
+          ..['password_hash'] = ''
+          ..['password_salt'] = ''
+          ..['pin_hash'] = null
+          ..['pin_salt'] = null
+          ..['updated_at'] = now;
+        await fresh.insert(
+          'employee_accounts',
+          account,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        if (storeId.isNotEmpty) {
+          await fresh.insert('employee_store_access', {
+            'sync_id': newSyncId(),
+            'store_id': storeId,
+            'employee_sync_id': account['sync_id'],
+            'role_base': account['role_base'] ?? 'KASIR',
+            'extra_permissions_json':
+                account['extra_permissions_json'] ?? '[]',
+            'permissions_explicit': account['permissions_explicit'] ?? 0,
+            'aktif': account['aktif'] ?? 1,
+            'version': account['permission_version'] ?? 1,
+            'created_at': now,
+            'updated_at': now,
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
       }
     } finally {
       await fresh.close();
@@ -239,19 +278,17 @@ class AppDatabase {
     );
   }
 
-  Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await migrateSchemaV2(db);
-    }
-    if (oldVersion < 3) {
-      await migrateSchemaV3(db);
-    }
-    if (oldVersion < 4) {
-      await migrateSchemaV4(db);
-    }
-  }
-
   Future<void> _open() async {
+    if (!kIsWeb) {
+      // Pulihkan sisa restore yang terputus sebelum database dibuka.
+      try {
+        await backup_platform.recoverInterruptedRestore(_path!);
+      } catch (_) {
+        // Bila pemulihan gagal dan database aktif tidak ada, jangan buka
+        // database kosong yang bisa menutupi data lama.
+        if (!await backup_platform.fileExists(_path!)) rethrow;
+      }
+    }
     final password = await _databasePassword();
     if (_usesSqlCipher) {
       _db = await sqlcipher.openDatabase(
@@ -260,7 +297,6 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
-        onUpgrade: _upgrade,
         onDowngrade: _rejectIncompatibleVersion,
       );
       return;
@@ -271,7 +307,6 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
-        onUpgrade: _upgrade,
         onDowngrade: _rejectIncompatibleVersion,
       ),
     );
@@ -289,6 +324,20 @@ class AppDatabase {
 
   Future<void> checkpoint() async {
     await db.rawQuery('PRAGMA wal_checkpoint(FULL)');
+  }
+
+  /// Checkpoint WAL untuk database toko yang tidak sedang dibuka, agar
+  /// berkas utamanya memuat seluruh transaksi saat disalin untuk backup.
+  Future<void> checkpointDatabaseAt(String path) async {
+    final handle = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: false),
+    );
+    try {
+      await handle.rawQuery('PRAGMA wal_checkpoint(FULL)');
+    } finally {
+      await handle.close();
+    }
   }
 
   /// Menulis salinan database aktif sebagai SQLite polos ke [targetPath].
@@ -592,7 +641,9 @@ class AppDatabase {
       final id = await txn.insert('customers', {
         'sync_id': newSyncId(),
         'nama': nama.trim(),
+        'nama_normalized': _nameKey(nama),
         'nomor_hp': normalized,
+        'nomor_hp_normalized': normalizePhone(normalized),
         'alamat': (alamat ?? '').trim().isEmpty ? null : alamat!.trim(),
         'wa_consent': waConsent ? 1 : 0,
         'do_not_contact': doNotContact ? 1 : 0,
@@ -635,7 +686,9 @@ class AppDatabase {
         'customers',
         {
           'nama': nama.trim(),
+          'nama_normalized': _nameKey(nama),
           'nomor_hp': normalized,
+          'nomor_hp_normalized': normalizePhone(normalized),
           'alamat': (alamat ?? '').trim().isEmpty ? null : alamat!.trim(),
           'wa_consent': waConsent ? 1 : 0,
           'do_not_contact': doNotContact ? 1 : 0,
@@ -675,15 +728,47 @@ class AppDatabase {
         whereArgs: [sourceId],
       );
       final unitIds = units.map((row) => row['id'] as int).toList();
-      final records = unitIds.isEmpty
-          ? <Map<String, Object?>>[]
-          : await txn.query(
-              'service_records',
-              columns: ['id'],
-              where:
-                  'unit_id IN (${List.filled(unitIds.length, '?').join(',')})',
-              whereArgs: unitIds,
-            );
+      final records = await txn.query(
+        'service_records',
+        columns: ['id'],
+        where: unitIds.isEmpty
+            ? 'customer_id = ?'
+            : 'customer_id = ? OR unit_id IN '
+                  '(${List.filled(unitIds.length, '?').join(',')})',
+        whereArgs: unitIds.isEmpty ? [sourceId] : [sourceId, ...unitIds],
+      );
+      if (records.isNotEmpty) {
+        final recordHlc = await nextSyncHlc(txn);
+        await txn.update(
+          'service_records',
+          {
+            'customer_id': targetId,
+            'sync_hlc_wall': recordHlc.wall,
+            'sync_hlc_counter': recordHlc.counter,
+            'updated_at': nowIso(),
+          },
+          where: 'id IN (${List.filled(records.length, '?').join(',')})',
+          whereArgs: records.map((row) => row['id']).toList(),
+        );
+      }
+      final followupHlc = await nextSyncHlc(txn);
+      await txn.update(
+        'followup_items',
+        {
+          'customer_id': targetId,
+          'sync_hlc_wall': followupHlc.wall,
+          'sync_hlc_counter': followupHlc.counter,
+          'updated_at': nowIso(),
+        },
+        where: 'customer_id = ?',
+        whereArgs: [sourceId],
+      );
+      await txn.update(
+        'wa_message_logs',
+        {'customer_id': targetId, 'updated_at': nowIso()},
+        where: 'customer_id = ?',
+        whereArgs: [sourceId],
+      );
       if (unitIds.isNotEmpty) {
         final unitHlc = await nextSyncHlc(txn);
         await txn.update(
@@ -783,9 +868,13 @@ class AppDatabase {
     final rows = await db.query(
       'stock_items',
       where: term.isEmpty
+          ? 'deleted_at IS NULL'
+          : "deleted_at IS NULL AND (nama LIKE ? ESCAPE '\\' "
+                "OR kode LIKE ? ESCAPE '\\' "
+                "OR barcode LIKE ? ESCAPE '\\')",
+      whereArgs: term.isEmpty
           ? null
-          : "nama LIKE ? ESCAPE '\\' OR kode LIKE ? ESCAPE '\\'",
-      whereArgs: term.isEmpty ? null : ['%$escaped%', '%$escaped%'],
+          : ['%$escaped%', '%$escaped%', '%$escaped%'],
       orderBy: 'nama COLLATE NOCASE',
     );
     return rows.map(StockItem.fromRow).toList();
@@ -809,9 +898,13 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int id)? enqueue,
     Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
+    _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionChangeStock);
     if (hargaModalCents < 0 || hargaJualCents < 0) {
       throw ArgumentError('Harga tidak boleh negatif.');
+    }
+    if (stokMinimum < 0) {
+      throw ArgumentError('Stok minimum tidak boleh negatif.');
     }
     if (actor != null && !actor.isOwner) {
       if (id == null) {
@@ -839,7 +932,7 @@ class AppDatabase {
     final duplicate = await db.query(
       'stock_items',
       columns: ['id', 'nama'],
-      where: 'kode = ?',
+      where: 'kode = ? AND deleted_at IS NULL',
       whereArgs: [cleanKode],
       limit: 1,
     );
@@ -869,8 +962,11 @@ class AppDatabase {
           whereArgs: [id],
           limit: 1,
         );
-        if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
+        if (rows.isEmpty || rows.first['deleted_at'] != null) {
+          throw StateError('Barang tidak ditemukan.');
+        }
         final before = StockItem.fromRow(rows.first);
+        final stockSyncId = rows.first['sync_id'] as String;
         // Formulir membawa angka stok yang dilihat pengguna. Selisihnya
         // diterapkan ke stok terkini agar penjualan yang masuk setelah
         // formulir dibuka tidak ikut tertimpa.
@@ -900,13 +996,21 @@ class AppDatabase {
           movementId = await txn.insert('stock_movements', {
             'sync_id': newSyncId(),
             'stock_item_id': id,
+            'stock_sync_id': stockSyncId,
             'nama_item': payload['nama'],
             'jenis': 'KOREKSI',
             'jumlah': wholeQuantity(delta),
             'jumlah_milli': delta,
+            'stok_sebelum_milli': before.jumlahMilli,
+            'stok_sesudah_milli': targetMilli,
+            'sumber_entity': 'stock_item',
+            'sumber_sync_id': stockSyncId,
+            'operator': actor?.label,
             'alasan': (alasan ?? '').trim().isEmpty
                 ? 'Koreksi stok'
                 : alasan!.trim(),
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
             'created_at': nowIso(),
             'updated_at': nowIso(),
           });
@@ -920,9 +1024,10 @@ class AppDatabase {
     }
     return db.transaction((txn) async {
       final hlc = await nextSyncHlc(txn);
+      final stockSyncId = newSyncId();
       final newId = await txn.insert('stock_items', {
         ...payload,
-        'sync_id': newSyncId(),
+        'sync_id': stockSyncId,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
@@ -933,13 +1038,21 @@ class AppDatabase {
         movementId = await txn.insert('stock_movements', {
           'sync_id': newSyncId(),
           'stock_item_id': newId,
+          'stock_sync_id': stockSyncId,
           'nama_item': payload['nama'],
           'jenis': 'MASUK',
           'jumlah': wholeQuantity(milli),
           'jumlah_milli': milli,
+          'stok_sebelum_milli': 0,
+          'stok_sesudah_milli': milli,
+          'sumber_entity': 'stock_item',
+          'sumber_sync_id': stockSyncId,
+          'operator': actor?.label,
           'alasan': (alasan ?? '').trim().isEmpty
               ? 'Stok awal'
               : alasan!.trim(),
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
           'created_at': nowIso(),
           'updated_at': nowIso(),
         });
@@ -961,6 +1074,7 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int id)? enqueue,
     Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
+    _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionStockIn);
     final milli = qtyMilli ?? qty * 1000;
     if (milli <= 0) throw ArgumentError('Jumlah stok masuk minimal 1.');
@@ -984,6 +1098,7 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int id)? enqueue,
     Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
+    _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionStockOut);
     final milli = qtyMilli ?? qty * 1000;
     if (milli <= 0) throw ArgumentError('Jumlah stok keluar minimal 1.');
@@ -1010,6 +1125,7 @@ class AppDatabase {
     Future<void> Function(Transaction txn, int id)? enqueue,
     Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
   }) async {
+    _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionOpname);
     if (jumlahFisikMilli < 0) {
       throw ArgumentError('Jumlah fisik tidak boleh negatif.');
@@ -1021,28 +1137,45 @@ class AppDatabase {
         whereArgs: [item.id],
         limit: 1,
       );
-      if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
+      if (rows.isEmpty || rows.first['deleted_at'] != null) {
+        throw StateError('Barang tidak ditemukan.');
+      }
       final before = StockItem.fromRow(rows.first);
+      final stockSyncId = rows.first['sync_id'] as String;
       final delta = jumlahFisikMilli - before.jumlahMilli;
+      final hlc = await nextSyncHlc(txn);
       await txn.update(
         'stock_items',
         {
           'jumlah': wholeQuantity(jumlahFisikMilli),
           'jumlah_milli': jumlahFisikMilli,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
         },
         where: 'id = ?',
         whereArgs: [item.id],
       );
+      final movementSyncId = newSyncId();
       final movementId = await txn.insert('stock_movements', {
-        'sync_id': newSyncId(),
+        'sync_id': movementSyncId,
         'stock_item_id': item.id,
+        'stock_sync_id': stockSyncId,
         'nama_item': item.nama,
         'jenis': 'KOREKSI',
         'jumlah': wholeQuantity(delta),
         'jumlah_milli': delta,
+        'stok_sebelum_milli': before.jumlahMilli,
+        'stok_sesudah_milli': jumlahFisikMilli,
+        'opname_absolut_milli': jumlahFisikMilli,
+        'sumber_entity': 'opname',
+        'sumber_sync_id': movementSyncId,
+        'operator': actor?.label,
         'alasan': (alasan ?? '').trim().isEmpty
             ? 'Opname stok'
             : alasan!.trim(),
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
         'updated_at': nowIso(),
       });
@@ -1067,24 +1200,49 @@ class AppDatabase {
         whereArgs: [item.id],
         limit: 1,
       );
-      if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
+      if (rows.isEmpty || rows.first['deleted_at'] != null) {
+        throw StateError('Barang tidak ditemukan.');
+      }
       final before = StockItem.fromRow(rows.first);
+      final stockSyncId = rows.first['sync_id'] as String;
       final next = before.jumlahMilli + deltaMilli;
+      if (next < 0) {
+        throw StateError(
+          'Stok ${item.nama} tidak cukup. Sisa ${before.jumlahMilli / 1000}.',
+        );
+      }
+      final hlc = await nextSyncHlc(txn);
       await txn.update(
         'stock_items',
-        {'jumlah': wholeQuantity(next), 'jumlah_milli': next},
+        {
+          'jumlah': wholeQuantity(next),
+          'jumlah_milli': next,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': nowIso(),
+        },
         where: 'id = ?',
         whereArgs: [item.id],
       );
+      final movementSyncId = newSyncId();
       final movementId = await txn.insert('stock_movements', {
-        'sync_id': newSyncId(),
+        'sync_id': movementSyncId,
         'stock_item_id': item.id,
+        'stock_sync_id': stockSyncId,
         'nama_item': item.nama,
         'jenis': jenis,
         'jumlah': wholeQuantity(deltaMilli),
         'jumlah_milli': deltaMilli,
-        'alasan': alasan,
+        'stok_sebelum_milli': before.jumlahMilli,
+        'stok_sesudah_milli': next,
+        'sumber_entity': serviceRecordId == null
+            ? 'stock_adjustment'
+            : 'service_record',
+        'sumber_sync_id': movementSyncId,
         'service_record_id': serviceRecordId,
+        'alasan': alasan,
+        'sync_hlc_wall': hlc.wall,
+        'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
         'updated_at': nowIso(),
       });
@@ -1136,9 +1294,9 @@ class AppDatabase {
           'harga_jasa',
           {
             ...payload,
-            'deleted_at': null,
             'sync_hlc_wall': hlc.wall,
             'sync_hlc_counter': hlc.counter,
+            'updated_at': nowIso(),
           },
           where: 'id = ?',
           whereArgs: [id],
@@ -1250,14 +1408,15 @@ class AppDatabase {
       throw ArgumentError('Metode pembayaran tidak dikenal.');
     }
     final settings = await StoreSettingsService.instance.ensure(executor: db);
-    final role = actor?.role ?? 'owner';
+    _requireActor(actor);
+    final role = actor!.role;
     if (!settings.typeEnabled(jenis)) {
       throw StateError('Jenis transaksi "$jenis" sedang dimatikan pemilik.');
     }
     if (!settings.roleCanSelect(role, jenis)) {
       throw StateError('Peran $role tidak berhak membuat jenis "$jenis".');
     }
-    if (actor != null && diskonCents > 0) {
+    if (diskonCents > 0) {
       Permissions.require(actor, permissionDiscount);
       if (!settings.roleAllows(role, 'diskon')) {
         throw StateError('Peran $role tidak berhak memberi diskon.');
@@ -1271,8 +1430,8 @@ class AppDatabase {
         throw ArgumentError('Harga jasa tidak boleh negatif.');
       }
     }
-    final isOwner = actor?.isOwner ?? true;
-    var approver = isOwner ? (actor?.label ?? 'Pemilik') : null;
+    final isOwner = actor.isOwner;
+    var approver = isOwner ? actor.label : null;
     if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
       final hasApprovalInput =
           (ownerPin ?? '').trim().isNotEmpty ||
@@ -1311,12 +1470,19 @@ class AppDatabase {
         }
       }
       final lines = <PriceLine>[];
-      for (final job in jobs) {
+      final jobCatalogSyncIds = <int, String?>{};
+      for (var jobIndex = 0; jobIndex < jobs.length; jobIndex++) {
+        final job = jobs[jobIndex];
         job.modalCents = job.modalCents < 0 ? 0 : job.modalCents;
         if (job.jasaId != null) {
           final catalog = await txn.query(
             'harga_jasa',
-            columns: ['harga_jual', 'harga_modal', 'deleted_at'],
+            columns: [
+              'sync_id',
+              'harga_jual',
+              'harga_modal',
+              'deleted_at',
+            ],
             where: 'id = ?',
             whereArgs: [job.jasaId],
             limit: 1,
@@ -1326,6 +1492,8 @@ class AppDatabase {
               'Jasa ${job.deskripsi} tidak ditemukan di daftar tarif.',
             );
           }
+          jobCatalogSyncIds[jobIndex] =
+              catalog.first['sync_id'] as String?;
           final hargaJual = (catalog.first['harga_jual'] as num?)?.toInt() ?? 0;
           if (job.hargaCents != hargaJual) {
             throw StateError(
@@ -1348,6 +1516,7 @@ class AppDatabase {
         );
       }
       final requestedMilli = <int, int>{};
+      final stockSyncIds = <int, String?>{};
       for (final part in parts) {
         if (part.qtyMilli <= 0) {
           throw ArgumentError('Jumlah part harus lebih dari nol.');
@@ -1361,7 +1530,7 @@ class AppDatabase {
           whereArgs: [part.stockItemId],
           limit: 1,
         );
-        if (rows.isEmpty) {
+        if (rows.isEmpty || rows.first['deleted_at'] != null) {
           throw StateError('Barang ${part.nama} tidak ditemukan.');
         }
         final stock = StockItem.fromRow(rows.first);
@@ -1385,6 +1554,7 @@ class AppDatabase {
         part
           ..nama = stock.nama
           ..modalCents = stock.hargaModalCents;
+        stockSyncIds[part.stockItemId] = rows.first['sync_id'] as String?;
         lines.add(
           PriceLine(
             jenis: 'part',
@@ -1546,6 +1716,14 @@ class AppDatabase {
         'mode_saat_dibuat_json': jsonEncode(
           modeSaatDibuat ?? settings.modeSnapshot(jenisTransaksi: jenis),
         ),
+        'diskon_snapshot_json': jsonEncode({
+          'input': diskonCents,
+          'dialokasikan': diskon,
+          'alasan': alasanDiskon,
+          'disetujui_oleh': approver,
+          'boleh_di_bawah_modal': isOwner,
+        }),
+        'pajak_snapshot_json': jsonEncode({'nominal': 0, 'persen': 0}),
         'work_order_sync_id': _nullable(workOrderSyncId),
         'estimate_sync_id': _nullable(estimateSyncId),
         'total_estimasi_terakhir': totalEstimasiTerakhir,
@@ -1556,6 +1734,10 @@ class AppDatabase {
         'total_part': totalPart,
         'diskon': diskon,
         'total_servis': total,
+        'total_koreksi': 0,
+        'total_retur': 0,
+        'total_efektif': total,
+        'total_kas_diterima': dibayar,
         'metode_bayar': metodeBayar,
         'bayar': bayarCents,
         'kembalian': kembalian,
@@ -1566,9 +1748,9 @@ class AppDatabase {
         'jatuh_tempo': sisa > 0 && jatuhTempo != null
             ? jatuhTempo.toIso8601String()
             : null,
-        'created_by': actor?.label ?? 'Pemilik',
-        'created_by_employee_id': actor?.employeeSyncId,
-        'cashier_employee_id': actor?.employeeSyncId,
+        'created_by': actor.label,
+        'created_by_employee_id': actor.employeeSyncId,
+        'cashier_employee_id': actor.employeeSyncId,
         'mechanic': _nullable(
           mechanic ?? (mechanicNames.isEmpty ? null : mechanicNames),
         ),
@@ -1586,16 +1768,21 @@ class AppDatabase {
         'garansi_barang_satuan': warranty.barangSatuan,
         'garansi_barang_sampai': warranty.barangSampai,
         'unit_ditinggal': unitDitinggal ? 1 : 0,
+        'status': 'AKTIF',
+        'version': 1,
         'created_at': now,
         'updated_at': now,
       });
-      for (final job in jobs) {
+      for (var jobIndex = 0; jobIndex < jobs.length; jobIndex++) {
+        final job = jobs[jobIndex];
         await txn.insert('service_jobs', {
-          'sync_id': newSyncId(),
+          'sync_id': job.syncId ?? newSyncId(),
           'service_record_id': recordId,
           'harga_jasa_id': job.jasaId,
+          'harga_jasa_sync_id': jobCatalogSyncIds[jobIndex],
           'deskripsi': job.deskripsi.trim(),
           'jumlah': job.jumlah,
+          'qty_retur_milli': 0,
           'harga': job.hargaCents,
           'subtotal': job.subtotalCents,
           'harga_jual_terdaftar': job.hargaTerdaftarCents,
@@ -1612,13 +1799,28 @@ class AppDatabase {
         });
       }
       for (final part in parts) {
+        final stockRows = await txn.query(
+          'stock_items',
+          where: 'id = ?',
+          whereArgs: [part.stockItemId],
+          limit: 1,
+        );
+        final before = StockItem.fromRow(stockRows.first);
+        final partSyncId = part.syncId ?? newSyncId();
+        final nextMilli = before.jumlahMilli - part.qtyMilli;
+        if (nextMilli < 0) {
+          throw StateError('Stok ${before.nama} tidak cukup.');
+        }
         await txn.insert('service_parts', {
-          'sync_id': newSyncId(),
+          'sync_id': partSyncId,
           'service_record_id': recordId,
           'stock_item_id': part.stockItemId,
+          'stock_sync_id': stockSyncIds[part.stockItemId],
           'nama_part': part.nama,
+          'satuan': before.satuan,
           'jumlah': part.qtyMilli ~/ 1000,
           'jumlah_milli': part.qtyMilli,
+          'qty_retur_milli': 0,
           'harga_satuan': part.hargaCents,
           'subtotal': part.subtotalCents,
           'harga_modal': part.modalCents,
@@ -1634,52 +1836,75 @@ class AppDatabase {
           'created_at': now,
           'updated_at': now,
         });
-        final stockRows = await txn.query(
-          'stock_items',
-          where: 'id = ?',
-          whereArgs: [part.stockItemId],
-          limit: 1,
-        );
-        final before = StockItem.fromRow(stockRows.first);
-        final nextMilli = before.jumlahMilli - part.qtyMilli;
+        final stockHlc = await nextSyncHlc(txn);
         await txn.update(
           'stock_items',
-          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
+          {
+            'jumlah': wholeQuantity(nextMilli),
+            'jumlah_milli': nextMilli,
+            'sync_hlc_wall': stockHlc.wall,
+            'sync_hlc_counter': stockHlc.counter,
+            'updated_at': now,
+          },
           where: 'id = ?',
           whereArgs: [part.stockItemId],
         );
         await txn.insert('stock_movements', {
           'sync_id': newSyncId(),
           'stock_item_id': part.stockItemId,
+          'stock_sync_id': stockSyncIds[part.stockItemId],
           'nama_item': part.nama,
           'jenis': 'KELUAR',
           'jumlah': wholeQuantity(-part.qtyMilli),
           'jumlah_milli': -part.qtyMilli,
-          'alasan': 'Penjualan $noNota',
+          'stok_sebelum_milli': before.jumlahMilli,
+          'stok_sesudah_milli': nextMilli,
+          'sumber_entity': 'service_part',
+          'sumber_sync_id': partSyncId,
           'service_record_id': recordId,
+          'operator': actor.label,
+          'alasan': 'Penjualan $noNota',
+          'sync_hlc_wall': stockHlc.wall,
+          'sync_hlc_counter': stockHlc.counter,
           'created_at': now,
           'updated_at': now,
         });
       }
       if (dibayar > 0) {
+        final paymentSyncId = newSyncId();
         await txn.insert('service_payments', {
-          'sync_id': newSyncId(),
+          'sync_id': paymentSyncId,
           'service_record_id': recordId,
           'jenis': sisa > 0 ? 'DP' : 'PELUNASAN',
           'metode': metodeBayar,
           'nominal': dibayar,
           'waktu': now,
-          'operator': actor?.label ?? 'Pemilik',
+          'operator': actor.label,
           'request_id': '${requestId ?? noNota}-bayar',
+          'kas_kategori': 'PENJUALAN',
           'catatan': null,
+          'created_at': now,
+          'updated_at': now,
+        });
+        await txn.insert('cash_ledger', {
+          'sync_id': newSyncId(),
+          'waktu': now,
+          'kategori': 'PENJUALAN',
+          'sumber_entity': 'service_payment',
+          'sumber_sync_id': paymentSyncId,
+          'nominal': dibayar,
+          'metode': metodeBayar,
+          'operator': actor.label,
+          'catatan': 'Pembayaran $noNota',
           'created_at': now,
           'updated_at': now,
         });
       }
       if (diskon > 0 || allocation.belowMinimum) {
         await txn.insert('permission_audits', {
-          'actor': actor?.label ?? 'Pemilik',
-          'target_account_id': actor?.employeeId,
+          'sync_id': newSyncId(),
+          'actor': actor.label,
+          'target_account_id': actor.employeeId,
           'action': allocation.belowMinimum ? 'harga_bawah_modal' : 'diskon',
           'detail_json': jsonEncode({
             'no_nota': noNota,
@@ -1690,6 +1915,7 @@ class AppDatabase {
             'alasan_diskon': alasanDiskon,
           }),
           'created_at': now,
+          'updated_at': now,
         });
       }
       if (mechanicRows.isNotEmpty) {
@@ -1777,12 +2003,15 @@ class AppDatabase {
     );
     final count = mechanics.length;
     var index = 0;
+    final snapshot = <String, Object?>{};
     for (final mechanic in mechanics) {
       final syncId = '${mechanic['sync_id']}';
+      final nama = '${mechanic['nama'] ?? mechanic['username'] ?? ''}';
       await txn.insert('service_record_mechanics', {
         'sync_id': newSyncId(),
         'service_record_id': recordId,
         'employee_sync_id': syncId,
+        'employee_nama_snapshot': nama,
         'urutan': index,
         'created_at': nowIso(),
         'updated_at': nowIso(),
@@ -1791,27 +2020,44 @@ class AppDatabase {
       final barangNilai =
           (mechanic['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
       final jasaNilai = (mechanic['komisi_jasa_nilai'] as num?)?.toInt() ?? 0;
+      snapshot[syncId] = {
+        'mode': mode,
+        'jasa': jasaNilai,
+        'barang': barangNilai,
+      };
       final shareJasa = _splitShare(netJasa, index, count);
       final shareMargin = _splitShare(margin, index, count);
       final nominal = mode == 'NOMINAL'
           ? (parts.isNotEmpty ? barangNilai : 0) +
                 (jobs.isNotEmpty ? jasaNilai : 0)
           : (shareJasa * jasaNilai) ~/ 100 + (shareMargin * barangNilai) ~/ 100;
-      if (nominal > 0) {
-        final commissionId = await txn.insert('service_record_commissions', {
-          'sync_id': newSyncId(),
-          'service_record_id': recordId,
-          'employee_sync_id': syncId,
-          'nominal': nominal,
-          'created_at': nowIso(),
-          'updated_at': nowIso(),
-        });
-        if (enqueueCommission != null) {
-          await enqueueCommission(txn, commissionId);
-        }
+      final commissionId = await txn.insert('service_record_commissions', {
+        'sync_id': newSyncId(),
+        'service_record_id': recordId,
+        'employee_sync_id': syncId,
+        'employee_nama_snapshot': nama,
+        'mode_snapshot': mode,
+        'nilai_snapshot': mode == 'NOMINAL'
+            ? (parts.isNotEmpty ? barangNilai : jasaNilai)
+            : jasaNilai,
+        'dasar_jasa': shareJasa,
+        'dasar_barang': shareMargin,
+        'nominal': nominal,
+        'status': 'AKTIF',
+        'created_at': nowIso(),
+        'updated_at': nowIso(),
+      });
+      if (enqueueCommission != null) {
+        await enqueueCommission(txn, commissionId);
       }
       index++;
     }
+    await txn.update(
+      'service_records',
+      {'commission_snapshot_json': jsonEncode(snapshot)},
+      where: 'id = ?',
+      whereArgs: [recordId],
+    );
   }
 
   static int _splitShare(int total, int index, int count) {
@@ -1903,28 +2149,70 @@ class AppDatabase {
       // Margin negatif tetap dihitung, sama seperti saat nota dibuat.
       netMargin += margin * sisaMilli ~/ 1000 - diskon * sisaMilli ~/ qtyMilli;
     }
+    final recordRows = await txn.query(
+      'service_records',
+      columns: ['sync_id', 'no_nota', 'commission_snapshot_json'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    final recordSync =
+        '${recordRows.isEmpty ? '' : recordRows.first['sync_id'] ?? ''}';
+    final noNota =
+        '${recordRows.isEmpty ? '' : recordRows.first['no_nota'] ?? ''}';
+    Map<String, Object?> rawSnapshot = const {};
+    try {
+      final decoded = jsonDecode(
+        '${recordRows.isEmpty ? '{}' : recordRows.first['commission_snapshot_json'] ?? '{}'}',
+      );
+      if (decoded is Map) {
+        rawSnapshot = decoded.cast<String, Object?>();
+      }
+    } on FormatException {
+      rawSnapshot = const {};
+    }
     for (final commission in commissionRows) {
       final employeeSyncId = '${commission['employee_sync_id']}';
       final rawIndex = mechanics.indexWhere(
         (row) => row['employee_sync_id'] == employeeSyncId,
       );
-      final index = rawIndex < 0 ? 0 : rawIndex;
-      final settings = await txn.query(
-        'employee_accounts',
-        columns: ['komisi_mode', 'komisi_barang_nilai', 'komisi_jasa_nilai'],
-        where: 'sync_id = ?',
-        whereArgs: [employeeSyncId],
-        limit: 1,
-      );
-      final mode = settings.isEmpty
-          ? 'PERSEN'
-          : '${settings.first['komisi_mode'] ?? 'PERSEN'}';
-      final barangNilai = settings.isEmpty
-          ? 0
-          : (settings.first['komisi_barang_nilai'] as num?)?.toInt() ?? 0;
-      final jasaNilai = settings.isEmpty
-          ? 0
-          : (settings.first['komisi_jasa_nilai'] as num?)?.toInt() ?? 0;
+      if (rawIndex < 0) {
+        // Mekanik sudah tidak terdaftar: nominal lama dipertahankan dan
+        // pemilik diberi tahu alih-alih membagi ulang porsi mekanik lain.
+        await _recordCommissionConflict(
+          txn,
+          recordSync: recordSync,
+          noNota: noNota,
+          commissionSync: '${commission['sync_id'] ?? ''}',
+          employeeSyncId: employeeSyncId,
+          reason: 'komisi_akun_hilang',
+          detail: {'nominal_dipertahankan': commission['nominal'] ?? 0},
+        );
+        continue;
+      }
+      final index = rawIndex;
+      Map<String, Object?> snapshot = const {};
+      final entry = rawSnapshot[employeeSyncId];
+      if (entry is Map) {
+        snapshot = entry.cast<String, Object?>();
+      }
+      // Tanpa snapshot tarif, nominal lama dipertahankan. Menghitung ulang
+      // dengan tarif master saat ini akan mengubah komisi yang sudah dijanjikan.
+      if (snapshot.isEmpty) {
+        await _recordCommissionConflict(
+          txn,
+          recordSync: recordSync,
+          noNota: noNota,
+          commissionSync: '${commission['sync_id'] ?? ''}',
+          employeeSyncId: employeeSyncId,
+          reason: 'komisi_tanpa_snapshot',
+          detail: {'nominal_dipertahankan': commission['nominal'] ?? 0},
+        );
+        continue;
+      }
+      final mode = '${snapshot['mode'] ?? 'PERSEN'}';
+      final barangNilai = (snapshot['barang'] as num?)?.toInt() ?? 0;
+      final jasaNilai = (snapshot['jasa'] as num?)?.toInt() ?? 0;
       final shareJasa = _splitShare(netJasa, index, count);
       final shareMargin = _splitShare(netMargin, index, count);
       final nominal = mode == 'NOMINAL'
@@ -1938,6 +2226,8 @@ class AppDatabase {
         'service_record_commissions',
         {
           'nominal': nominal,
+          'dasar_jasa': shareJasa,
+          'dasar_barang': shareMargin,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'updated_at': nowIso(),
@@ -1949,6 +2239,43 @@ class AppDatabase {
         await enqueueCommission(txn, commission['id'] as int);
       }
     }
+  }
+
+  Future<void> _recordCommissionConflict(
+    DatabaseExecutor txn, {
+    required String recordSync,
+    required String noNota,
+    required String commissionSync,
+    required String employeeSyncId,
+    required String reason,
+    required Map<String, Object?> detail,
+  }) async {
+    if (recordSync.isNotEmpty) {
+      final existing = await txn.query(
+        'sync_conflicts',
+        columns: ['id'],
+        where: "entity = 'nota' AND entity_id = ? AND reason = ? "
+            "AND status IN ('open', 'review')",
+        whereArgs: [recordSync, reason],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) return;
+    }
+    await txn.insert('sync_conflicts', {
+      'entity': 'nota',
+      'entity_id': recordSync,
+      'reason': reason,
+      'detail_json': jsonEncode({
+        'no_nota': noNota,
+        'commission_sync_id': commissionSync,
+        'employee_sync_id': employeeSyncId,
+        ...detail,
+      }),
+      'status': 'review',
+      'retry_count': 0,
+      'last_error': '',
+      'created_at': nowIso(),
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   /// Ekspresi SQL total efektif nota: `nilai_baru` koreksi terakhir menurut
@@ -1964,6 +2291,16 @@ COALESCE(
     ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
     LIMIT 1),
   $fallbackExpr)''';
+
+  /// Join ke koreksi terakhir menurut HLC, sehingga komponen Jasa/Part/Diskon
+  /// yang ditampilkan dapat direkonsiliasi dengan total efektif.
+  static const String latestAdjustmentJoinSql = '''
+LEFT JOIN nota_adjustments adj ON adj.id = (
+  SELECT a.id FROM nota_adjustments a
+  WHERE a.nota_sync_id = r.sync_id AND a.deleted_at IS NULL
+  ORDER BY a.sync_hlc_wall DESC, a.sync_hlc_counter DESC, a.id DESC
+  LIMIT 1
+)''';
 
   /// Ekspresi SQL modal nota: jasa memakai qty bulat, part memakai milli.
   /// Urutan parameter: `recordId` untuk jasa, lalu `recordId` untuk part.
@@ -1985,7 +2322,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
   ) async {
     final record = await txn.query(
       'service_records',
-      columns: ['total_servis', 'status', 'voided_at'],
+      columns: ['sync_id', 'no_nota', 'total_servis', 'status', 'voided_at'],
       where: 'id = ?',
       whereArgs: [recordId],
       limit: 1,
@@ -2019,12 +2356,16 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final paid = (paidRows.first['total'] as num?)?.toInt() ?? 0;
     final retur = (returnRows.first['total'] as num?)?.toInt() ?? 0;
     final adjustment = (adjustmentRows.first['total'] as num?)?.toInt() ?? 0;
-    final outstanding = total + adjustment - retur - paid;
+    final totalEfektif = max(0, total + adjustment - retur);
+    final outstanding = totalEfektif - paid;
     final sisa = outstanding < 0 ? 0 : outstanding;
     await txn.update(
       'service_records',
       {
         'total_dibayar': paid,
+        'total_koreksi': adjustment,
+        'total_retur': retur,
+        'total_efektif': totalEfektif,
         'sisa_bayar': sisa,
         'status_bayar': sisa == 0 ? 'LUNAS' : 'KREDIT',
         'updated_at': nowIso(),
@@ -2032,6 +2373,39 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
       where: 'id = ?',
       whereArgs: [recordId],
     );
+    if (outstanding < 0) {
+      // Pembayaran melebihi nilai efektif tidak dibuang (uang sudah diterima),
+      // tetapi piutang tidak boleh negatif. Kasus ini dicatat sebagai konflik
+      // agar dapat ditinjau pemilik dan tidak terkirim ulang tanpa jejak.
+      final recordSync = '${record.first['sync_id'] ?? ''}';
+      if (recordSync.isNotEmpty) {
+        final existing = await txn.query(
+          'sync_conflicts',
+          columns: ['id'],
+          where: "entity = 'nota' AND entity_id = ? AND reason = ? "
+              "AND status IN ('open', 'review')",
+          whereArgs: [recordSync, 'pembayaran_melebihi_total'],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          await txn.insert('sync_conflicts', {
+            'entity': 'nota',
+            'entity_id': recordSync,
+            'reason': 'pembayaran_melebihi_total',
+            'detail_json': jsonEncode({
+              'no_nota': record.first['no_nota'],
+              'total_efektif': totalEfektif,
+              'total_dibayar': paid,
+              'kelebihan': -outstanding,
+            }),
+            'status': 'review',
+            'retry_count': 0,
+            'last_error': '',
+            'created_at': nowIso(),
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      }
+    }
   }
 
   /// Nomor dokumen selalu ada dan unik tanpa koordinasi server.
@@ -2120,31 +2494,9 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
       whereArgs: ['device.kode_lokal'],
       limit: 1,
     );
-    if (stored.isNotEmpty && '${stored.first['value']}'.trim().isNotEmpty) {
-      return '${stored.first['value']}';
-    }
-    final current = await executor.query(
-      'app_settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: ['device.current_id'],
-      limit: 1,
-    );
-    String code;
-    if (current.isNotEmpty) {
-      final id = '${current.first['value']}';
-      code = id
-          .substring(id.length >= 3 ? id.length - 3 : 0)
-          .toUpperCase()
-          .replaceAll(RegExp(r'[^A-Z0-9]'), 'X');
-    } else {
-      final random = Random.secure();
-      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-      code = List.generate(
-        3,
-        (_) => alphabet[random.nextInt(alphabet.length)],
-      ).join();
-    }
+    final existing = stored.isEmpty ? '' : '${stored.first['value']}'.trim();
+    if (isStrongDeviceCode(existing)) return existing;
+    final code = newDeviceCode();
     await executor.insert('app_settings', {
       'key': 'device.kode_lokal',
       'value': code,
@@ -2319,14 +2671,16 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         throw StateError('Garansi untuk nota ini sudah pernah diklaim.');
       }
       await txn.insert('permission_audits', {
-        'actor': actor?.label ?? 'Pemilik',
-        'target_account_id': actor?.employeeId,
+        'sync_id': newSyncId(),
+        'actor': actor!.label,
+        'target_account_id': actor.employeeId,
         'action': 'klaim garansi',
         'detail_json': jsonEncode({
           'record_id': recordId,
           'tanggal': dateOnly.format(today),
         }),
         'created_at': nowIso(),
+        'updated_at': nowIso(),
       });
       if (enqueue != null) await enqueue(txn, recordId);
     });
@@ -2398,12 +2752,16 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     args.addAll([limit, offset]);
     final rows = await db.rawQuery('''
       SELECT r.*, c.nama AS customer_nama,
+        adj.nominal_jasa AS koreksi_jasa,
+        adj.nominal_part AS koreksi_part,
+        adj.diskon AS koreksi_diskon,
         COALESCE(NULLIF(TRIM(COALESCE(u.nopol, '') || ' ' ||
           COALESCE(u.jenis_mobil, '') || ' ' ||
           COALESCE(u.label_radiator, '')), ''), u.unit_type) AS unit_label
       FROM service_records r
       LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
-      LEFT JOIN customers c ON c.id = u.customer_id
+      LEFT JOIN customers c ON c.id = COALESCE(r.customer_id, u.customer_id)
+      ${AppDatabase.latestAdjustmentJoinSql}
       WHERE $where
       ORDER BY r.waktu_service DESC
       LIMIT ? OFFSET ?
@@ -2415,12 +2773,16 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final rows = await db.rawQuery(
       '''
       SELECT r.*, c.nama AS customer_nama,
+        adj.nominal_jasa AS koreksi_jasa,
+        adj.nominal_part AS koreksi_part,
+        adj.diskon AS koreksi_diskon,
         COALESCE(NULLIF(TRIM(COALESCE(u.nopol, '') || ' ' ||
           COALESCE(u.jenis_mobil, '') || ' ' ||
           COALESCE(u.label_radiator, '')), ''), u.unit_type) AS unit_label
       FROM service_records r
       LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
-      LEFT JOIN customers c ON c.id = u.customer_id
+      LEFT JOIN customers c ON c.id = COALESCE(r.customer_id, u.customer_id)
+      ${AppDatabase.latestAdjustmentJoinSql}
       WHERE r.id = ?
       LIMIT 1
       ''',
@@ -2489,6 +2851,10 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
                   hargaSatuanCents:
                       (item['harga_satuan'] as num?)?.toInt() ?? 0,
                   subtotalCents: (item['subtotal'] as num?)?.toInt() ?? 0,
+                  qtyMilli: (item['jumlah_milli'] as num?)?.toInt() ?? 0,
+                  qtyAsalMilli: (item['qty_asal_milli'] as num?)?.toInt(),
+                  modalSatuanCents:
+                      (item['modal_satuan'] as num?)?.toInt() ?? 0,
                 ),
               )
               .toList(),
@@ -2598,11 +2964,14 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     Future<void> Function(DatabaseExecutor txn, int recordId)? enqueuePayment,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueEstimate,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
+    Future<void> Function(DatabaseExecutor txn, int commissionId)?
+    enqueueCommission,
   }) async {
     final cleanReason = reason.trim();
     if (cleanReason.isEmpty) {
       throw ArgumentError('Alasan void wajib diisi.');
     }
+    final actorValue = _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionVoid);
     await db.transaction((txn) async {
       final rows = await txn.query(
@@ -2637,7 +3006,11 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         final qtyMilli =
             (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-        if (qtyMilli <= 0) continue;
+        // Baris yang sudah diretur stoknya sudah kembali; void hanya boleh
+        // mengembalikan sisa yang belum diretur agar stok tidak berlipat.
+        final sisaMilli =
+            qtyMilli - ((part['qty_retur_milli'] as num?)?.toInt() ?? 0);
+        if (sisaMilli <= 0) continue;
         final stockRows = await txn.query(
           'stock_items',
           where: 'id = ?',
@@ -2646,22 +3019,37 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         );
         if (stockRows.isEmpty) continue;
         final stock = StockItem.fromRow(stockRows.first);
-        final nextMilli = stock.jumlahMilli + qtyMilli;
+        final nextMilli = stock.jumlahMilli + sisaMilli;
+        final stockHlc = await nextSyncHlc(txn);
         await txn.update(
           'stock_items',
-          {'jumlah': wholeQuantity(nextMilli), 'jumlah_milli': nextMilli},
+          {
+            'jumlah': wholeQuantity(nextMilli),
+            'jumlah_milli': nextMilli,
+            'sync_hlc_wall': stockHlc.wall,
+            'sync_hlc_counter': stockHlc.counter,
+            'updated_at': now,
+          },
           where: 'id = ?',
           whereArgs: [stockId],
         );
         await txn.insert('stock_movements', {
           'sync_id': newSyncId(),
           'stock_item_id': stockId,
+          'stock_sync_id': stockRows.first['sync_id'],
           'nama_item': part['nama_part'],
           'jenis': 'MASUK',
-          'jumlah': wholeQuantity(qtyMilli),
-          'jumlah_milli': qtyMilli,
-          'alasan': 'Void nota ${rows.first['no_nota']}',
+          'jumlah': wholeQuantity(sisaMilli),
+          'jumlah_milli': sisaMilli,
+          'stok_sebelum_milli': stock.jumlahMilli,
+          'stok_sesudah_milli': nextMilli,
+          'sumber_entity': 'void',
+          'sumber_sync_id': '${part['sync_id']}',
           'service_record_id': id,
+          'operator': actorValue.label,
+          'alasan': 'Void nota ${rows.first['no_nota']}',
+          'sync_hlc_wall': stockHlc.wall,
+          'sync_hlc_counter': stockHlc.counter,
           'created_at': now,
           'updated_at': now,
         });
@@ -2672,7 +3060,22 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         [id],
       );
       final paid = (payments.first['total'] as int?) ?? 0;
-      if (paid > 0) {
+      final returnRefund = await txn.rawQuery(
+        'SELECT COALESCE(SUM(total_refund), 0) AS total FROM sale_returns '
+        "WHERE service_record_id = ? AND deleted_at IS NULL AND status = 'AKTIF'",
+        [id],
+      );
+      final alreadyRefund = await txn.rawQuery(
+        'SELECT COALESCE(SUM(-nominal), 0) AS total FROM service_payments '
+        "WHERE service_record_id = ? AND jenis = 'REFUND'",
+        [id],
+      );
+      final refundedViaReturns =
+          (returnRefund.first['total'] as int?) ?? 0;
+      final refundedViaPayments =
+          (alreadyRefund.first['total'] as int?) ?? 0;
+      final sisaRefund = paid - refundedViaReturns - refundedViaPayments;
+      if (sisaRefund > 0) {
         final refunded = await txn.query(
           'service_payments',
           where: 'service_record_id = ? AND jenis = ? AND request_id = ?',
@@ -2680,16 +3083,31 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
           limit: 1,
         );
         if (refunded.isEmpty) {
+          final refundSyncId = newSyncId();
           await txn.insert('service_payments', {
-            'sync_id': newSyncId(),
+            'sync_id': refundSyncId,
             'service_record_id': id,
             'jenis': 'REFUND',
             'metode': rows.first['metode_bayar'] ?? 'CASH',
-            'nominal': -paid,
+            'nominal': -sisaRefund,
             'waktu': now,
-            'operator': actor?.label ?? 'Pemilik',
+            'operator': actorValue.label,
             'request_id': 'void-${rows.first['sync_id']}',
+            'kas_kategori': 'REFUND',
             'catatan': cleanReason,
+            'created_at': now,
+            'updated_at': now,
+          });
+          await txn.insert('cash_ledger', {
+            'sync_id': newSyncId(),
+            'waktu': now,
+            'kategori': 'REFUND',
+            'sumber_entity': 'service_payment',
+            'sumber_sync_id': refundSyncId,
+            'nominal': -sisaRefund,
+            'metode': rows.first['metode_bayar'] ?? 'CASH',
+            'operator': actorValue.label,
+            'catatan': 'Void ${rows.first['no_nota']}',
             'created_at': now,
             'updated_at': now,
           });
@@ -2698,6 +3116,12 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
           if (enqueuePayment != null) await enqueuePayment(txn, id);
         }
       }
+      final netPaid = await txn.rawQuery(
+        'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
+        'WHERE service_record_id = ?',
+        [id],
+      );
+      final netPaidTotal = (netPaid.first['total'] as num?)?.toInt() ?? 0;
       await txn.update(
         'service_records',
         {
@@ -2705,11 +3129,41 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
           'voided_at': now,
           'void_reason': cleanReason,
           'sisa_bayar': 0,
+          'total_dibayar': netPaidTotal < 0 ? 0 : netPaidTotal,
+          'total_efektif': 0,
+          'total_kas_diterima': 0,
+          'void_refund': sisaRefund > 0 ? sisaRefund : 0,
+          'version': ((rows.first['version'] as num?)?.toInt() ?? 1) + 1,
           'updated_at': now,
         },
         where: 'id = ?',
         whereArgs: [id],
       );
+      final commissionRows = await txn.query(
+        'service_record_commissions',
+        columns: ['id'],
+        where: "service_record_id = ? AND status = 'AKTIF'",
+        whereArgs: [id],
+      );
+      for (final commission in commissionRows) {
+        final hlc = await nextSyncHlc(txn);
+        await txn.update(
+          'service_record_commissions',
+          {
+            'status': 'VOID',
+            'nominal': 0,
+            'voided_at': now,
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'updated_at': now,
+          },
+          where: 'id = ?',
+          whereArgs: [commission['id']],
+        );
+        if (enqueueCommission != null) {
+          await enqueueCommission(txn, commission['id'] as int);
+        }
+      }
       final recordSyncId = rows.first['sync_id'] as String? ?? '';
       final estimateSync =
           (rows.first['estimate_sync_id'] as String?)?.trim() ?? '';
@@ -2751,14 +3205,16 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         }
       }
       await txn.insert('permission_audits', {
-        'actor': actor?.label ?? 'Pemilik',
-        'target_account_id': actor?.employeeId,
+        'sync_id': newSyncId(),
+        'actor': actorValue.label,
+        'target_account_id': actorValue.employeeId,
         'action': 'void',
         'detail_json': jsonEncode({
           'no_nota': rows.first['no_nota'],
           'alasan': cleanReason,
         }),
         'created_at': now,
+        'updated_at': now,
       });
       if (enqueue != null) await enqueue(txn, id);
     });
@@ -2772,6 +3228,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     String? requestId,
     Future<void> Function(Transaction txn, int recordId)? enqueue,
   }) async {
+    final actorValue = _requireActor(actor);
     if (actor != null && !actor.canWriteMoney) {
       throw StateError('Peran ini tidak boleh menerima pembayaran.');
     }
@@ -2812,45 +3269,86 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
           };
         }
       }
-      final sisa = record['sisa_bayar'] as int? ?? 0;
+      final totalEfektif =
+          (record['total_efektif'] as num?)?.toInt() ??
+          (record['total_servis'] as num?)?.toInt() ??
+          0;
+      // Sisa dihitung ulang dari seluruh pembayaran yang tersimpan, bukan dari
+      // kolom ringkasan yang bisa tertinggal setelah sinkronisasi.
+      final paidRows = await txn.rawQuery(
+        'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
+        'WHERE service_record_id = ?',
+        [recordId],
+      );
+      final dibayarSebelum = (paidRows.first['total'] as num?)?.toInt() ?? 0;
+      final sisa = max(0, totalEfektif - dibayarSebelum);
       if (sisa <= 0) throw StateError('Nota ini tidak memiliki sisa piutang.');
       if (nominalCents > sisa) {
         throw ArgumentError('Nominal pelunasan melebihi sisa piutang.');
       }
       final now = nowIso();
       final paymentSyncId = newSyncId();
-      final newSisa = sisa - nominalCents;
-      final newDibayar = (record['total_dibayar'] as int? ?? 0) + nominalCents;
       await txn.insert('service_payments', {
         'sync_id': paymentSyncId,
         'service_record_id': recordId,
-        'jenis': newSisa == 0 ? 'PELUNASAN' : 'DP',
+        'jenis': nominalCents >= sisa ? 'PELUNASAN' : 'DP',
         'metode': metode,
         'nominal': nominalCents,
         'waktu': now,
-        'operator': actor?.label ?? 'Pemilik',
+        'operator': actorValue.label,
         'request_id': cleanRequest.isEmpty ? newSyncId() : cleanRequest,
+        'kas_kategori': 'PENJUALAN',
         'catatan': 'Pelunasan piutang',
+        'created_at': now,
+        'updated_at': now,
+      });
+      await txn.insert('cash_ledger', {
+        'sync_id': newSyncId(),
+        'waktu': now,
+        'kategori': 'PENJUALAN',
+        'sumber_entity': 'service_payment',
+        'sumber_sync_id': paymentSyncId,
+        'nominal': nominalCents,
+        'metode': metode,
+        'operator': actorValue.label,
+        'catatan': 'Pelunasan ${record['no_nota'] ?? ''}',
         'created_at': now,
         'updated_at': now,
       });
       await txn.update(
         'service_records',
         {
-          'total_dibayar': newDibayar,
-          'sisa_bayar': newSisa,
-          'status_bayar': newSisa == 0 ? 'LUNAS' : 'KREDIT',
+          'total_kas_diterima':
+              ((record['total_kas_diterima'] as num?)?.toInt() ?? 0) +
+              nominalCents,
+          'version': ((record['version'] as num?)?.toInt() ?? 1) + 1,
           'updated_at': now,
         },
         where: 'id = ?',
         whereArgs: [recordId],
       );
+      // Ringkasan pembayaran selalu dihitung ulang dari ledger pembayaran.
+      await recalculateRecordTotals(txn, recordId);
+      final updated = await txn.query(
+        'service_records',
+        columns: ['sisa_bayar', 'status_bayar', 'total_dibayar'],
+        where: 'id = ?',
+        whereArgs: [recordId],
+        limit: 1,
+      );
+      final summary = updated.isEmpty
+          ? const <String, Object?>{}
+          : updated.first;
+      final newSisa =
+          (summary['sisa_bayar'] as num?)?.toInt() ?? sisa - nominalCents;
       if (enqueue != null) await enqueue(txn, recordId);
       return {
         'payment_sync_id': paymentSyncId,
         'sisa_bayar': newSisa,
-        'status_bayar': newSisa == 0 ? 'LUNAS' : 'KREDIT',
-        'total_dibayar': newDibayar,
+        'status_bayar':
+            summary['status_bayar'] ?? (newSisa == 0 ? 'LUNAS' : 'KREDIT'),
+        'total_dibayar': (summary['total_dibayar'] as num?)?.toInt() ??
+            dibayarSebelum + nominalCents,
       };
     });
   }
@@ -2859,14 +3357,17 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final rows = await db.rawQuery(
       '''
       SELECT COUNT(*) AS transaksi,
-        COALESCE(SUM(biaya_jasa), 0) AS total_jasa,
-        COALESCE(SUM(total_part), 0) AS total_part,
-        COALESCE(SUM(diskon), 0) AS diskon,
-        COALESCE(SUM(total_servis), 0) AS total,
-        COALESCE(SUM(total_dibayar), 0) AS dibayar,
-        COALESCE(SUM(sisa_bayar), 0) AS piutang
-      FROM service_records
-      WHERE waktu_service BETWEEN ? AND ? AND status != 'VOID'
+        COALESCE(SUM(r.biaya_jasa + COALESCE(adj.nominal_jasa, 0)), 0)
+          AS total_jasa,
+        COALESCE(SUM(r.total_part + COALESCE(adj.nominal_part, 0)), 0)
+          AS total_part,
+        COALESCE(SUM(r.diskon + COALESCE(adj.diskon, 0)), 0) AS diskon,
+        COALESCE(SUM(r.total_efektif + r.total_retur), 0) AS total,
+        COALESCE(SUM(r.total_dibayar), 0) AS dibayar,
+        COALESCE(SUM(r.sisa_bayar), 0) AS piutang
+      FROM service_records r
+      ${AppDatabase.latestAdjustmentJoinSql}
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
       ''',
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
@@ -2923,7 +3424,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final typeRows = await db.rawQuery(
       '''
       SELECT r.jenis_transaksi, COUNT(*) AS jumlah,
-        COALESCE(SUM(${latestAdjustmentTotalSql(notaSyncIdExpr: 'r.sync_id', fallbackExpr: 'r.total_servis')}), 0) AS total
+        COALESCE(SUM(r.total_efektif + r.total_retur), 0) AS total
       FROM service_records r
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
       GROUP BY r.jenis_transaksi
@@ -2953,22 +3454,12 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
       [isoStartOfDay(from), isoEndOfDay(to)],
     );
     final returRow = returnRows.first;
-    final adjustmentRows = await db.rawQuery(
-      '''
-      SELECT COALESCE(SUM(${latestAdjustmentTotalSql(notaSyncIdExpr: 'r.sync_id', fallbackExpr: 'r.total_servis')} - r.total_servis), 0) AS total
-      FROM service_records r
-      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
-      ''',
-      [isoStartOfDay(from), isoEndOfDay(to)],
-    );
-    final adjustmentTotal =
-        (adjustmentRows.first['total'] as num?)?.toInt() ?? 0;
     return ReportSummary(
       transaksi: row['transaksi'] as int? ?? 0,
       totalJasaCents: row['total_jasa'] as int? ?? 0,
       totalPartCents: row['total_part'] as int? ?? 0,
       diskonCents: row['diskon'] as int? ?? 0,
-      totalCents: (row['total'] as int? ?? 0) + adjustmentTotal,
+      totalCents: row['total'] as int? ?? 0,
       dibayarCents: row['dibayar'] as int? ?? 0,
       piutangCents: row['piutang'] as int? ?? 0,
       totalModalPartCents: modalPart,
@@ -3097,7 +3588,7 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final rows = await db.rawQuery(
       '''
       SELECT e.nomor_estimasi, e.total, e.status, e.dibuat_oleh,
-        e.masa_berlaku, e.converted_nota_sync_id, r.total_servis AS nota_total
+        e.masa_berlaku, e.converted_nota_sync_id, r.total_efektif AS nota_total
       FROM estimates e
       LEFT JOIN service_records r ON r.sync_id = e.converted_nota_sync_id
       WHERE e.deleted_at IS NULL
@@ -3127,31 +3618,43 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final summary = await reportSummary(today, today);
     final lowRows = await db.rawQuery(
       'SELECT COUNT(*) AS total FROM stock_items '
-      'WHERE COALESCE(jumlah_milli, jumlah * 1000) <= stok_minimum * 1000',
+      'WHERE deleted_at IS NULL '
+      'AND COALESCE(jumlah_milli, jumlah * 1000) <= stok_minimum * 1000',
     );
     final receivableRows = await db.rawQuery('''
       SELECT COALESCE(SUM(sisa_bayar), 0) AS total
       FROM service_records
       WHERE status != 'VOID' AND sisa_bayar > 0
       ''');
-    final negativeRows = await db.rawQuery(
-      'SELECT COUNT(*) AS total FROM stock_items '
-      'WHERE COALESCE(jumlah_milli, jumlah * 1000) < 0',
-    );
-    final conflictRows = await db.rawQuery(
-      "SELECT COUNT(*) AS total FROM sync_conflicts "
-      "WHERE reason = 'stok_negatif' AND resolved_at IS NULL",
-    );
+    final negativeRows = await db.rawQuery('''
+      SELECT COUNT(*) AS total FROM (
+        SELECT sync_id AS item_id FROM stock_items
+         WHERE COALESCE(jumlah_milli, jumlah * 1000) < 0
+           AND deleted_at IS NULL
+        UNION
+        SELECT c.entity_id AS item_id FROM sync_conflicts c
+         WHERE c.reason = 'stok_negatif' AND c.resolved_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM stock_items s
+              WHERE s.sync_id = c.entity_id
+                AND COALESCE(s.jumlah_milli, s.jumlah * 1000) < 0
+           )
+      ) bermasalah
+      ''');
     return DashboardData(
       todayRecords: await listRecords(from: today, to: today, limit: 200),
-      todayRevenueCents: summary.totalCents,
+      todayRevenueCents: summary.totalNetCents,
       todayCount: summary.transaksi,
       lowStockCount: lowRows.first['total'] as int? ?? 0,
       receivableCents: receivableRows.first['total'] as int? ?? 0,
       recent: await listRecords(limit: 8),
-      negativeStockCount:
-          (negativeRows.first['total'] as int? ?? 0) +
-          (conflictRows.first['total'] as int? ?? 0),
+      negativeStockCount: negativeRows.first['total'] as int? ?? 0,
+      todayGrossCents: summary.totalCents,
+      todayReturCents: summary.returCents,
+      todayCashCents: summary.cashByMethod.values.fold<int>(
+        0,
+        (sum, value) => sum + value,
+      ),
     );
   }
 
@@ -3159,6 +3662,23 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final text = (value ?? '').trim();
     return text.isEmpty ? null : text;
   }
+
+  /// Operasi tulis yang menyentuh uang, stok, atau status nota tidak boleh
+  /// dijalankan tanpa identitas operator yang dapat diaudit.
+  static Operator _requireActor(Operator? actor) {
+    if (actor == null) {
+      throw StateError('Operator wajib diisi untuk operasi ini.');
+    }
+    if (actor.isViewer) {
+      throw StateError('Mode ringkasan hanya dapat membaca data.');
+    }
+    return actor;
+  }
+
+  /// Kunci pencarian nama pelanggan agar duplikat dapat dicek tanpa
+  /// bergantung pada kapitalisasi atau spasi berlebih.
+  static String _nameKey(String value) =>
+      value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
 }
 
 class DuplicateCustomerException implements Exception {

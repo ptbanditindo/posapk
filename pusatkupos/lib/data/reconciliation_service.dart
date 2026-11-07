@@ -30,19 +30,64 @@ class ReconciliationService {
     // tanggal UTC (yang bergeser beberapa jam di zona waktu non-UTC).
     final start = DateTime.parse('${tanggal}T00:00:00').toUtc();
     final end = start.add(const Duration(days: 1));
-    final rows = await db.query(
-      'service_records',
-      columns: ['sync_id'],
-      where: 'waktu_service >= ? AND waktu_service < ?',
-      whereArgs: [start.toIso8601String(), end.toIso8601String()],
-      orderBy: 'sync_id',
+    // Ringkasan harus mendeteksi divergensi keuangan, bukan hanya beda daftar
+    // nota. Nilai yang di-hash adalah keadaan akhir nota (setelah koreksi dan
+    // retur) ditambah seluruh baris pembayaran; status VOID ikut agar nota
+    // yang dibatalkan di satu perangkat tetapi masih aktif di perangkat lain
+    // tidak lolos rekonsiliasi.
+    final rows = await db.rawQuery(
+      '''
+SELECT r.sync_id AS nota_sync_id, r.status AS status,
+  r.voided_at AS voided_at, r.total_servis AS total_servis,
+  r.total_koreksi AS total_koreksi, r.total_retur AS total_retur,
+  r.total_efektif AS total_efektif, r.total_dibayar AS total_dibayar,
+  r.sisa_bayar AS sisa_bayar,
+  p.sync_id AS payment_sync_id, p.jenis AS payment_jenis,
+  p.metode AS payment_metode, p.nominal AS payment_nominal,
+  p.waktu AS payment_waktu
+FROM service_records r
+LEFT JOIN service_payments p ON p.service_record_id = r.id
+WHERE r.waktu_service >= ? AND r.waktu_service < ?
+ORDER BY r.sync_id, p.sync_id
+''',
+      [start.toIso8601String(), end.toIso8601String()],
     );
-    final ids = rows
-        .map((row) => row['sync_id'] as String? ?? '')
-        .where((id) => id.isNotEmpty)
-        .toList();
-    final hash = sha256.convert(utf8.encode(ids.join('\n'))).toString();
-    return (jumlah: ids.length, hash: hash);
+    final lines = <String>[];
+    final notes = <String>{};
+    for (final row in rows) {
+      final syncId = row['nota_sync_id'] as String? ?? '';
+      if (syncId.isEmpty) continue;
+      if (notes.add(syncId)) {
+        lines.add(
+          [
+            'N',
+            syncId,
+            row['status'],
+            row['voided_at'],
+            row['total_servis'],
+            row['total_koreksi'],
+            row['total_retur'],
+            row['total_efektif'],
+            row['total_dibayar'],
+            row['sisa_bayar'],
+          ].map(_canonical).join('|'),
+        );
+      }
+      final paymentSync = row['payment_sync_id'] as String? ?? '';
+      if (paymentSync.isEmpty) continue;
+      lines.add(
+        [
+          'P',
+          paymentSync,
+          row['payment_jenis'],
+          row['payment_metode'],
+          row['payment_nominal'],
+          row['payment_waktu'],
+        ].map(_canonical).join('|'),
+      );
+    }
+    final hash = sha256.convert(utf8.encode(lines.join('\n'))).toString();
+    return (jumlah: notes.length, hash: hash);
   }
 
   /// Menerbitkan ringkasan untuk hari ini dan hari-hari sebelumnya. Dipanggil
@@ -131,6 +176,14 @@ class ReconciliationService {
       where: "status != 'done' AND deleted_at IS NULL",
       orderBy: 'created_at DESC',
     );
+  }
+
+  /// Nilai null dan tipe numerik diformat sama di semua perangkat agar hash
+  /// tidak berbeda hanya karena representasi teks.
+  String _canonical(Object? value) {
+    if (value == null) return '';
+    if (value is num) return value.toInt().toString();
+    return '$value';
   }
 
   Future<String> _relayDeviceId(DatabaseExecutor db) async {

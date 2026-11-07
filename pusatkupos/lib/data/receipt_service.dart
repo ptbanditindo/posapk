@@ -271,6 +271,22 @@ class ReceiptService {
       if (printed && template.itemsDivider) builder.divider();
     }
 
+    final kredit =
+        record.statusBayar.toUpperCase() != 'LUNAS' ||
+        detail.jenisBayar.toUpperCase() != 'LUNAS' ||
+        detail.sisaCents > 0;
+    final tampilkanRiwayat =
+        template.paymentShowHistory &&
+        detail.payments.isNotEmpty &&
+        (detail.payments.length > 1 || kredit);
+    final tampilkanKembalian = template.totalFields['kembalian'] ?? true;
+    PaymentRow? pembayaranPertama;
+    for (final entry in detail.payments) {
+      if (pembayaranPertama == null || entry.id < pembayaranPertama.id) {
+        pembayaranPertama = entry;
+      }
+    }
+
     void totals() {
       bool on(String key) => template.totalFields[key] ?? true;
       if (on('total_jasa')) {
@@ -281,6 +297,15 @@ class ReceiptService {
       }
       if (on('diskon') && record.diskonCents > 0) {
         builder.amount(template.label('diskon'), -record.diskonCents);
+      }
+      if (on('koreksi') && record.totalKoreksiCents != 0) {
+        builder.amount(
+          template.label('koreksi'),
+          record.totalKoreksiCents,
+        );
+      }
+      if (on('retur') && record.totalReturCents > 0) {
+        builder.amount(template.label('retur'), -record.totalReturCents);
       }
       if (on('grand_total')) {
         builder.amount(
@@ -298,11 +323,14 @@ class ReceiptService {
       if (on('bayar')) {
         builder.amount(template.label('bayar'), detail.totalDibayarCents);
       }
-      if (on('kembalian')) {
-        final change =
-            record.bayarCents > record.totalCents &&
-                record.metodeBayar == 'CASH'
-            ? record.bayarCents - record.totalCents
+      if (on('kembalian') && !tampilkanRiwayat) {
+        // Kembalian hanya dari uang tunai yang benar-benar diterima pada nota,
+        // bukan dari nominal pembayaran yang sudah dibatasi tagihan. Bila nota
+        // punya riwayat pembayaran, kembalian dicetak per pembayaran.
+        final kasDiterima =
+            record.metodeBayar == 'CASH' ? record.bayarCents : 0;
+        final change = kasDiterima > record.totalCents
+            ? kasDiterima - record.totalCents
             : 0;
         builder.amount(template.label('kembalian'), change);
       }
@@ -313,21 +341,27 @@ class ReceiptService {
     }
 
     void payment() {
-      final status = record.statusBayar.toUpperCase();
-      final jenis = detail.jenisBayar.toUpperCase();
-      final kredit =
-          status != 'LUNAS' || jenis != 'LUNAS' || detail.sisaCents > 0;
-      final history =
-          template.paymentShowHistory &&
-          detail.payments.isNotEmpty &&
-          (detail.payments.length > 1 || kredit);
-      if (history) {
+      if (tampilkanRiwayat) {
         builder.add('RIWAYAT PEMBAYARAN', bold: true);
         for (final entry in detail.payments) {
           builder.field(
             '${dateId.format(entry.waktu)} ${entry.jenis}',
             formatRupiah(entry.nominalCents),
           );
+          final tunai = entry.metode == 'CASH' && entry.nominalCents > 0;
+          if (tampilkanKembalian &&
+              tunai &&
+              entry.id == pembayaranPertama?.id) {
+            final change = record.bayarCents > entry.nominalCents
+                ? record.bayarCents - entry.nominalCents
+                : 0;
+            if (change > 0) {
+              builder.amount(
+                '  ${template.label('kembalian')}',
+                change,
+              );
+            }
+          }
         }
       }
       if (kredit) {
@@ -335,7 +369,7 @@ class ReceiptService {
           builder.amount('Sisa', detail.sisaCents, bold: true);
         }
       }
-      if (history || kredit) builder.divider();
+      if (tampilkanRiwayat || kredit) builder.divider();
     }
 
     void warranty() {

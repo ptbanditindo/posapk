@@ -20,6 +20,9 @@ class SenderProfile {
     this.permissionsExplicit = false,
     this.storeIds = const [],
     this.legacyAll = false,
+    this.revoked = false,
+    this.accountActive = true,
+    this.employeeSyncId = '',
   });
 
   const SenderProfile.legacy(this.kind)
@@ -27,7 +30,10 @@ class SenderProfile {
         extraPermissions = const {},
         permissionsExplicit = false,
         storeIds = const [],
-        legacyAll = true;
+        legacyAll = true,
+        revoked = false,
+        accountActive = true,
+        employeeSyncId = '';
 
   final String kind; // owner | employee | viewer
   final String roleBase; // owner | peran bawaan | peran kustom
@@ -40,6 +46,15 @@ class SenderProfile {
 
   /// Hanya dipakai harness lama yang belum mengirim profil perangkat.
   final bool legacyAll;
+
+  /// Perangkat sudah dicabut pemilik. Amplop yang belum diterapkan tidak
+  /// boleh menambah data baru.
+  final bool revoked;
+
+  /// Status akun karyawan pada saat sinkronisasi. Perangkat pemilik selalu
+  /// dianggap aktif.
+  final bool accountActive;
+  final String employeeSyncId;
 
   /// Izin bawaan per peran relay. Pemilik dapat menambah lewat
   /// `extra_permissions`; pengaturan toko di perangkat tetap bisa mematikan.
@@ -98,10 +113,23 @@ class SyncConflictRules {
   /// Data diterapkan, tetapi pemilik perlu meninjau hasilnya.
   static const Set<String> reviewReasons = {
     'harga_di_bawah_batas',
+    'harga_tidak_valid',
     'stok_negatif',
     'koreksi_di_bawah_batas',
+    'koreksi_pada_nota_void',
     'rekonsiliasi_beda',
     'no_nota_bentrok',
+    'pembayaran_melebihi_total',
+    'gaji_ganda',
+    'retur_pada_nota_void',
+    'retur_melebihi_qty',
+    'retur_baris_tidak_ditemukan',
+    'retur_tidak_valid',
+    'void_setelah_retur',
+    'komisi_akun_hilang',
+    'komisi_tanpa_snapshot',
+    'kode_barang_bentrok',
+    'kode_barang_kosong',
   };
 
   static const Set<String> priceEntities = {'harga_jasa'};
@@ -119,6 +147,8 @@ class SyncConflictRules {
     'harga_dikunci_owner',
     'hapus_order_hanya_owner',
     'peran_tidak_berhak',
+    'pengirim_dicabut',
+    'akun_pengirim_nonaktif',
   };
 
   static bool isFinal(String reason) =>
@@ -154,6 +184,11 @@ class SyncConflictRules {
     required String entity,
     required String action,
   }) {
+    // Status perangkat/akun diperiksa sebelum isi payload dipercaya. Amplop
+    // lama dari perangkat yang sudah dicabut atau akun nonaktif tidak boleh
+    // menambah data baru.
+    if (sender.revoked) return 'pengirim_dicabut';
+    if (!sender.accountActive) return 'akun_pengirim_nonaktif';
     if (sender.kind == 'viewer') return 'peran_viewer_hanya_baca';
     if (ownerOnlyEntities.contains(entity) && !sender.isOwner) {
       return 'hanya_owner';

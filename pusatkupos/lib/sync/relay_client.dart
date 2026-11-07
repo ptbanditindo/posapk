@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../core/relay_url.dart';
+import '../data/license_service.dart';
 
 class RelayException implements Exception {
   RelayException(
@@ -81,6 +82,14 @@ class RelayClient {
         body = decoded.map((key, value) => MapEntry('$key', value));
       }
     } catch (_) {}
+    final serverTime = '${body['server_time'] ?? ''}'.trim();
+    if (serverTime.isNotEmpty) {
+      try {
+        await LicenseService.instance.noteServerTime(serverTime);
+      } catch (_) {
+        // Acuan waktu tidak boleh menggagalkan permintaan relay.
+      }
+    }
     if (response.statusCode >= 400) {
       throw RelayException(
         response.statusCode,

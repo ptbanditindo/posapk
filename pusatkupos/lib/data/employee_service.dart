@@ -319,24 +319,46 @@ class EmployeeService {
       );
       final paidAt = at ?? DateTime.now();
       final syncId = newSyncId();
+      final cycleStart = isoStartOfDay(summary.cycleStart);
+      final kasKeluar = summary.netCents;
       await txn.insert('salary_payments', {
         'sync_id': syncId,
         'employee_sync_id': employeeSyncId,
+        'employee_nama_snapshot': summary.nama,
         'periode': summary.periode,
-        'cycle_start': isoStartOfDay(summary.cycleStart),
+        'cycle_start': cycleStart,
         'cycle_end': isoEndOfDay(summary.cycleEnd),
+        'cycle_key': '$employeeSyncId|$cycleStart',
         'tanggal': isoStartOfDay(paidAt),
         'nominal': summary.grossCents,
         'potongan_hutang': summary.deductionCents,
         'cicilan_hutang': summary.deductionCents,
         'bonus': summary.bonusCents,
+        'komisi_total': summary.commissionCents,
+        'kas_keluar': kasKeluar,
         'metode': metode,
+        'status': 'AKTIF',
         'catatan': _clean(catatan),
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
         'updated_at': nowIso(),
       });
+      if (kasKeluar > 0) {
+        await txn.insert('cash_ledger', {
+          'sync_id': newSyncId(),
+          'waktu': nowIso(),
+          'kategori': 'GAJI',
+          'sumber_entity': 'salary_payment',
+          'sumber_sync_id': syncId,
+          'nominal': -kasKeluar,
+          'metode': metode,
+          'operator': summary.nama,
+          'catatan': 'Gaji ${summary.periode} ${summary.nama}',
+          'created_at': nowIso(),
+          'updated_at': nowIso(),
+        });
+      }
       if (enqueue != null) await enqueue(txn, syncId);
     });
     return PayrollSummary(

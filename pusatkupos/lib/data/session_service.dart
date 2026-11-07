@@ -45,7 +45,7 @@ class SessionProfile {
   final String plan;
   final String? periodEnd;
 
-  bool get isOwner => mode != 'employee';
+  bool get isOwner => mode != 'employee' && mode != 'viewer';
 
   /// Mode ringkasan laporan: hanya membaca data toko dan mengelola akses.
   bool get isViewer => mode == 'viewer';
@@ -119,8 +119,8 @@ class SessionProfile {
       );
 
   Operator toOperator() => Operator(
-        kind: isOwner ? 'owner' : 'employee',
-        role: isOwner ? 'owner' : role,
+        kind: isViewer ? 'viewer' : (isOwner ? 'owner' : 'employee'),
+        role: isViewer ? 'VIEWER' : (isOwner ? 'owner' : role),
         label: nama.isEmpty ? (isOwner ? 'Pemilik' : 'Karyawan') : nama,
         employeeSyncId: employeeSyncId,
         username: username,

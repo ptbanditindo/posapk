@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
+import '../../core/ids.dart';
 import '../../core/money.dart';
 import '../../core/quantity.dart';
 import '../../data/app_database.dart';
@@ -266,9 +267,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     recordId: id,
                     items: request.items,
                     alasan: request.alasan,
-                    actor: AppState.instance.operator,
+                    actor: AppState.instance.requireOperator,
+                    requestId: request.requestId,
                     enqueue: (txn, _) =>
-                        SyncService.instance.enqueueNote(id, txn: txn),
+                        SyncService.instance.enqueueNoteReturn(id, txn: txn),
                     enqueueCommission: (txn, commissionId) => SyncService
                         .instance
                         .enqueueCommission(commissionId, txn: txn),
@@ -299,9 +301,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     recordId: id,
                     nominalCents: input.nominalCents,
                     metode: input.metode,
-                    requestId:
-                        'settle-${detail.record.id}-'
-                        '${DateTime.now().microsecondsSinceEpoch}',
+                    requestId: input.requestId,
                     actor: AppState.instance.operator,
                     enqueue: (txn, recordId) => SyncService.instance
                         .enqueueNotePayment(recordId, txn: txn),
@@ -322,9 +322,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
         onCorrect: detail.record.isVoid || !AppState.instance.can('koreksi')
             ? null
             : () async {
-                final current = detail.corrections.isEmpty
-                    ? detail.record.totalCents
-                    : detail.corrections.last.nilaiBaruCents;
+                final current =
+                    (detail.record.totalAsliCents ?? detail.record.totalCents) +
+                    detail.record.totalKoreksiCents;
                 final input = await _askCorrection(context, current);
                 if (input == null) return;
                 final settings = await StoreSettingsService.instance.ensure();
@@ -487,6 +487,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     int sisaCents,
   ) async {
     final nominal = TextEditingController(text: formatRupiahPlain(sisaCents));
+    // Kunci dibuat sekali per percobaan agar pengiriman ulang tidak
+    // menggandakan pembayaran.
+    final requestId = 'settle-${newSyncId()}';
     var metode = 'CASH';
     final result = await showDialog<_SettlementInput>(
       context: context,
@@ -537,7 +540,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     setDialogState(() => error = 'Nominal tidak valid.');
                     return;
                   }
-                  Navigator.pop(context, _SettlementInput(cents, metode));
+                  Navigator.pop(
+                    context,
+                    _SettlementInput(cents, metode, requestId),
+                  );
                 },
                 child: const Text('Simpan'),
               ),
@@ -709,7 +715,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 }
 
-class _RecordDetailSheet extends StatelessWidget {
+class _RecordDetailSheet extends StatefulWidget {
   const _RecordDetailSheet({
     required this.detail,
     this.onVoid,
@@ -731,8 +737,45 @@ class _RecordDetailSheet extends StatelessWidget {
   final Future<void> Function()? onEditCommission;
 
   @override
+  State<_RecordDetailSheet> createState() => _RecordDetailSheetState();
+}
+
+class _RecordDetailSheetState extends State<_RecordDetailSheet> {
+  String? _running;
+
+  Future<void> _run(String action, Future<void> Function() callback) async {
+    if (_running != null) return;
+    setState(() => _running = action);
+    try {
+      await callback();
+    } finally {
+      if (mounted) setState(() => _running = null);
+    }
+  }
+
+  bool _available(String action, Future<void> Function()? callback) =>
+      callback != null && (_running == null || _running == action);
+
+  Widget _actionIcon(String action, IconData icon) {
+    if (_running != action) return Icon(icon);
+    return const SizedBox(
+      width: 18,
+      height: 18,
+      child: CircularProgressIndicator(strokeWidth: 2),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final detail = widget.detail;
     final record = detail.record;
+    final onVoid = widget.onVoid;
+    final onReturn = widget.onReturn;
+    final onSettle = widget.onSettle;
+    final onCorrect = widget.onCorrect;
+    final onClaim = widget.onClaim;
+    final onUnitTaken = widget.onUnitTaken;
+    final onEditCommission = widget.onEditCommission;
     return DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.82,
@@ -776,13 +819,19 @@ class _RecordDetailSheet extends StatelessWidget {
               title: 'Ringkasan',
               child: Column(
                 children: [
-                  _row(context, 'Jasa', formatRupiah(record.biayaJasaCents)),
-                  _row(context, 'Part', formatRupiah(record.totalPartCents)),
+                  _row(context, 'Jasa', formatRupiah(record.jasaEfektifCents)),
+                  _row(context, 'Part', formatRupiah(record.partEfektifCents)),
                   _row(
                     context,
                     'Diskon',
-                    '-${formatRupiah(record.diskonCents)}',
+                    '-${formatRupiah(record.diskonEfektifCents)}',
                   ),
+                  if (record.totalReturCents > 0)
+                    _row(
+                      context,
+                      'Retur',
+                      '-${formatRupiah(record.totalReturCents)}',
+                    ),
                   const Divider(),
                   _row(
                     context,
@@ -821,7 +870,9 @@ class _RecordDetailSheet extends StatelessWidget {
                     _row(
                       context,
                       'Total nota asli',
-                      formatRupiah(record.totalCents),
+                      formatRupiah(
+                        record.totalAsliCents ?? record.totalCents,
+                      ),
                     ),
                     const Divider(),
                     ...detail.corrections.map(
@@ -837,7 +888,10 @@ class _RecordDetailSheet extends StatelessWidget {
                     _row(
                       context,
                       'Total setelah koreksi',
-                      formatRupiah(detail.corrections.last.nilaiBaruCents),
+                      formatRupiah(
+                        (record.totalAsliCents ?? record.totalCents) +
+                            record.totalKoreksiCents,
+                      ),
                       bold: true,
                     ),
                   ],
@@ -915,12 +969,13 @@ class _RecordDetailSheet extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 12),
                 child: SectionCard(
                   title: 'Komisi mekanik',
-                  trailing: onEditCommission == null
-                      ? null
-                      : TextButton(
-                          onPressed: () => onEditCommission!(),
+                  trailing: _available('commission', onEditCommission)
+                      ? TextButton(
+                          onPressed: () =>
+                              _run('commission', onEditCommission!),
                           child: const Text('Atur'),
-                        ),
+                        )
+                      : null,
                   child: Column(
                     children: detail.commissions
                         .map(
@@ -985,8 +1040,10 @@ class _RecordDetailSheet extends StatelessWidget {
             if (detail.sisaCents > 0 && !record.isVoid) ...[
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: onSettle == null ? null : () => onSettle!(),
-                icon: const Icon(Icons.payments_outlined),
+                onPressed: _available('settle', onSettle)
+                    ? () => _run('settle', onSettle!)
+                    : null,
+                icon: _actionIcon('settle', Icons.payments_outlined),
                 label: Text(
                   'Terima pelunasan (sisa ${formatRupiah(detail.sisaCents)})',
                 ),
@@ -1011,16 +1068,20 @@ class _RecordDetailSheet extends StatelessWidget {
             if (record.warrantyActive) ...[
               const SizedBox(height: 12),
               FilledButton.tonalIcon(
-                onPressed: onClaim == null ? null : () => onClaim!(),
-                icon: const Icon(Icons.verified_outlined),
+                onPressed: _available('claim', onClaim)
+                    ? () => _run('claim', onClaim!)
+                    : null,
+                icon: _actionIcon('claim', Icons.verified_outlined),
                 label: const Text('Klaim garansi'),
               ),
             ],
             if (onUnitTaken != null) ...[
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
-                onPressed: () => onUnitTaken!(),
-                icon: const Icon(Icons.directions_car_outlined),
+                onPressed: _available('taken', onUnitTaken)
+                    ? () => _run('taken', onUnitTaken)
+                    : null,
+                icon: _actionIcon('taken', Icons.directions_car_outlined),
                 label: const Text('Tandai unit sudah diambil'),
               ),
             ],
@@ -1053,20 +1114,26 @@ class _RecordDetailSheet extends StatelessWidget {
               const Center(child: Text('Nota ini sudah di-void.'))
             else ...[
               FilledButton.tonalIcon(
-                onPressed: onReturn == null ? null : () => onReturn!(),
-                icon: const Icon(Icons.assignment_return_outlined),
+                onPressed: _available('return', onReturn)
+                    ? () => _run('return', onReturn!)
+                    : null,
+                icon: _actionIcon('return', Icons.assignment_return_outlined),
                 label: const Text('Retur penjualan'),
               ),
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
-                onPressed: onCorrect == null ? null : () => onCorrect!(),
-                icon: const Icon(Icons.edit_note_outlined),
+                onPressed: _available('correct', onCorrect)
+                    ? () => _run('correct', onCorrect!)
+                    : null,
+                icon: _actionIcon('correct', Icons.edit_note_outlined),
                 label: const Text('Koreksi total nota'),
               ),
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
-                onPressed: onVoid == null ? null : () => onVoid!(),
-                icon: const Icon(Icons.block_outlined),
+                onPressed: _available('void', onVoid)
+                    ? () => _run('void', onVoid!)
+                    : null,
+                icon: _actionIcon('void', Icons.block_outlined),
                 label: const Text('Void nota'),
               ),
             ],
@@ -1193,10 +1260,11 @@ class _CommissionDialogState extends State<_CommissionDialog> {
 }
 
 class _SettlementInput {
-  const _SettlementInput(this.nominalCents, this.metode);
+  const _SettlementInput(this.nominalCents, this.metode, this.requestId);
 
   final int nominalCents;
   final String metode;
+  final String requestId;
 }
 
 class _CorrectionInput {
@@ -1207,10 +1275,11 @@ class _CorrectionInput {
 }
 
 class _ReturnRequest {
-  const _ReturnRequest(this.items, this.alasan);
+  const _ReturnRequest(this.items, this.alasan, this.requestId);
 
   final List<ReturnLineInput> items;
   final String alasan;
+  final String requestId;
 }
 
 class _ReturnLineState {
@@ -1247,6 +1316,9 @@ class _ReturnDialog extends StatefulWidget {
 class _ReturnDialogState extends State<_ReturnDialog> {
   late final List<_ReturnLineState> _lines;
   final _alasan = TextEditingController();
+  // Satu kunci untuk seluruh isi dialog: menekan Simpan dua kali tidak
+  // menghasilkan dua retur.
+  final _requestId = newSyncId();
   String? _error;
 
   @override
@@ -1341,7 +1413,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
       setState(() => _error = 'Alasan retur minimal 3 karakter.');
       return;
     }
-    Navigator.pop(context, _ReturnRequest(items, alasan));
+    Navigator.pop(context, _ReturnRequest(items, alasan, _requestId));
   }
 
   @override
