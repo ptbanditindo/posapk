@@ -3,6 +3,7 @@ import '../core/money.dart';
 import '../printer/receipt_builder.dart';
 import 'app_database.dart';
 import 'models.dart';
+import 'pajak.dart';
 import 'receipt_settings.dart';
 import 'receipt_template.dart';
 import 'store_settings.dart';
@@ -306,6 +307,21 @@ class ReceiptService {
       }
       if (on('retur') && record.totalReturCents > 0) {
         builder.amount(template.label('retur'), -record.totalReturCents);
+      }
+      if (record.pajakAktif) {
+        if (on('dpp')) {
+          builder.amount(template.label('dpp'), record.pajakDppCents);
+        }
+        if (on('ppn')) {
+          final suffix = record.pajakPenanggung == pajakPenanggungBengkel
+              ? ' (bengkel)'
+              : '';
+          builder.amount(
+            '${template.label('ppn')} '
+            '${formatPersenBp(record.pajakPersenBp)}$suffix',
+            record.pajakCents,
+          );
+        }
       }
       if (on('grand_total')) {
         builder.amount(

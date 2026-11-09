@@ -21,6 +21,7 @@ import 'backup_platform_stub.dart'
     if (dart.library.io) 'backup_platform_io.dart'
     as backup_platform;
 import 'models.dart';
+import 'pajak.dart';
 import 'price_rules.dart';
 import 'schema.dart';
 import 'schema_migrations.dart';
@@ -33,7 +34,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 
   Database? _db;
   String? _path;
@@ -1715,7 +1716,11 @@ class AppDatabase {
       );
       final bruto = biayaJasa + totalPart;
       final diskon = allocation.diskon;
-      final total = bruto - diskon;
+      final pajak = PajakSnapshot.hitung(
+        brutoCents: bruto - diskon,
+        config: settings.pajakConfig,
+      );
+      final total = pajak.totalCents;
       if (metodeBayar == 'TRANSFER' && bayarCents > total) {
         throw ArgumentError(
           'Pembayaran transfer tidak boleh melebihi tagihan (tanpa kembalian).',
@@ -1837,7 +1842,7 @@ class AppDatabase {
           'disetujui_oleh': approver,
           'boleh_di_bawah_modal': isOwner,
         }),
-        'pajak_snapshot_json': jsonEncode({'nominal': 0, 'persen': 0}),
+        'pajak_snapshot_json': jsonEncode(pajak.toJson()),
         'work_order_sync_id': _nullable(workOrderSyncId),
         'estimate_sync_id': _nullable(estimateSyncId),
         'total_estimasi_terakhir': totalEstimasiTerakhir,
@@ -1847,6 +1852,12 @@ class AppDatabase {
         'biaya_jasa': biayaJasa,
         'total_part': totalPart,
         'diskon': diskon,
+        'pajak': pajak.pajakCents,
+        'pajak_dpp': pajak.dppCents,
+        'pajak_diserap': pajak.diserapCents,
+        'pajak_mode': pajak.mode,
+        'pajak_persen_bp': pajak.persenBp,
+        'pajak_penanggung': pajak.penanggung,
         'total_servis': total,
         'total_koreksi': 0,
         'total_retur': 0,
@@ -2033,12 +2044,15 @@ class AppDatabase {
         });
       }
       if (mechanicRows.isNotEmpty) {
+        final dppBase = bruto - diskon;
         await _insertMechanicsAndCommissions(
           txn,
           recordId,
           mechanicRows,
           jobs: jobs,
           parts: parts,
+          dppFactorBp:
+              dppBase == 0 ? 10000 : pajak.dppCents * 10000 ~/ dppBase,
           enqueueCommission: enqueueCommission,
         );
       }
@@ -2104,16 +2118,23 @@ class AppDatabase {
     List<Map<String, Object?>> mechanics, {
     required List<JobDraft> jobs,
     required List<PartDraft> parts,
+    int dppFactorBp = 10000,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
     enqueueCommission,
   }) async {
-    final netJasa = jobs.fold<int>(0, (sum, job) => sum + job.lineTotalCents);
+    int scaleDpp(int value) => value * dppFactorBp ~/ 10000;
+    final netJasa = jobs.fold<int>(
+      0,
+      (sum, job) => sum + scaleDpp(job.lineTotalCents),
+    );
     final margin = parts.fold<int>(
       0,
       (sum, part) =>
           sum +
-          (part.hargaCents - part.modalCents) * part.qtyMilli ~/ 1000 -
-          part.diskonAlokasiCents,
+          (scaleDpp(part.hargaCents) - part.modalCents) *
+              part.qtyMilli ~/
+              1000 -
+          scaleDpp(part.diskonAlokasiCents),
     );
     final count = mechanics.length;
     var index = 0;
@@ -2208,6 +2229,24 @@ class AppDatabase {
     );
     final count = mechanics.length;
     if (count == 0) return;
+    final taxRows = await txn.query(
+      'service_records',
+      columns: ['pajak_dpp', 'biaya_jasa', 'total_part', 'diskon'],
+      where: 'id = ?',
+      whereArgs: [recordId],
+      limit: 1,
+    );
+    final dppBase = taxRows.isEmpty
+        ? 0
+        : ((taxRows.first['biaya_jasa'] as num?)?.toInt() ?? 0) +
+            ((taxRows.first['total_part'] as num?)?.toInt() ?? 0) -
+            ((taxRows.first['diskon'] as num?)?.toInt() ?? 0);
+    final dppFactorBp = taxRows.isEmpty || dppBase == 0
+        ? 10000
+        : ((taxRows.first['pajak_dpp'] as num?)?.toInt() ?? 0) *
+            10000 ~/
+            dppBase;
+    int scaleDpp(int value) => value * dppFactorBp ~/ 10000;
     final jobRows = await txn.rawQuery(
       '''
       SELECT j.jumlah, j.subtotal,
@@ -2227,9 +2266,10 @@ class AppDatabase {
       final sisaMilli =
           qtyMilli - ((row['returned_milli'] as num?)?.toInt() ?? 0);
       if (qtyMilli <= 0 || sisaMilli <= 0) continue;
-      final lineTotal =
-          ((row['subtotal'] as num?)?.toInt() ?? 0) -
-          ((row['diskon_alokasi'] as num?)?.toInt() ?? 0);
+      final lineTotal = scaleDpp(
+        ((row['subtotal'] as num?)?.toInt() ?? 0) -
+            ((row['diskon_alokasi'] as num?)?.toInt() ?? 0),
+      );
       netJasa += sisaMilli >= qtyMilli
           ? lineTotal
           : lineTotal * sisaMilli ~/ qtyMilli;
@@ -2257,9 +2297,10 @@ class AppDatabase {
       if (qtyMilli <= 0 || sisaMilli <= 0) continue;
       hasPart = true;
       final margin =
-          ((row['harga_satuan'] as num?)?.toInt() ?? 0) -
+          scaleDpp((row['harga_satuan'] as num?)?.toInt() ?? 0) -
           ((row['modal'] as num?)?.toInt() ?? 0);
-      final diskon = (row['diskon_alokasi'] as num?)?.toInt() ?? 0;
+      final diskon =
+          scaleDpp((row['diskon_alokasi'] as num?)?.toInt() ?? 0);
       // Margin negatif tetap dihitung, sama seperti saat nota dibuat.
       netMargin += margin * sisaMilli ~/ 1000 - diskon * sisaMilli ~/ qtyMilli;
     }
@@ -3478,7 +3519,10 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
         COALESCE(SUM(r.diskon + COALESCE(adj.diskon, 0)), 0) AS diskon,
         COALESCE(SUM(r.total_efektif + r.total_retur), 0) AS total,
         COALESCE(SUM(r.total_dibayar), 0) AS dibayar,
-        COALESCE(SUM(r.sisa_bayar), 0) AS piutang
+        COALESCE(SUM(r.sisa_bayar), 0) AS piutang,
+        COALESCE(SUM(r.pajak_dpp), 0) AS total_dpp,
+        COALESCE(SUM(r.pajak), 0) AS pajak,
+        COALESCE(SUM(r.pajak_diserap), 0) AS pajak_diserap
       FROM service_records r
       ${AppDatabase.latestAdjustmentJoinSql}
       WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
@@ -3488,8 +3532,14 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     final row = rows.first;
     final parts = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(sp.subtotal - COALESCE(sp.diskon_alokasi, 0)), 0)
-          AS omzet,
+      SELECT COALESCE(SUM(
+          (sp.subtotal - COALESCE(sp.diskon_alokasi, 0)) *
+          CASE WHEN (r.biaya_jasa + r.total_part - r.diskon) > 0
+              AND r.pajak_dpp > 0
+            THEN r.pajak_dpp * 1.0 /
+              (r.biaya_jasa + r.total_part - r.diskon)
+            ELSE 1.0 END
+        ), 0) AS omzet,
         COALESCE(SUM(ROUND(sp.harga_modal *
           COALESCE(sp.jumlah_milli, sp.jumlah * 1000) / 1000.0)), 0) AS modal
       FROM service_parts sp
@@ -3500,8 +3550,14 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
     );
     final jobs = await db.rawQuery(
       '''
-      SELECT COALESCE(SUM(sj.subtotal - COALESCE(sj.diskon_alokasi, 0)), 0)
-          AS omzet,
+      SELECT COALESCE(SUM(
+          (sj.subtotal - COALESCE(sj.diskon_alokasi, 0)) *
+          CASE WHEN (r.biaya_jasa + r.total_part - r.diskon) > 0
+              AND r.pajak_dpp > 0
+            THEN r.pajak_dpp * 1.0 /
+              (r.biaya_jasa + r.total_part - r.diskon)
+            ELSE 1.0 END
+        ), 0) AS omzet,
         COALESCE(SUM(sj.harga_batas_saat_transaksi * sj.jumlah), 0) AS modal
       FROM service_jobs sj
       JOIN service_records r ON r.id = sj.service_record_id
@@ -3599,6 +3655,9 @@ COALESCE((SELECT ROUND(SUM(harga_batas_saat_transaksi *
       returJasaCents: (returRow['retur_jasa'] as num?)?.toInt() ?? 0,
       returPartCents: (returRow['retur_part'] as num?)?.toInt() ?? 0,
       returModalCents: (returRow['retur_modal'] as num?)?.toInt() ?? 0,
+      totalDppCents: (row['total_dpp'] as num?)?.toInt() ?? 0,
+      pajakCents: (row['pajak'] as num?)?.toInt() ?? 0,
+      pajakDiserapCents: (row['pajak_diserap'] as num?)?.toInt() ?? 0,
     );
   }
 

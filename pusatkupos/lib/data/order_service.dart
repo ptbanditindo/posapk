@@ -10,6 +10,7 @@ import '../core/money.dart';
 import 'app_database.dart';
 import 'approval_service.dart';
 import 'models.dart';
+import 'pajak.dart';
 import 'price_rules.dart';
 import 'store_settings.dart';
 
@@ -401,6 +402,14 @@ class OrderService {
       final tanggal = DateTime.now();
       final syncId = newSyncId();
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final pajak = PajakSnapshot.hitung(
+        brutoCents: allocation.total,
+        config: settings.pajakConfig,
+      );
+      final modeSnapshot = Map<String, Object?>.from(
+        modeSaatDibuat ??
+            settings.modeSnapshot(jenisTransaksi: transactionEstimasiSaja),
+      )..['pajak_estimasi'] = pajak.toJson();
       await txn.insert('estimates', {
         'sync_id': syncId,
         'nomor_estimasi': nomor,
@@ -413,13 +422,10 @@ class OrderService {
         'masa_berlaku': tanggal
             .add(Duration(days: masaBerlakuHari < 1 ? 1 : masaBerlakuHari))
             .toIso8601String(),
-        'total': allocation.total,
+        'total': pajak.totalCents,
         'status': 'aktif',
         'disetujui_oleh': approver,
-        'mode_saat_dibuat_json': jsonEncode(
-          modeSaatDibuat ??
-              settings.modeSnapshot(jenisTransaksi: transactionEstimasiSaja),
-        ),
+        'mode_saat_dibuat_json': jsonEncode(modeSnapshot),
         'dibuat_oleh': actor.label,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,

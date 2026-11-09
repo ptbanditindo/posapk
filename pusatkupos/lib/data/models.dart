@@ -193,6 +193,12 @@ class ServiceRecordSummary {
     this.jatuhTempo,
     this.totalDibayarCents = 0,
     this.sisaBayarTersimpanCents,
+    this.pajakCents = 0,
+    this.pajakDppCents = 0,
+    this.pajakDiserapCents = 0,
+    this.pajakMode = 'TANPA',
+    this.pajakPersenBp = 0,
+    this.pajakPenanggung = 'PEMBELI',
   });
 
   final int id;
@@ -225,6 +231,14 @@ class ServiceRecordSummary {
   final DateTime? diambilAt;
   final DateTime? jatuhTempo;
   final int totalDibayarCents;
+  final int pajakCents;
+  final int pajakDppCents;
+  final int pajakDiserapCents;
+  final String pajakMode;
+  final int pajakPersenBp;
+  final String pajakPenanggung;
+
+  bool get pajakAktif => pajakMode != 'TANPA' && pajakPersenBp > 0;
 
   /// Sisa piutang hasil `recalculateRecordTotals`. Bila tersedia, nilai ini
   /// menjadi acuan badge jatuh tempo karena sudah memperhitungkan koreksi dan
@@ -317,6 +331,13 @@ class ServiceRecordSummary {
             : DateTime.tryParse(row['jatuh_tempo'] as String),
         totalDibayarCents: row['total_dibayar'] as int? ?? 0,
         sisaBayarTersimpanCents: (row['sisa_bayar'] as num?)?.toInt(),
+        pajakCents: (row['pajak'] as num?)?.toInt() ?? 0,
+        pajakDppCents: (row['pajak_dpp'] as num?)?.toInt() ?? 0,
+        pajakDiserapCents: (row['pajak_diserap'] as num?)?.toInt() ?? 0,
+        pajakMode: row['pajak_mode'] as String? ?? 'TANPA',
+        pajakPersenBp: (row['pajak_persen_bp'] as num?)?.toInt() ?? 0,
+        pajakPenanggung:
+            row['pajak_penanggung'] as String? ?? 'PEMBELI',
       );
 }
 
@@ -556,6 +577,9 @@ class ReportSummary {
     this.returJasaCents = 0,
     this.returPartCents = 0,
     this.returModalCents = 0,
+    this.totalDppCents = 0,
+    this.pajakCents = 0,
+    this.pajakDiserapCents = 0,
   });
 
   final int transaksi;
@@ -577,6 +601,12 @@ class ReportSummary {
   final int returJasaCents;
   final int returPartCents;
   final int returModalCents;
+
+  /// Total DPP nota aktif pada periode. Omzet dan laba memakai DPP; kas dan
+  /// piutang tetap memakai nilai yang ditagihkan (termasuk PPN).
+  final int totalDppCents;
+  final int pajakCents;
+  final int pajakDiserapCents;
 
   int get returCents => returJasaCents + returPartCents;
 

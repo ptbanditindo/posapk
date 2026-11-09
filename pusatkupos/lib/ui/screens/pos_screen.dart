@@ -12,6 +12,7 @@ import '../../data/feature_flags.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
 import '../../data/order_service.dart';
+import '../../data/pajak.dart';
 import '../../data/store_settings.dart';
 import '../../printer/printer_config.dart';
 import '../../printer/printer_service.dart';
@@ -86,18 +87,29 @@ class _PosScreenState extends State<PosScreen> {
   int get _totalPart =>
       _parts.fold<int>(0, (sum, part) => sum + part.subtotalCents);
   int get _bruto => _biayaJasa + _totalPart;
+
+  int get _dppBase => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
+
+  PajakSnapshot get _pajak => PajakSnapshot.hitung(
+        brutoCents: _dppBase,
+        config: _settings?.pajakConfig ?? const PajakConfig(),
+      );
+
   int get _estimatedCommission {
     final selected =
         _mechanics.where((row) => _mechanicIds.contains(row['id'])).toList();
+    final pajak = _pajak;
+    final factorBp = _dppBase == 0 ? 10000 : pajak.dppCents * 10000 ~/ _dppBase;
+    int scale(int value) => value * factorBp ~/ 10000;
     final margin = _parts.fold<int>(
       0,
       (sum, part) =>
           sum +
-          ((part.hargaCents - part.modalCents) * part.qtyMilli) ~/ 1000,
+          ((scale(part.hargaCents) - part.modalCents) * part.qtyMilli) ~/ 1000,
     );
     return EmployeeService.estimateRecordCommissions(
       selected,
-      jasaCents: _biayaJasa,
+      jasaCents: scale(_biayaJasa),
       marginCents: margin,
       hasJobs: _jobs.isNotEmpty,
       hasParts: _parts.isNotEmpty,
@@ -151,7 +163,7 @@ class _PosScreenState extends State<PosScreen> {
     return AppState.instance.can('ubah_pelanggan');
   }
 
-  int get _total => (_bruto - _diskonCents).clamp(0, _bruto).toInt();
+  int get _total => _pajak.totalCents;
   int get _bayarCents => tryParseRupiahToCents(_bayar.text) ?? 0;
   bool get _bayarInvalid =>
       _bayar.text.trim().isNotEmpty &&
@@ -665,6 +677,12 @@ class _PosScreenState extends State<PosScreen> {
       for (final part in _parts)
         '${part.nama} ${part.qtyLabel}x = ${formatRupiah(part.subtotalCents)}',
       List.filled(printer.width, '-').join(),
+      if (_pajak.active) ...[
+        'DPP: ${formatRupiah(_pajak.dppCents)}',
+        'PPN ${formatPersenBp(_pajak.persenBp)}: '
+            '${formatRupiah(_pajak.pajakCents)}'
+            '${_pajak.penanggung == pajakPenanggungBengkel ? ' (bengkel)' : ''}',
+      ],
       'Total: ${formatRupiah(record?.totalCents ?? _total)}',
       '',
       'Harga dapat berubah sebelum pekerjaan disetujui.',
@@ -1258,6 +1276,15 @@ class _PosScreenState extends State<PosScreen> {
               _summaryRow('Jasa', _biayaJasa),
               _summaryRow('Part', _totalPart),
               _summaryRow('Diskon', -_diskonCents),
+              if (_pajak.active) ...[
+                _summaryRow('DPP', _pajak.dppCents),
+                _summaryRow(
+                  _pajak.penanggung == pajakPenanggungBengkel
+                      ? 'PPN ditanggung bengkel'
+                      : 'PPN ${formatPersenBp(_pajak.persenBp)}',
+                  _pajak.pajakCents,
+                ),
+              ],
               const Divider(),
               _summaryRow('Total', _total, bold: true),
               _summaryRow(

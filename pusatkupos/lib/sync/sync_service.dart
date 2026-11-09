@@ -19,6 +19,8 @@ import '../data/note_sync.dart';
 import '../data/nota_adjustment_service.dart';
 import '../data/opname_service.dart';
 import '../data/opening_balance_service.dart';
+import '../data/pajak.dart';
+import '../data/pajak_payment_service.dart';
 import '../data/purchase_service.dart';
 import '../data/store_settings.dart';
 import '../data/secure_store.dart';
@@ -1475,8 +1477,20 @@ class SyncService {
         'stages': _jsonObject(row['order_stages_json']),
         'simpan_estimasi_lepas':
             ((row['simpan_estimasi_lepas'] as num?)?.toInt() ?? 1) == 1,
+        'approval_below_cost':
+            ((row['approval_below_cost'] as num?)?.toInt() ?? 0) == 1,
+        'vehicle_required':
+            ((row['vehicle_required'] as num?)?.toInt() ?? 1) == 1,
+        'approver_mode': row['approver_mode'] ?? approverOwner,
+        'approver_employee_sync_id': row['approver_employee_sync_id'],
         'role_permissions': _jsonObject(row['role_permissions_json']),
         'preset': row['preset'],
+        'pajak_aktif': ((row['pajak_aktif'] as num?)?.toInt() ?? 0) == 1,
+        'pajak_mode': row['pajak_mode'] ?? pajakModeEksklusif,
+        'pajak_persen_bp':
+            (row['pajak_persen_bp'] as num?)?.toInt() ?? pajakPersenBpDefault,
+        'pajak_penanggung':
+            row['pajak_penanggung'] ?? pajakPenanggungPembeli,
         'updated_at': row['updated_at'],
       },
     );
@@ -1882,6 +1896,46 @@ class SyncService {
               },
             )
             .toList(),
+      },
+    );
+  }
+
+  Future<void> enqueuePajakPayment(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'pajak_pembayaran',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'pajak_pembayaran',
+      action: '${row['status']}' == 'VOID' ? 'void' : 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'origin_device_id': row['origin_device_id'],
+        'request_id': row['request_id'],
+        'masa': row['masa'],
+        'jenis': row['jenis'],
+        'metode': row['metode'],
+        'nominal': row['nominal'],
+        'referensi': row['referensi'],
+        'dibayar_at': row['dibayar_at'],
+        'operator': row['operator'],
+        'catatan': row['catatan'],
+        'cash_sync_id': row['cash_sync_id'],
+        'status': row['status'],
+        'void_reason': row['void_reason'],
+        'voided_at': row['voided_at'],
+        'created_at': row['created_at'],
       },
     );
   }
@@ -4367,6 +4421,13 @@ class SyncService {
         wall: wall,
         counter: counter,
         action: action,
+      );
+    } else if (entity == 'pajak_pembayaran') {
+      await PajakPaymentService.instance.applyRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
       );
     } else if (entity == 'store_feature') {
       await FeatureFlagsService.instance.applyRemote(

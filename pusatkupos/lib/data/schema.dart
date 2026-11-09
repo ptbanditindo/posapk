@@ -518,6 +518,11 @@ Future<void> createCleanSchema(Database db) async {
       total_part INTEGER NOT NULL DEFAULT 0,
       diskon INTEGER NOT NULL DEFAULT 0,
       pajak INTEGER NOT NULL DEFAULT 0,
+      pajak_dpp INTEGER NOT NULL DEFAULT 0,
+      pajak_diserap INTEGER NOT NULL DEFAULT 0,
+      pajak_mode TEXT NOT NULL DEFAULT 'TANPA',
+      pajak_persen_bp INTEGER NOT NULL DEFAULT 0,
+      pajak_penanggung TEXT NOT NULL DEFAULT 'PEMBELI',
       biaya_lain INTEGER NOT NULL DEFAULT 0,
       total_servis INTEGER NOT NULL DEFAULT 0,
       total_koreksi INTEGER NOT NULL DEFAULT 0,
@@ -566,6 +571,11 @@ Future<void> createCleanSchema(Database db) async {
       CHECK (total_part >= 0),
       CHECK (diskon >= 0),
       CHECK (pajak >= 0),
+      CHECK (pajak_dpp >= 0),
+      CHECK (pajak_diserap >= 0),
+      CHECK (pajak_persen_bp >= 0 AND pajak_persen_bp <= 10000),
+      CHECK (pajak_mode IN ('TANPA', 'EKSLUSIF', 'INKLUSIF')),
+      CHECK (pajak_penanggung IN ('PEMBELI', 'BENGKEL')),
       CHECK (biaya_lain >= 0),
       CHECK (total_servis >= 0),
       CHECK (total_efektif >= 0),
@@ -605,15 +615,21 @@ Future<void> createCleanSchema(Database db) async {
   // bukan komponen asal, agar struk dan laporan tetap dapat diaudit.
   await db.execute('''
     CREATE TRIGGER trg_service_records_komponen_immutable
-    BEFORE UPDATE OF biaya_jasa, total_part, diskon, pajak, biaya_lain,
-      total_servis, total_estimasi_terakhir, mode_saat_dibuat_json,
-      diskon_snapshot_json, pajak_snapshot_json
+    BEFORE UPDATE OF biaya_jasa, total_part, diskon, pajak, pajak_dpp,
+      pajak_diserap, pajak_mode, pajak_persen_bp, pajak_penanggung,
+      biaya_lain, total_servis, total_estimasi_terakhir,
+      mode_saat_dibuat_json, diskon_snapshot_json, pajak_snapshot_json
     ON service_records
     FOR EACH ROW
     WHEN NEW.biaya_jasa IS NOT OLD.biaya_jasa
       OR NEW.total_part IS NOT OLD.total_part
       OR NEW.diskon IS NOT OLD.diskon
       OR NEW.pajak IS NOT OLD.pajak
+      OR NEW.pajak_dpp IS NOT OLD.pajak_dpp
+      OR NEW.pajak_diserap IS NOT OLD.pajak_diserap
+      OR NEW.pajak_mode IS NOT OLD.pajak_mode
+      OR NEW.pajak_persen_bp IS NOT OLD.pajak_persen_bp
+      OR NEW.pajak_penanggung IS NOT OLD.pajak_penanggung
       OR NEW.biaya_lain IS NOT OLD.biaya_lain
       OR NEW.total_servis IS NOT OLD.total_servis
       OR NEW.total_estimasi_terakhir IS NOT OLD.total_estimasi_terakhir
@@ -980,6 +996,9 @@ Future<void> createCleanSchema(Database db) async {
       total INTEGER NOT NULL DEFAULT 0,
       total_modal_kembali INTEGER NOT NULL DEFAULT 0,
       total_refund INTEGER NOT NULL DEFAULT 0,
+      dpp INTEGER NOT NULL DEFAULT 0,
+      pajak INTEGER NOT NULL DEFAULT 0,
+      pajak_diserap INTEGER NOT NULL DEFAULT 0,
       alasan TEXT NOT NULL,
       dibuat_oleh TEXT,
       voided_at TEXT,
@@ -992,6 +1011,9 @@ Future<void> createCleanSchema(Database db) async {
       CHECK (total >= 0),
       CHECK (total_modal_kembali >= 0),
       CHECK (total_refund >= 0),
+      CHECK (dpp >= 0),
+      CHECK (pajak >= 0),
+      CHECK (pajak_diserap >= 0),
       FOREIGN KEY (service_record_id) REFERENCES service_records(id)
         ON DELETE CASCADE
     )
@@ -1005,7 +1027,8 @@ Future<void> createCleanSchema(Database db) async {
   await db.execute('''
     CREATE TRIGGER trg_sale_returns_immutable
     BEFORE UPDATE OF service_record_id, nota_sync_id, no_nota, no_retur,
-      request_id, status, total, total_modal_kembali, alasan, voided_at
+      request_id, status, total, total_modal_kembali, dpp, pajak,
+      pajak_diserap, alasan, voided_at
     ON sale_returns
     FOR EACH ROW
     WHEN NEW.service_record_id IS NOT OLD.service_record_id
@@ -1016,6 +1039,9 @@ Future<void> createCleanSchema(Database db) async {
       OR NEW.status IS NOT OLD.status
       OR NEW.total IS NOT OLD.total
       OR NEW.total_modal_kembali IS NOT OLD.total_modal_kembali
+      OR NEW.dpp IS NOT OLD.dpp
+      OR NEW.pajak IS NOT OLD.pajak
+      OR NEW.pajak_diserap IS NOT OLD.pajak_diserap
       OR NEW.alasan IS NOT OLD.alasan
       OR NEW.voided_at IS NOT OLD.voided_at
     BEGIN
@@ -1264,13 +1290,20 @@ Future<void> createCleanSchema(Database db) async {
       approver_employee_sync_id TEXT,
       role_permissions_json TEXT NOT NULL DEFAULT '{}',
       preset TEXT NOT NULL DEFAULT 'layanan_langsung',
+      pajak_aktif INTEGER NOT NULL DEFAULT 0,
+      pajak_mode TEXT NOT NULL DEFAULT 'EKSLUSIF',
+      pajak_persen_bp INTEGER NOT NULL DEFAULT 1100,
+      pajak_penanggung TEXT NOT NULL DEFAULT 'PEMBELI',
       permission_version INTEGER NOT NULL DEFAULT 1,
       schema_contract_version INTEGER NOT NULL DEFAULT 1,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (pajak_mode IN ('EKSLUSIF', 'INKLUSIF')),
+      CHECK (pajak_persen_bp >= 0 AND pajak_persen_bp <= 10000),
+      CHECK (pajak_penanggung IN ('PEMBELI', 'BENGKEL'))
     )
   ''');
 
@@ -1974,5 +2007,59 @@ Future<void> createOperationalSchema(Database db) async {
       shown_at TEXT NOT NULL,
       UNIQUE (purchase_sync_id, level, due_date)
     )
+  ''');
+
+  // ---------------------------------------------------------------------------
+  // Pembayaran PPN (BD-30)
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS pajak_pembayaran (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      origin_device_id TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL UNIQUE,
+      masa TEXT NOT NULL,
+      jenis TEXT NOT NULL DEFAULT 'PPN',
+      metode TEXT NOT NULL DEFAULT 'CASH',
+      nominal INTEGER NOT NULL,
+      referensi TEXT,
+      dibayar_at TEXT NOT NULL,
+      operator TEXT,
+      catatan TEXT,
+      cash_sync_id TEXT,
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      void_reason TEXT,
+      voided_at TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (jenis = 'PPN'),
+      CHECK (metode IN ('CASH', 'TRANSFER')),
+      CHECK (nominal > 0),
+      CHECK (length(masa) = 7)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_pajak_pembayaran_masa '
+    'ON pajak_pembayaran(store_id, masa)',
+  );
+  await db.execute('''
+    CREATE TRIGGER IF NOT EXISTS trg_pajak_pembayaran_void_final
+    BEFORE UPDATE ON pajak_pembayaran
+    FOR EACH ROW
+    WHEN OLD.status = 'VOID' AND (
+      NEW.status IS NOT 'VOID'
+      OR NEW.nominal IS NOT OLD.nominal
+      OR NEW.masa IS NOT OLD.masa
+      OR NEW.voided_at IS NOT OLD.voided_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'pembayaran PPN VOID bersifat final');
+    END
   ''');
 }

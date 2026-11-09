@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
@@ -6,6 +8,7 @@ import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/models.dart';
 import '../../data/order_service.dart';
+import '../../data/pajak.dart';
 import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -640,12 +643,27 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
     );
   }
 
+  PajakSnapshot? _pajakEstimasi(Map<String, Object?> row) {
+    final raw = row['mode_saat_dibuat_json'];
+    if (raw == null) return null;
+    try {
+      final decoded = raw is String ? jsonDecode(raw) : raw;
+      if (decoded is! Map) return null;
+      final pajak = decoded['pajak_estimasi'];
+      if (pajak is! Map) return null;
+      return PajakSnapshot.fromJson(Map<String, Object?>.from(pajak));
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final row = widget.row;
     final state = _estimateState(row);
     final total = (row['total'] as num?)?.toInt() ?? 0;
     final notaTotal = (row['nota_total'] as num?)?.toInt();
+    final pajak = _pajakEstimasi(row);
     final color = _stateColor(context, state);
     final convertible = widget.canConvert && state == 'aktif';
     return AlertDialog(
@@ -690,6 +708,18 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
                 'Berlaku sampai',
                 _dateLabel(row['masa_berlaku']) ?? 'Tanpa batas',
               ),
+              if (pajak != null && pajak.active) ...[
+                _line('DPP', formatRupiah(pajak.dppCents)),
+                _line(
+                  'PPN ${formatPersenBp(pajak.persenBp)}',
+                  formatRupiah(pajak.pajakCents),
+                ),
+                if (pajak.diserapCents > 0)
+                  _line(
+                    'PPN diserap bengkel',
+                    formatRupiah(pajak.diserapCents),
+                  ),
+              ],
               _line('Dibuat oleh', row['dibuat_oleh'] as String? ?? '-'),
               if (row['disetujui_oleh'] != null)
                 _line('Disetujui', '${row['disetujui_oleh']}'),

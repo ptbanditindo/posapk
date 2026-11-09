@@ -13,6 +13,7 @@ import '../widgets.dart';
 import 'diagnostics_screen.dart';
 import 'followup_settings_screen.dart';
 import 'opening_balance_screen.dart';
+import 'pajak_screen.dart';
 import 'printer_settings_screen.dart';
 import 'receipt_settings_screen.dart';
 import 'store_features_screen.dart';
@@ -628,6 +629,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const StoreSettingsScreen()),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'PPN',
+          subtitle: 'Rekap bulanan dan pencatatan pembayaran PPN.',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.percent_outlined),
+            title: const Text('Rekap PPN'),
+            subtitle: const Text(
+              'PPN keluaran, masukan, diserap, dan pembayaran per masa',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const PajakScreen()),
             ),
           ),
         ),

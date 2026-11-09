@@ -106,6 +106,9 @@ extension NoteSyncDatabase on AppDatabase {
         'status': retur['status'] ?? 'AKTIF',
         'total': retur['total'],
         'total_refund': retur['total_refund'] ?? 0,
+        'dpp': retur['dpp'] ?? 0,
+        'pajak': retur['pajak'] ?? 0,
+        'pajak_diserap': retur['pajak_diserap'] ?? 0,
         'alasan': retur['alasan'],
         'dibuat_oleh': retur['dibuat_oleh'],
         'created_at': retur['created_at'],
@@ -197,6 +200,12 @@ extension NoteSyncDatabase on AppDatabase {
         'mode_saat_dibuat_json': row['mode_saat_dibuat_json'] ?? '{}',
         'diskon_snapshot_json': row['diskon_snapshot_json'] ?? '{}',
         'pajak_snapshot_json': row['pajak_snapshot_json'] ?? '{}',
+        'pajak': row['pajak'] ?? 0,
+        'pajak_dpp': row['pajak_dpp'] ?? 0,
+        'pajak_diserap': row['pajak_diserap'] ?? 0,
+        'pajak_mode': row['pajak_mode'] ?? 'TANPA',
+        'pajak_persen_bp': row['pajak_persen_bp'] ?? 0,
+        'pajak_penanggung': row['pajak_penanggung'] ?? 'PEMBELI',
         'work_order_sync_id': row['work_order_sync_id'],
         'estimate_sync_id': row['estimate_sync_id'],
         'total_estimasi_terakhir': row['total_estimasi_terakhir'],
@@ -348,6 +357,25 @@ extension NoteSyncDatabase on AppDatabase {
       whereArgs: [recordSync],
       limit: 1,
     );
+    final incomingPajak = (record['pajak'] as num?)?.toInt() ?? 0;
+    final snapshotRaw = '${record['pajak_snapshot_json'] ?? '{}'}'.trim();
+    if (incomingPajak > 0 &&
+        (snapshotRaw.isEmpty || snapshotRaw == '{}' || snapshotRaw == 'null')) {
+      // Nota dari perangkat versi lama membawa PPN tanpa snapshot. Nilai
+      // tetap diterima agar antrean tidak macet, tetapi pemilik harus
+      // meninjau dasar pengenaan dan tarif yang dipakai.
+      await _recordPendingConflict(
+        txn,
+        entity: 'nota',
+        entityId: recordSync,
+        reason: 'ppn_tanpa_snapshot',
+        detail: {
+          'no_nota': record['no_nota'],
+          'pajak': incomingPajak,
+          'total_servis': record['total_servis'] ?? 0,
+        },
+      );
+    }
     if (action == 'void') {
       if (existingRecord.isEmpty) {
         throw RetryableSyncException(
@@ -899,6 +927,12 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'mode_saat_dibuat_json': record['mode_saat_dibuat_json'] ?? '{}',
       'diskon_snapshot_json': record['diskon_snapshot_json'] ?? '{}',
       'pajak_snapshot_json': record['pajak_snapshot_json'] ?? '{}',
+      'pajak': record['pajak'] ?? 0,
+      'pajak_dpp': record['pajak_dpp'] ?? 0,
+      'pajak_diserap': record['pajak_diserap'] ?? 0,
+      'pajak_mode': record['pajak_mode'] ?? 'TANPA',
+      'pajak_persen_bp': record['pajak_persen_bp'] ?? 0,
+      'pajak_penanggung': record['pajak_penanggung'] ?? 'PEMBELI',
       'work_order_sync_id': record['work_order_sync_id'],
       'estimate_sync_id': record['estimate_sync_id'],
       'total_estimasi_terakhir': record['total_estimasi_terakhir'],
@@ -1475,6 +1509,9 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'total': total,
       'total_modal_kembali': modalTotal,
       'total_refund': totalRefund,
+      'dpp': retur['dpp'] ?? 0,
+      'pajak': retur['pajak'] ?? 0,
+      'pajak_diserap': retur['pajak_diserap'] ?? 0,
       'alasan': retur['alasan'] ?? 'Retur dari perangkat lain',
       'dibuat_oleh': retur['dibuat_oleh'],
       'created_at': createdAt,

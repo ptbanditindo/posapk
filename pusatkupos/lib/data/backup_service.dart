@@ -51,6 +51,7 @@ const List<String> _requiredRestoreTables = [
   'stock_cost_state',
   'opening_balances',
   'opening_balance_items',
+  'pajak_pembayaran',
   'debt_reminder_logs',
 ];
 

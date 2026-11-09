@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/access_control.dart';
 import '../../data/account_service.dart';
+import '../../data/pajak.dart';
 import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -33,12 +34,20 @@ class StoreSettingsScreen extends StatefulWidget {
 class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
   StoreSettings? _settings;
   List<Map<String, Object?>> _accounts = const [];
+  final _pajakPersen = TextEditingController();
+  bool _pajakPersenInvalid = false;
   bool _busy = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _pajakPersen.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -48,7 +57,24 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     setState(() {
       _settings = settings;
       _accounts = accounts;
+      _pajakPersen.text = _formatPersenInput(settings.pajakPersenBp);
+      _pajakPersenInvalid = false;
     });
+  }
+
+  static String _formatPersenInput(int bp) {
+    final whole = bp ~/ 100;
+    final fraction = bp % 100;
+    if (fraction == 0) return '$whole';
+    return '$whole,${fraction.toString().padLeft(2, '0')}';
+  }
+
+  static int? _parsePersenBp(String raw) {
+    final clean = raw.trim().replaceAll(',', '.');
+    if (clean.isEmpty) return null;
+    final value = double.tryParse(clean);
+    if (value == null) return null;
+    return (value * 100).round();
   }
 
   List<Map<String, Object?>> get _activeAccounts =>
@@ -70,6 +96,10 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     String? approverEmployeeSyncId,
     Map<String, Map<String, bool>>? rolePermissions,
     String? preset,
+    bool? pajakAktif,
+    String? pajakMode,
+    int? pajakPersenBp,
+    String? pajakPenanggung,
   }) {
     final current = _settings!;
     return StoreSettings(
@@ -88,6 +118,10 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
               : null),
       rolePermissions: rolePermissions ?? current.rolePermissions,
       preset: preset ?? current.preset,
+      pajakAktif: pajakAktif ?? current.pajakAktif,
+      pajakMode: pajakMode ?? current.pajakMode,
+      pajakPersenBp: pajakPersenBp ?? current.pajakPersenBp,
+      pajakPenanggung: pajakPenanggung ?? current.pajakPenanggung,
       syncHlcWall: current.syncHlcWall,
       syncHlcCounter: current.syncHlcCounter,
     );
@@ -366,9 +400,26 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     );
   }
 
+  void _onPajakPersen(String raw) {
+    final bp = _parsePersenBp(raw);
+    final aktif = _settings?.pajakAktif ?? false;
+    final invalid = bp == null ||
+        bp < 0 ||
+        bp > pajakPersenBpMax ||
+        (aktif && bp < pajakPersenBpMinAktif);
+    setState(() {
+      _pajakPersenInvalid = invalid;
+      if (!invalid) _settings = _copy(pajakPersenBp: bp);
+    });
+  }
+
   Future<void> _save() async {
     final settings = _settings;
     if (settings == null) return;
+    if (_pajakPersenInvalid) {
+      showSnack(context, 'Tarif PPN tidak valid.', error: true);
+      return;
+    }
     setState(() => _busy = true);
     try {
       await StoreSettingsService.instance.save(
@@ -591,6 +642,99 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                       (current) => _copy(approverEmployeeSyncId: value),
                     ),
                   ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SectionCard(
+            title: 'PPN',
+            subtitle: 'Tarif berlaku untuk nota baru. Nota lama memakai snapshot '
+                'tarif saat dibuat sehingga tidak berubah.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Aktifkan PPN'),
+                  subtitle: const Text(
+                    'Mati: nota tanpa PPN. Hidup: PPN dihitung per nota.',
+                  ),
+                  value: settings.pajakAktif,
+                  onChanged: (value) {
+                    final nextBp =
+                        value && settings.pajakPersenBp < pajakPersenBpMinAktif
+                            ? pajakPersenBpDefault
+                            : settings.pajakPersenBp;
+                    if (value && nextBp != settings.pajakPersenBp) {
+                      _pajakPersen.text = _formatPersenInput(nextBp);
+                    }
+                    _update(
+                      (current) => _copy(
+                        pajakAktif: value,
+                        pajakPersenBp: nextBp,
+                      ),
+                    );
+                  },
+                ),
+                if (settings.pajakAktif) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: settings.pajakMode,
+                    decoration: const InputDecoration(labelText: 'Mode PPN'),
+                    items: pajakModes
+                        .map(
+                          (mode) => DropdownMenuItem(
+                            value: mode,
+                            child: Text(pajakModeLabel(mode)),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      _update((current) => _copy(pajakMode: value));
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _pajakPersen,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: 'Tarif PPN (%)',
+                      helperText: 'Contoh: 11 atau 11,25. Rentang 0,01-100.',
+                      errorText:
+                          _pajakPersenInvalid ? 'Tarif tidak valid' : null,
+                    ),
+                    onChanged: _onPajakPersen,
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: settings.pajakPenanggung,
+                    decoration:
+                        const InputDecoration(labelText: 'PPN ditanggung oleh'),
+                    items: pajakPenanggungValues
+                        .map(
+                          (value) => DropdownMenuItem(
+                            value: value,
+                            child: Text(pajakPenanggungLabel(value)),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      _update(
+                        (current) => _copy(pajakPenanggung: value),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Dibayar pembeli: PPN ikut ditagihkan. Ditanggung bengkel: '
+                    'PPN dicatat sebagai biaya non-kas dan pembeli hanya '
+                    'membayar DPP.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ],
             ),
           ),

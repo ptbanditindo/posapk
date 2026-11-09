@@ -9,6 +9,7 @@ import '../core/ids.dart';
 import '../core/quantity.dart';
 import 'app_database.dart';
 import 'models.dart';
+import 'pajak.dart';
 import 'store_settings.dart';
 
 class ReturnLineInput {
@@ -131,6 +132,66 @@ class SaleReturnService {
       }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final now = nowIso();
+      final mode = record['pajak_mode'] as String? ?? pajakModeTanpa;
+      final penanggung =
+          record['pajak_penanggung'] as String? ?? pajakPenanggungPembeli;
+      final pajakNota = (record['pajak'] as num?)?.toInt() ?? 0;
+      final baseNota = ((record['biaya_jasa'] as num?)?.toInt() ?? 0) +
+          ((record['total_part'] as num?)?.toInt() ?? 0) -
+          ((record['diskon'] as num?)?.toInt() ?? 0);
+      final dppNota = (record['pajak_dpp'] as num?)?.toInt() ?? baseNota;
+      final previous = await txn.rawQuery(
+        '''
+        SELECT COALESCE(SUM(dpp), 0) AS dpp,
+          COALESCE(SUM(pajak), 0) AS pajak
+        FROM sale_returns
+        WHERE service_record_id = ? AND deleted_at IS NULL
+          AND status = 'AKTIF'
+        ''',
+        [recordId],
+      );
+      final dppSebelum = (previous.first['dpp'] as num?)?.toInt() ?? 0;
+      final pajakSebelum = (previous.first['pajak'] as num?)?.toInt() ?? 0;
+      var returTerakhir = true;
+      for (final line in lines) {
+        final original = (line['qty_milli'] as num?)?.toInt() ?? 0;
+        final returned = (line['returned'] as num?)?.toInt() ?? 0;
+        final key = '${line['line_type']}:${line['sync_id']}';
+        final pickedQty = picked[key] ?? 0;
+        if (original - returned - pickedQty > 0) {
+          returTerakhir = false;
+          break;
+        }
+      }
+      final sisaDpp = dppNota - dppSebelum < 0 ? 0 : dppNota - dppSebelum;
+      final sisaPajak = pajakNota - pajakSebelum < 0 ? 0 : pajakNota - pajakSebelum;
+      int dppRetur;
+      int pajakRetur;
+      if (pajakNota <= 0 || mode == pajakModeTanpa) {
+        dppRetur = total;
+        pajakRetur = 0;
+      } else if (returTerakhir) {
+        // Retur terakhir menyerap sisa pembulatan agar total PPN retur sama
+        // dengan PPN nota.
+        dppRetur = sisaDpp;
+        pajakRetur = sisaPajak;
+      } else if (baseNota <= 0) {
+        dppRetur = 0;
+        pajakRetur = 0;
+      } else {
+        dppRetur = (dppNota * total / baseNota).round();
+        pajakRetur = (pajakNota * total / baseNota).round();
+        if (dppRetur > sisaDpp) dppRetur = sisaDpp;
+        if (pajakRetur > sisaPajak) pajakRetur = sisaPajak;
+      }
+      final pajakDiserap =
+          penanggung == pajakPenanggungBengkel ? pajakRetur : 0;
+      final refundDitagihkan = penanggung == pajakPenanggungBengkel
+          ? dppRetur
+          : mode == pajakModeInklusif
+              ? total
+              : dppRetur + pajakRetur;
+      total = refundDitagihkan;
       final noRetur = await AppDatabase.instance.allocateDocumentNumber(
         txn,
         docType: 'retur',
@@ -147,6 +208,9 @@ class SaleReturnService {
         'status': 'AKTIF',
         'total': total,
         'total_modal_kembali': modalTotal,
+        'dpp': dppRetur,
+        'pajak': pajakRetur,
+        'pajak_diserap': pajakDiserap,
         'alasan': cleanReason,
         'dibuat_oleh': actor.label,
         'sync_hlc_wall': hlc.wall,
@@ -328,6 +392,9 @@ class SaleReturnService {
           'total': total,
           'refund_tunai': cashRefund,
           'modal': modalTotal,
+          'dpp': dppRetur,
+          'pajak': pajakRetur,
+          'pajak_diserap': pajakDiserap,
           'alasan': cleanReason,
         }),
         'created_at': now,

@@ -51,6 +51,7 @@ const snapshotTables = [
   'stock_cost_state',
   'opening_balances',
   'opening_balance_items',
+  'pajak_pembayaran',
 ];
 
 const snapshotDeleteOrder = [
@@ -65,6 +66,7 @@ const snapshotDeleteOrder = [
   'supplier_payments',
   'supplier_purchase_items',
   'supplier_purchases',
+  'pajak_pembayaran',
   'opening_balance_items',
   'opening_balances',
   'store_features',

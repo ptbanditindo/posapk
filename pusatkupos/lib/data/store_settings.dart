@@ -7,6 +7,7 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import 'access_control.dart';
 import 'app_database.dart';
+import 'pajak.dart';
 
 const transactionJualSparepart = 'jual_sparepart';
 const transactionServisLangsung = 'servis_langsung';
@@ -106,6 +107,10 @@ class StoreSettings {
     this.approverEmployeeSyncId,
     this.rolePermissions = const {},
     this.preset = presetLayananLangsung,
+    this.pajakAktif = false,
+    this.pajakMode = pajakModeEksklusif,
+    this.pajakPersenBp = pajakPersenBpDefault,
+    this.pajakPenanggung = pajakPenanggungPembeli,
     this.syncHlcWall = 0,
     this.syncHlcCounter = 0,
   });
@@ -133,8 +138,24 @@ class StoreSettings {
 
   final Map<String, Map<String, bool>> rolePermissions;
   final String preset;
+
+  /// PPN aktif untuk nota baru. Nota lama memakai snapshot masing-masing.
+  final bool pajakAktif;
+  final String pajakMode;
+  final int pajakPersenBp;
+  final String pajakPenanggung;
+
   final int syncHlcWall;
   final int syncHlcCounter;
+
+  PajakConfig get pajakConfig => PajakConfig(
+        aktif: pajakAktif,
+        mode: pajakMode,
+        persenBp: pajakPersenBp,
+        penanggung: pajakPenanggung,
+      );
+
+  bool get pajakEnabled => pajakConfig.enabled;
 
   bool typeEnabled(String type) => types[type] ?? false;
 
@@ -222,6 +243,7 @@ class StoreSettings {
         'approver_mode': approverMode,
         'approver_employee_sync_id': approverEmployeeSyncId,
         'role_permissions': rolePermissions,
+        'pajak': pajakConfig.toSnapshot(),
         'diambil_at': nowIso(),
       };
 
@@ -237,6 +259,10 @@ class StoreSettings {
         'approver_employee_sync_id': approverEmployeeSyncId,
         'role_permissions': rolePermissions,
         'preset': preset,
+        'pajak_aktif': pajakAktif,
+        'pajak_mode': pajakMode,
+        'pajak_persen_bp': pajakPersenBp,
+        'pajak_penanggung': pajakPenanggung,
         'updated_at': nowIso(),
       };
 
@@ -255,6 +281,12 @@ class StoreSettings {
         approverEmployeeSyncId: row['approver_employee_sync_id'] as String?,
         rolePermissions: _decodeRoleMap(row['role_permissions_json']),
         preset: row['preset'] as String? ?? presetLayananLangsung,
+        pajakAktif: ((row['pajak_aktif'] as num?)?.toInt() ?? 0) == 1,
+        pajakMode: row['pajak_mode'] as String? ?? pajakModeEksklusif,
+        pajakPersenBp:
+            (row['pajak_persen_bp'] as num?)?.toInt() ?? pajakPersenBpDefault,
+        pajakPenanggung:
+            row['pajak_penanggung'] as String? ?? pajakPenanggungPembeli,
         syncHlcWall: (row['sync_hlc_wall'] as num?)?.toInt() ?? 0,
         syncHlcCounter: (row['sync_hlc_counter'] as num?)?.toInt() ?? 0,
       );
@@ -383,6 +415,10 @@ class StoreSettingsService {
         'approver_employee_sync_id': settings.approverEmployeeSyncId,
         'role_permissions_json': jsonEncode(settings.rolePermissions),
         'preset': settings.preset,
+        'pajak_aktif': settings.pajakAktif ? 1 : 0,
+        'pajak_mode': settings.pajakMode,
+        'pajak_persen_bp': settings.pajakPersenBp,
+        'pajak_penanggung': settings.pajakPenanggung,
         'created_at': now,
         'updated_at': now,
       },
@@ -402,9 +438,23 @@ class StoreSettingsService {
     if (actor == null || !actor.isOwner) {
       throw StateError('Hanya pemilik yang boleh mengubah pengaturan toko.');
     }
+    final pajakError = settings.pajakConfig.validationError();
+    if (pajakError != null) throw ArgumentError(pajakError);
     final target = executor ?? AppDatabase.instance.db;
     Future<void> write(DatabaseExecutor txn) async {
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final existing = await txn.query(
+        'store_settings',
+        columns: [
+          'pajak_aktif',
+          'pajak_mode',
+          'pajak_persen_bp',
+          'pajak_penanggung',
+        ],
+        where: 'store_id = ?',
+        whereArgs: [settings.storeId],
+        limit: 1,
+      );
       await txn.update(
         'store_settings',
         {
@@ -417,6 +467,10 @@ class StoreSettingsService {
           'approver_employee_sync_id': settings.approverEmployeeSyncId,
           'role_permissions_json': jsonEncode(settings.rolePermissions),
           'preset': settings.preset,
+          'pajak_aktif': settings.pajakAktif ? 1 : 0,
+          'pajak_mode': settings.pajakMode,
+          'pajak_persen_bp': settings.pajakPersenBp,
+          'pajak_penanggung': settings.pajakPenanggung,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'updated_at': nowIso(),
@@ -424,6 +478,45 @@ class StoreSettingsService {
         where: 'store_id = ?',
         whereArgs: [settings.storeId],
       );
+      final now = nowIso();
+      final before = existing.isEmpty
+          ? const <String, Object?>{}
+          : {
+              'pajak_aktif':
+                  ((existing.first['pajak_aktif'] as num?)?.toInt() ?? 0) == 1,
+              'pajak_mode': existing.first['pajak_mode'],
+              'pajak_persen_bp': existing.first['pajak_persen_bp'],
+              'pajak_penanggung': existing.first['pajak_penanggung'],
+            };
+      final after = {
+        'pajak_aktif': settings.pajakAktif,
+        'pajak_mode': settings.pajakMode,
+        'pajak_persen_bp': settings.pajakPersenBp,
+        'pajak_penanggung': settings.pajakPenanggung,
+      };
+      final changed = existing.isEmpty ||
+          before['pajak_aktif'] != after['pajak_aktif'] ||
+          before['pajak_mode'] != after['pajak_mode'] ||
+          before['pajak_persen_bp'] != after['pajak_persen_bp'] ||
+          before['pajak_penanggung'] != after['pajak_penanggung'];
+      if (changed) {
+        await txn.insert('business_audits', {
+          'sync_id': newSyncId(),
+          'store_id': settings.storeId,
+          'device_id': '',
+          'waktu': now,
+          'aktor': actor.label,
+          'aktor_employee_sync_id': actor.employeeSyncId,
+          'aksi': 'pengaturan_ppn',
+          'entity': 'store_settings',
+          'entity_id': settings.storeId,
+          'before_json': jsonEncode(before),
+          'after_json': jsonEncode(after),
+          'alasan': null,
+          'created_at': now,
+          'updated_at': now,
+        });
+      }
       if (enqueue != null) await enqueue(txn, settings.syncId);
     }
 
@@ -460,6 +553,17 @@ class StoreSettingsService {
         return;
       }
     }
+    final activeRaw = payload['pajak_aktif'];
+    final incomingPajak = PajakConfig(
+      aktif: activeRaw == true || activeRaw == 1,
+      mode: '${payload['pajak_mode'] ?? pajakModeEksklusif}',
+      persenBp: (payload['pajak_persen_bp'] as num?)?.toInt() ??
+          pajakPersenBpDefault,
+      penanggung: '${payload['pajak_penanggung'] ?? pajakPenanggungPembeli}',
+    );
+    // Tarif tidak sah dari perangkat lain tidak diterapkan; nilai lokal
+    // dipertahankan karena tarif memengaruhi nilai nota berikutnya.
+    if (incomingPajak.validationError() != null) return;
     final values = {
       'transaction_types_json':
           jsonEncode(payload['types'] ?? const <String, bool>{}),
@@ -475,6 +579,10 @@ class StoreSettingsService {
       'role_permissions_json':
           jsonEncode(payload['role_permissions'] ?? const {}),
       'preset': payload['preset'] ?? presetLayananLangsung,
+      'pajak_aktif': incomingPajak.aktif ? 1 : 0,
+      'pajak_mode': incomingPajak.mode,
+      'pajak_persen_bp': incomingPajak.persenBp,
+      'pajak_penanggung': incomingPajak.penanggung,
       'sync_hlc_wall': wall,
       'sync_hlc_counter': counter,
       'updated_at': payload['updated_at'] ?? nowIso(),
