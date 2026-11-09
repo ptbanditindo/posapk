@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_config.dart';
+import '../core/app_log.dart';
 import '../core/dates.dart';
 import 'app_database.dart';
 import 'backup_platform_stub.dart'
@@ -39,7 +41,7 @@ class DiagnosticsService {
       "WHERE status IN ('open', 'review') GROUP BY reason, status",
     );
     final settings = await db.query(
-      'app_settings',
+      'app_meta',
       columns: ['key', 'value'],
       where: "key IN ('sync.last_success_at', 'sync.last_error', "
           "'sync.last_attempt_at', 'device.kode_lokal')",
@@ -87,6 +89,7 @@ class DiagnosticsService {
     }
     return {
       'dibuat_pada': nowIso(),
+      'versi_aplikasi': appVersion,
       'platform': defaultTargetPlatform.name,
       'versi': 'skema v${AppDatabase.schemaVersion}',
       'integrity_check':
@@ -133,7 +136,18 @@ class DiagnosticsService {
             },
           )
           .toList(),
+      'log_terakhir': _recentLogs(),
     };
+  }
+
+  /// Log terakhir sudah diredaksi oleh [AppLog]; tetap dibatasi agar ekspor
+  /// diagnostik tidak membengkak.
+  static List<Map<String, Object?>> _recentLogs() {
+    final entries = AppLog.instance.entries;
+    final start = entries.length > 50 ? entries.length - 50 : 0;
+    return [
+      for (final entry in entries.sublist(start)) entry.toJson(),
+    ];
   }
 
   Future<String> exportText() async => const JsonEncoder.withIndent(
@@ -169,7 +183,7 @@ class DiagnosticsService {
 
   static String _redact(String value) {
     return value
-        .replaceAll(_secretPattern, r'$1=***')
+        .replaceAllMapped(_secretPattern, (match) => '${match[1]}=***')
         .replaceAll(_longTokenPattern, '***');
   }
 }

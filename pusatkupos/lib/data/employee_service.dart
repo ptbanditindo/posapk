@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:sqflite/sqflite.dart';
 
 import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../sync/crypto.dart';
@@ -276,15 +277,19 @@ class EmployeeService {
 
   Future<PayrollSummary> paySalary(
     String employeeSyncId, {
+    required Operator actor,
     DateTime? at,
     int bonusCents = 0,
     String metode = 'CASH',
     String? catatan,
     Future<void> Function(Transaction txn, String syncId)? enqueue,
   }) async {
+    Permissions.require(actor, permissionPaySalary);
     if (metode != 'CASH' && metode != 'TRANSFER') {
       throw ArgumentError('Metode pembayaran tidak dikenal.');
     }
+    final employee = await findEmployee(employeeSyncId);
+    if (employee == null) throw StateError('Karyawan tidak ditemukan.');
     final summary = await payrollSummary(
       employeeSyncId,
       at: at,
@@ -296,6 +301,11 @@ class EmployeeService {
     if (summary.grossCents <= 0) {
       throw StateError('Tidak ada imbalan yang dapat dibayarkan.');
     }
+    final jenisImbalan = '${employee['jenis_imbalan'] ?? 'KOMISI'}';
+    final gajiPokok = jenisImbalan == 'GAJI' ? summary.gajiCents : 0;
+    final komisiDibayar =
+        jenisImbalan == 'GAJI' ? 0 : summary.commissionCents;
+    final nominal = gajiPokok + komisiDibayar + summary.bonusCents;
     await _db.transaction((txn) async {
       final existing = await txn.query(
         'salary_payments',
@@ -321,8 +331,13 @@ class EmployeeService {
       final syncId = newSyncId();
       final cycleStart = isoStartOfDay(summary.cycleStart);
       final kasKeluar = summary.netCents;
+      final sekarang = nowIso();
+      final storeId = AppDatabase.instance.activeStoreId ?? 'utama';
+      final deviceId = await _deviceId(txn);
       await txn.insert('salary_payments', {
         'sync_id': syncId,
+        'store_id': storeId,
+        'device_id': deviceId,
         'employee_sync_id': employeeSyncId,
         'employee_nama_snapshot': summary.nama,
         'periode': summary.periode,
@@ -330,35 +345,64 @@ class EmployeeService {
         'cycle_end': isoEndOfDay(summary.cycleEnd),
         'cycle_key': '$employeeSyncId|$cycleStart',
         'tanggal': isoStartOfDay(paidAt),
-        'nominal': summary.grossCents,
+        'nominal': nominal,
+        'gaji_pokok': gajiPokok,
         'potongan_hutang': summary.deductionCents,
         'cicilan_hutang': summary.deductionCents,
         'bonus': summary.bonusCents,
-        'komisi_total': summary.commissionCents,
+        'komisi_total': komisiDibayar,
         'kas_keluar': kasKeluar,
         'metode': metode,
         'status': 'AKTIF',
+        'paid_by': actor.label,
+        'paid_by_employee_sync_id': actor.employeeSyncId,
         'catatan': _clean(catatan),
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
-        'created_at': nowIso(),
-        'updated_at': nowIso(),
+        'created_at': sekarang,
+        'updated_at': sekarang,
       });
       if (kasKeluar > 0) {
-        await txn.insert('cash_ledger', {
-          'sync_id': newSyncId(),
-          'waktu': nowIso(),
-          'kategori': 'GAJI',
-          'sumber_entity': 'salary_payment',
-          'sumber_sync_id': syncId,
-          'nominal': -kasKeluar,
-          'metode': metode,
-          'operator': summary.nama,
-          'catatan': 'Gaji ${summary.periode} ${summary.nama}',
-          'created_at': nowIso(),
-          'updated_at': nowIso(),
-        });
+        await txn.insert(
+          'cash_ledger',
+          {
+            'sync_id': newSyncId(),
+            'store_id': storeId,
+            'device_id': deviceId,
+            'waktu': sekarang,
+            'kategori': 'GAJI',
+            'sumber_entity': 'salary_payment',
+            'sumber_sync_id': syncId,
+            'nominal': -kasKeluar,
+            'metode': metode,
+            'operator': actor.label,
+            'catatan': 'Gaji ${summary.periode} ${summary.nama}',
+            'sync_hlc_wall': hlc.wall,
+            'sync_hlc_counter': hlc.counter,
+            'created_at': sekarang,
+            'updated_at': sekarang,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
       }
+      await txn.insert('business_audits', {
+        'sync_id': newSyncId(),
+        'store_id': storeId,
+        'device_id': deviceId,
+        'waktu': sekarang,
+        'aktor': actor.label,
+        'aktor_employee_sync_id': actor.employeeSyncId,
+        'aksi': 'bayar_gaji',
+        'entity': 'salary_payment',
+        'entity_id': syncId,
+        'before_json': '{}',
+        'after_json':
+            '{"gaji_pokok":$gajiPokok,"komisi":$komisiDibayar,'
+                '"bonus":${summary.bonusCents},"kas_keluar":$kasKeluar}',
+        'alasan': _clean(catatan),
+        'created_at': sekarang,
+        'updated_at': sekarang,
+      });
       if (enqueue != null) await enqueue(txn, syncId);
     });
     return PayrollSummary(
@@ -537,6 +581,20 @@ class EmployeeService {
       nextMonth.month,
       _safeDay(nextMonth.year, nextMonth.month, day),
     );
+  }
+
+  Future<String> _deviceId(DatabaseExecutor txn) async {
+    final rows = await txn.query(
+      'app_meta',
+      columns: ['key', 'value'],
+      where: "key IN ('sync.relay_device_id', 'device.current_id')",
+    );
+    final settings = {
+      for (final row in rows) '${row['key']}': '${row['value']}',
+    };
+    return settings['sync.relay_device_id'] ??
+        settings['device.current_id'] ??
+        '';
   }
 
   static String? _clean(String? value) {

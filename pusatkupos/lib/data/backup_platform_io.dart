@@ -84,6 +84,66 @@ Future<void> deleteDatabaseSidecars(String path) async {
   }
 }
 
+/// Menghapus berkas database [path] beserta WAL/SHM/journal, penanda versi
+/// skema, sisa restore, salinan pengaman `.bak-*`, dan salinan karantina
+/// `.corrupt-*`. Dipakai saat pemilik keluar dari perangkat.
+Future<void> deleteDatabaseFiles(String path) async {
+  await _deleteFileIfExists(File(path));
+  for (final suffix in const [
+    '-wal',
+    '-shm',
+    '-journal',
+    '.schema_version',
+    '.old',
+    '.restore.ok',
+    '.restore.tmp',
+    '.restore.plain',
+  ]) {
+    await _deleteFileIfExists(File('$path$suffix'));
+  }
+  final dir = File(path).parent;
+  if (!await dir.exists()) return;
+  final prefix = p.basename(path);
+  final artifacts = <File>[];
+  await for (final entity in dir.list()) {
+    if (entity is! File) continue;
+    final name = p.basename(entity.path);
+    if (name.startsWith('$prefix.bak-') ||
+        name.startsWith('$prefix.corrupt-')) {
+      artifacts.add(entity);
+    }
+  }
+  for (final artifact in artifacts) {
+    await _deleteFileIfExists(artifact);
+    await deleteDatabaseSidecars(artifact.path);
+  }
+}
+
+/// Menghapus seluruh salinan laporan ringkasan (`viewer_*.db`) di [directory].
+Future<void> deleteViewerDatabases(String directory) async {
+  final dir = Directory(directory);
+  if (!await dir.exists()) return;
+  final paths = <String>[];
+  await for (final entity in dir.list()) {
+    if (entity is! File) continue;
+    final name = p.basename(entity.path);
+    if (name.startsWith('viewer_') && name.endsWith('.db')) {
+      paths.add(entity.path);
+    }
+  }
+  for (final path in paths) {
+    await deleteDatabaseFiles(path);
+  }
+}
+
+/// Memindahkan berkas (dipakai mode pemulihan untuk mengarantina database
+/// yang gagal dibuka). Data lama tidak dihapus.
+Future<void> moveFile(String from, String to) async {
+  final file = File(from);
+  if (!await file.exists()) return;
+  await file.rename(to);
+}
+
 /// Ganti database secara atomik: berkas lama dipindahkan ke `<path>.old`
 /// lebih dahulu, sehingga kegagalan di tengah proses masih dapat
 /// dipulihkan lewat [recoverInterruptedRestore]. Berkas `.old` baru dihapus

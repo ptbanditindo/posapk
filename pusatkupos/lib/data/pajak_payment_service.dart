@@ -29,6 +29,19 @@ class PajakPaymentInput {
   final String? requestId;
 }
 
+/// Pembayaran PPN dari perangkat lain melebihi sisa kewajiban pada masa itu.
+/// Sinkronisasi mencatatnya sebagai konflik final dan tidak menerapkan baris
+/// maupun kasnya, sesuai keputusan pemilik: kelebihan bayar ditolak.
+class PajakPaymentRejected implements Exception {
+  PajakPaymentRejected({required this.reason, required this.detail});
+
+  final String reason;
+  final Map<String, Object?> detail;
+
+  @override
+  String toString() => 'Pembayaran PPN ditolak ($reason).';
+}
+
 /// Pencatatan pembayaran PPN per masa. Hanya pemilik; pembayaran dibatasi
 /// sisa kewajiban neto pada saat dicatat dan idempoten lewat `request_id`.
 class PajakPaymentService {
@@ -76,23 +89,28 @@ class PajakPaymentService {
       };
     }
 
-    final rekap = await PajakReportService.instance.rekap(input.masa);
-    final sisa = rekap.sisaKewajibanCents;
-    if (sisa <= 0) {
-      throw StateError(
-        'Tidak ada sisa kewajiban PPN pada ${PajakReportService.masaLabel(input.masa)}.',
-      );
-    }
-    if (input.nominalCents > sisa) {
-      throw StateError(
-        'Pembayaran melebihi sisa kewajiban ${formatRupiah(sisa)}.',
-      );
-    }
-
     final dibayarAt = (input.dibayarAt ?? DateTime.now());
     final dibayarIso = dibayarAt.toUtc().toIso8601String();
 
     return AppDatabase.instance.db.transaction((txn) async {
+      // Sisa kewajiban dibaca di transaksi yang sama agar dua pembayaran
+      // bersamaan tidak dapat melampaui kewajiban.
+      final rekap = await PajakReportService.instance.rekap(
+        input.masa,
+        executor: txn,
+      );
+      final sisa = rekap.sisaKewajibanCents;
+      if (sisa <= 0) {
+        throw StateError(
+          'Tidak ada sisa kewajiban PPN pada '
+          '${PajakReportService.masaLabel(input.masa)}.',
+        );
+      }
+      if (input.nominalCents > sisa) {
+        throw StateError(
+          'Pembayaran melebihi sisa kewajiban ${formatRupiah(sisa)}.',
+        );
+      }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final now = nowIso();
       final deviceId = await _deviceId(txn);
@@ -142,8 +160,6 @@ class PajakPaymentService {
         entityId: syncId,
         before: '{}',
         after: _json(row),
-        hlcWall: hlc.wall,
-        hlcCounter: hlc.counter,
       );
       if (enqueue != null) await enqueue(txn, id);
       return {
@@ -223,8 +239,6 @@ class PajakPaymentService {
           'nominal': row['nominal'],
           'status': 'VOID',
         }),
-        hlcWall: hlc.wall,
-        hlcCounter: hlc.counter,
       );
       if (enqueue != null) await enqueue(txn, paymentId);
     });
@@ -303,10 +317,44 @@ class PajakPaymentService {
     final metode = '${payload['metode'] ?? 'CASH'}' == 'TRANSFER'
         ? 'TRANSFER'
         : 'CASH';
+    if (status == 'AKTIF') {
+      // Keputusan pemilik: kelebihan bayar PPN ditolak, bukan dikompensasi.
+      // Pemeriksaan memakai rekap yang sama dengan jalur lokal.
+      final rekap = await PajakReportService.instance.rekap(
+        masa,
+        executor: txn,
+      );
+      final sisa = rekap.sisaKewajibanCents;
+      if (nominal > sisa) {
+        throw PajakPaymentRejected(
+          reason: 'pembayaran_ppn_melebihi_sisa',
+          detail: {
+            'sync_id': syncId,
+            'masa': masa,
+            'nominal': nominal,
+            'sisa_kewajiban': sisa,
+          },
+        );
+      }
+    }
     final providedCash = '${payload['cash_sync_id'] ?? ''}'.trim();
-    final cashSyncId = metode == 'CASH' && status == 'AKTIF'
-        ? (providedCash.isEmpty ? newSyncId() : providedCash)
-        : null;
+    String? cashSyncId;
+    if (metode == 'CASH' && status == 'AKTIF') {
+      if (providedCash.isEmpty) {
+        cashSyncId = newSyncId();
+      } else {
+        final clash = await txn.query(
+          'cash_ledger',
+          columns: ['sumber_sync_id'],
+          where: 'sync_id = ?',
+          whereArgs: [providedCash],
+          limit: 1,
+        );
+        final ownedByOther = clash.isNotEmpty &&
+            '${clash.first['sumber_sync_id'] ?? ''}' != syncId;
+        cashSyncId = ownedByOther ? newSyncId() : providedCash;
+      }
+    }
     await txn.insert('pajak_pembayaran', {
       'sync_id': syncId,
       'store_id': '${payload['store_id'] ?? _storeId}',
@@ -363,27 +411,38 @@ class PajakPaymentService {
   }) async {
     if (nominal == 0) return;
     final now = nowIso();
-    await txn.insert(
+    final existing = await txn.query(
       'cash_ledger',
-      {
-        'sync_id': cashSyncId,
-        'store_id': _storeId,
-        'device_id': await _deviceId(txn),
-        'waktu': waktu,
-        'kategori': kategori,
-        'sumber_entity': sumberEntity,
-        'sumber_sync_id': sumberSyncId,
-        'nominal': nominal,
-        'metode': metode,
-        'operator': operator,
-        'catatan': catatan,
-        'sync_hlc_wall': hlcWall,
-        'sync_hlc_counter': hlcCounter,
-        'created_at': now,
-        'updated_at': now,
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
+      columns: ['sumber_sync_id'],
+      where: 'sync_id = ?',
+      whereArgs: [cashSyncId],
+      limit: 1,
     );
+    if (existing.isNotEmpty) {
+      // Idempoten untuk sumber yang sama; bentrok dengan sumber lain tidak
+      // boleh dibuang diam-diam karena kasnya akan hilang.
+      if ('${existing.first['sumber_sync_id'] ?? ''}' == sumberSyncId) return;
+      throw StateError(
+        'cash_sync_id $cashSyncId sudah dipakai entri kas lain.',
+      );
+    }
+    await txn.insert('cash_ledger', {
+      'sync_id': cashSyncId,
+      'store_id': _storeId,
+      'device_id': await _deviceId(txn),
+      'waktu': waktu,
+      'kategori': kategori,
+      'sumber_entity': sumberEntity,
+      'sumber_sync_id': sumberSyncId,
+      'nominal': nominal,
+      'metode': metode,
+      'operator': operator,
+      'catatan': catatan,
+      'sync_hlc_wall': hlcWall,
+      'sync_hlc_counter': hlcCounter,
+      'created_at': now,
+      'updated_at': now,
+    });
   }
 
   Future<void> _audit(
@@ -393,8 +452,6 @@ class PajakPaymentService {
     required String entityId,
     required String before,
     required String after,
-    required int hlcWall,
-    required int hlcCounter,
   }) async {
     final now = nowIso();
     await txn.insert('business_audits', {
@@ -410,8 +467,6 @@ class PajakPaymentService {
       'before_json': before,
       'after_json': after,
       'alasan': null,
-      'sync_hlc_wall': hlcWall,
-      'sync_hlc_counter': hlcCounter,
       'created_at': now,
       'updated_at': now,
     });
@@ -419,7 +474,7 @@ class PajakPaymentService {
 
   Future<String> _deviceId(DatabaseExecutor txn) async {
     final rows = await txn.query(
-      'app_settings',
+      'app_meta',
       columns: ['key', 'value'],
       where: "key IN ('sync.relay_device_id', 'device.current_id')",
     );

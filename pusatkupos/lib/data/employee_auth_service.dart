@@ -274,7 +274,6 @@ class EmployeeAuthService {
         'nama': namaAkun,
         'role_base': role,
         'extra_permissions_json': jsonEncode(extras),
-        'store_ids_json': jsonEncode(storeIds),
         'password_hash': 'relay',
         'password_salt': 'relay',
         'must_change_password': account['must_change_password'] == true ? 1 : 0,
@@ -291,7 +290,6 @@ class EmployeeAuthService {
           'nama': namaAkun,
           'role_base': role,
           'extra_permissions_json': jsonEncode(extras),
-          'store_ids_json': jsonEncode(storeIds),
           'aktif': aktif,
           'permissions_explicit': explicit,
           'must_change_password': account['must_change_password'] == true

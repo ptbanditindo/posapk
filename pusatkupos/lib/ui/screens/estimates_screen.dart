@@ -154,9 +154,14 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
     final lines = <_RevisionLine>[];
     for (final item in items) {
       final jenis = item['jenis'] as String? ?? 'jasa';
-      var harga = (item['harga_jual_terdaftar'] as num?)?.toInt() ?? 0;
+      final reference =
+          (item['harga_jual_terdaftar'] as num?)?.toInt() ?? 0;
+      var harga = (item['harga_input'] as num?)?.toInt() ?? 0;
+      if (harga == 0) harga = reference;
       var modal = (item['harga_modal'] as num?)?.toInt() ?? 0;
       int? stockItemId;
+      int? jasaId;
+      var hargaTerdaftar = reference;
       final stockSync = (item['stock_sync_id'] as String?)?.trim() ?? '';
       if (jenis == 'part' && stockSync.isNotEmpty) {
         final stockRows = await AppDatabase.instance.db.query(
@@ -169,7 +174,25 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
           final stock = StockItem.fromRow(stockRows.first);
           stockItemId = stock.id;
           harga = stock.hargaJualCents;
+          hargaTerdaftar = stock.hargaJualCents;
           modal = stock.hargaModalCents;
+        }
+      } else if (jenis == 'jasa') {
+        final jasaSync = (item['jasa_sync_id'] as String?)?.trim() ?? '';
+        if (jasaSync.isNotEmpty) {
+          final catalog = await AppDatabase.instance.db.query(
+            'harga_jasa',
+            where: 'sync_id = ? AND deleted_at IS NULL',
+            whereArgs: [jasaSync],
+            limit: 1,
+          );
+          if (catalog.isNotEmpty) {
+            jasaId = catalog.first['id'] as int?;
+            hargaTerdaftar =
+                (catalog.first['harga_jual'] as num?)?.toInt() ?? reference;
+            harga = hargaTerdaftar;
+            modal = (catalog.first['harga_modal'] as num?)?.toInt() ?? 0;
+          }
         }
       }
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 1;
@@ -184,6 +207,8 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
           hargaCents: harga,
           modalCents: modal,
           stockItemId: stockItemId,
+          jasaId: jasaId,
+          hargaTerdaftarCents: hargaTerdaftar,
           intervalBulan:
               (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
         ),
@@ -215,6 +240,8 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
           workOrderSyncId: row['work_order_sync_id'] as String?,
           revisiDariSyncId: syncId,
           alasanRevisi: draft.alasan,
+          jenisTransaksi:
+              row['jenis_transaksi'] as String? ?? transactionServisLangsung,
           items: draft.items,
           diskonCents: draft.diskonCents,
           ownerPin: ownerPin,
@@ -838,6 +865,8 @@ class _RevisionLine {
     required this.modalCents,
     this.qtyMilli,
     this.stockItemId,
+    this.jasaId,
+    this.hargaTerdaftarCents = 0,
     this.intervalBulan = 0,
   });
 
@@ -848,6 +877,8 @@ class _RevisionLine {
   final int modalCents;
   final int? qtyMilli;
   final int? stockItemId;
+  final int? jasaId;
+  final int hargaTerdaftarCents;
   final int intervalBulan;
 
   int get milli => qtyMilli ?? jumlah * 1000;
@@ -935,7 +966,9 @@ class _RevisionDialogState extends State<_RevisionDialog> {
           hargaCents: line.hargaCents,
           modalCents: line.modalCents,
           stockItemId: line.stockItemId,
+          jasaId: line.jasaId,
           intervalBulan: line.intervalBulan,
+          hargaTerdaftarCents: line.hargaTerdaftarCents,
         ),
       );
     }

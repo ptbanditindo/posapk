@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../auth/permissions.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../core/quantity.dart';
 import '../../data/app_database.dart';
@@ -29,6 +31,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
   List<StockItem> _stocks = const [];
   List<Map<String, Object?>> _suppliers = const [];
   List<Customer> _customers = const [];
+  List<Map<String, Object?>> _payables = const [];
+  List<Map<String, Object?>> _receivables = const [];
   final List<_DraftItem> _items = [];
   final _catatan = TextEditingController();
 
@@ -50,6 +54,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
     final stocks = await AppDatabase.instance.listStock();
     final suppliers = await SupplierService.instance.listSuppliers();
     final customers = await AppDatabase.instance.listCustomers();
+    final payables = await OpeningBalanceService.instance.openPayables();
+    final receivables = await OpeningBalanceService.instance.openReceivables();
     if (!mounted) return;
     setState(() {
       _active = active;
@@ -57,6 +63,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
       _stocks = stocks;
       _suppliers = suppliers;
       _customers = customers;
+      _payables = payables;
+      _receivables = receivables;
       _loading = false;
     });
   }
@@ -80,19 +88,36 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
     );
     if (stock == null || !mounted) return;
     final qty = TextEditingController();
+    final modal = TextEditingController(
+      text: formatRupiahPlain(stock.hargaModalCents),
+    );
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Stok awal ${stock.nama}'),
-        content: TextField(
-          controller: qty,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            labelText: 'Jumlah',
-            helperText:
-                'Desimal ${stock.desimal}, satuan ${stock.satuan}',
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: qty,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Jumlah',
+                helperText:
+                    'Desimal ${stock.desimal}, satuan ${stock.satuan}',
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: modal,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Modal per satuan',
+                helperText: 'Boleh berbeda dari modal master barang',
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -107,8 +132,16 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
       ),
     );
     final milli = parseQuantityToMilli(qty.text, desimal: stock.desimal);
+    final modalCents = tryParseRupiahToCents(modal.text);
     qty.dispose();
+    modal.dispose();
     if (ok != true || milli == null || milli <= 0) return;
+    if (modalCents == null || modalCents < 0) {
+      if (mounted) {
+        showSnack(context, 'Modal per satuan tidak valid.', error: true);
+      }
+      return;
+    }
     setState(() {
       _items.add(
         _DraftItem(
@@ -116,6 +149,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
           refId: stock.id,
           label: stock.nama,
           jumlahMilli: milli,
+          unitCostCents: modalCents,
         ),
       );
     });
@@ -159,17 +193,31 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
     );
     if (picked == null || !mounted) return;
     final nominal = TextEditingController();
+    final due = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
           isDebt ? 'Utang awal ${picked.$2}' : 'Piutang awal ${picked.$2}',
         ),
-        content: TextField(
-          controller: nominal,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Nominal'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nominal,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Nominal'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: due,
+              keyboardType: TextInputType.datetime,
+              decoration: const InputDecoration(
+                labelText: 'Jatuh tempo (yyyy-MM-dd, opsional)',
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -184,7 +232,9 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
       ),
     );
     final cents = tryParseRupiahToCents(nominal.text);
+    final dueDate = DateTime.tryParse(due.text.trim());
     nominal.dispose();
+    due.dispose();
     if (ok != true || cents == null || cents <= 0) return;
     setState(() {
       _items.add(
@@ -193,9 +243,102 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
           refId: picked.$1,
           label: picked.$2,
           nominal: cents,
+          jatuhTempo: dueDate == null ? null : dateOnly.format(dueDate),
         ),
       );
     });
+  }
+
+  Future<void> _payOpening({
+    required Map<String, Object?> row,
+    required bool payable,
+  }) async {
+    final sisa = ((row['nominal_cents'] as num?)?.toInt() ?? 0) -
+        ((row['terbayar_cents'] as num?)?.toInt() ?? 0);
+    final nominal = TextEditingController(text: formatRupiahPlain(sisa));
+    var metode = 'CASH';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(
+            payable
+                ? 'Bayar utang ${row['supplier_nama_snapshot'] ?? ''}'
+                : 'Tagih piutang ${row['customer_nama_snapshot'] ?? ''}',
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nominal,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Nominal',
+                  helperText: 'Sisa ${formatRupiah(sisa)}',
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: metode,
+                decoration: const InputDecoration(labelText: 'Metode'),
+                items: const [
+                  DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
+                  DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
+                ],
+                onChanged: (value) {
+                  if (value != null) setDialogState(() => metode = value);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(payable ? 'Bayar' : 'Tagih'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final cents = tryParseRupiahToCents(nominal.text);
+    nominal.dispose();
+    if (ok != true || cents == null || cents <= 0) return;
+    setState(() => _busy = true);
+    try {
+      final actor = AppState.instance.requireOperator;
+      if (payable) {
+        await OpeningBalanceService.instance.payPayable(
+          payableSyncId: '${row['sync_id']}',
+          nominal: cents,
+          metode: metode,
+          actor: actor,
+          enqueue: (txn, syncId) =>
+              SyncService.instance.enqueueOpeningBalance(syncId, txn: txn),
+        );
+      } else {
+        await OpeningBalanceService.instance.collectReceivable(
+          receivableSyncId: '${row['sync_id']}',
+          nominal: cents,
+          metode: metode,
+          actor: actor,
+          enqueue: (txn, syncId) =>
+              SyncService.instance.enqueueOpeningBalance(syncId, txn: txn),
+        );
+      }
+      await _load();
+      if (mounted) {
+        showSnack(context, payable ? 'Utang awal dibayar.' : 'Piutang awal ditagih.');
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, 'Gagal: $error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _post() async {
@@ -218,6 +361,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
               refId: item.refId,
               jumlahMilli: item.jumlahMilli,
               nominal: item.nominal,
+              unitCostCents: item.unitCostCents,
+              jatuhTempo: item.jatuhTempo,
             ),
         ],
         actor: AppState.instance.requireOperator,
@@ -300,7 +445,12 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                if (_active == null) ..._buildForm() else ..._buildActive(),
+                if (_active == null)
+                  ..._buildForm()
+                else ...[
+                  ..._buildActive(),
+                  ..._buildFinance(),
+                ],
                 if (_busy) ...[
                   const SizedBox(height: 14),
                   const LinearProgressIndicator(),
@@ -358,6 +508,100 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
     ];
   }
 
+  List<Widget> _buildFinance() {
+    final canPay = _isOwner || AppState.instance.can(permissionPayDebt);
+    final canCollect = AppState.instance.canWriteMoney;
+    final sections = <Widget>[];
+    if (_payables.isNotEmpty) {
+      sections.add(
+        SectionCard(
+          title: 'Utang awal belum lunas',
+          child: Column(
+            children: [
+              for (final row in _payables)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('${row['supplier_nama_snapshot'] ?? ''}'),
+                  subtitle: Text(
+                    row['jatuh_tempo'] == null
+                        ? 'Tanpa jatuh tempo'
+                        : 'Jatuh tempo ${row['jatuh_tempo']}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        formatRupiah(
+                          ((row['nominal_cents'] as num?)?.toInt() ?? 0) -
+                              ((row['terbayar_cents'] as num?)?.toInt() ?? 0),
+                        ),
+                      ),
+                      if (canPay)
+                        IconButton(
+                          icon: const Icon(Icons.payments_outlined),
+                          tooltip: 'Bayar',
+                          onPressed: _busy
+                              ? null
+                              : () => _payOpening(row: row, payable: true),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_receivables.isNotEmpty) {
+      sections.add(
+        SectionCard(
+          title: 'Piutang awal belum lunas',
+          child: Column(
+            children: [
+              for (final row in _receivables)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('${row['customer_nama_snapshot'] ?? ''}'),
+                  subtitle: Text(
+                    row['jatuh_tempo'] == null
+                        ? 'Tanpa jatuh tempo'
+                        : 'Jatuh tempo ${row['jatuh_tempo']}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        formatRupiah(
+                          ((row['nominal_cents'] as num?)?.toInt() ?? 0) -
+                              ((row['terbayar_cents'] as num?)?.toInt() ?? 0),
+                        ),
+                      ),
+                      if (canCollect)
+                        IconButton(
+                          icon: const Icon(Icons.receipt_long_outlined),
+                          tooltip: 'Tagih',
+                          onPressed: _busy
+                              ? null
+                              : () => _payOpening(row: row, payable: false),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (sections.isEmpty) return const [];
+    return [
+      const SizedBox(height: 12),
+      for (final section in sections) ...[
+        section,
+        const SizedBox(height: 12),
+      ],
+    ];
+  }
+
   List<Widget> _buildForm() {
     if (!_isOwner) {
       return [
@@ -408,7 +652,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
                   title: Text(item.label),
                   subtitle: Text(
                     item.jenis == _jenisStok
-                        ? 'Stok ${formatQuantity(item.jumlahMilli, 0)}'
+                        ? 'Stok ${formatQuantity(item.jumlahMilli, 0)} · '
+                            'modal ${formatRupiah(item.unitCostCents ?? 0)}'
                         : item.jenis == _jenisUtang
                             ? 'Utang supplier'
                             : 'Piutang pelanggan',
@@ -464,6 +709,8 @@ class _DraftItem {
     required this.label,
     this.jumlahMilli = 0,
     this.nominal = 0,
+    this.unitCostCents,
+    this.jatuhTempo,
   });
 
   final String jenis;
@@ -471,4 +718,6 @@ class _DraftItem {
   final String label;
   final int jumlahMilli;
   final int nominal;
+  final int? unitCostCents;
+  final String? jatuhTempo;
 }

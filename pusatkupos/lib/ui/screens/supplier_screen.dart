@@ -66,6 +66,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
         alamat: input.alamat,
         catatan: input.catatan,
         aktif: input.aktif,
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, id) =>
             SyncService.instance.enqueueSupplier(id, txn: txn),
       );
@@ -94,6 +95,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
     if (!ok) return;
     await SupplierService.instance.deleteSupplier(
       supplier['id'] as int,
+      actor: AppState.instance.requireOperator,
       enqueue: (txn, id) =>
           SyncService.instance.enqueueSupplier(id, txn: txn),
     );

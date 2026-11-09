@@ -2,11 +2,13 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 
+import '../auth/operator.dart';
 import '../core/dates.dart';
 import '../sync/crypto.dart';
 import 'app_database.dart';
 import 'device_service.dart';
 import 'license_service.dart';
+import 'pin_service.dart';
 import 'secure_store.dart';
 import 'store_service.dart';
 
@@ -15,7 +17,10 @@ class OwnerSummaryService {
 
   static final OwnerSummaryService instance = OwnerSummaryService._();
 
-  Future<String> buildSignedSummary() async {
+  Future<String> buildSignedSummary({required Operator actor}) async {
+    if (!actor.isOwner) {
+      throw StateError('Hanya pemilik yang dapat membuat ringkasan owner.');
+    }
     final ownerId = await LicenseService.instance.ownerId();
     final ownerPublic = await LicenseService.instance.ownerPublicKey();
     final privateKey = await SecureStore.instance.read('owner.signing.private');
@@ -48,7 +53,9 @@ class OwnerSummaryService {
       'plan': status['plan'],
       'period_end': status['period_end'],
       'store_limit': status['store_limit'],
-      'license_token': status['token'],
+      // Token lisensi penuh tidak ikut diekspor. Perangkat ringkasan
+      // mendapatkannya lewat aktivasi Google/relay, bukan berkas ini.
+      'license_token_present': '${status['token'] ?? ''}'.isNotEmpty,
       'stores': stores,
       'devices': devices
           .map(
@@ -71,8 +78,20 @@ class OwnerSummaryService {
     });
   }
 
-  Future<String?> export() async {
-    final summary = await buildSignedSummary();
+  Future<String?> export({
+    required Operator actor,
+    required String pin,
+  }) async {
+    if (!actor.isOwner) {
+      throw StateError('Hanya pemilik yang dapat mengekspor ringkasan');
+    }
+    final verification = await PinService.instance.verifyDetailed(pin);
+    if (verification != PinVerification.ok) {
+      throw StateError(
+        'PIN pemilik wajib valid dan minimal 6 digit untuk mengekspor.',
+      );
+    }
+    final summary = await buildSignedSummary(actor: actor);
     final stamp = DateTime.now()
         .toIso8601String()
         .replaceAll(RegExp(r'[:.]'), '-')

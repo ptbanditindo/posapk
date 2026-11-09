@@ -76,6 +76,10 @@ class _PinGateState extends State<PinGate> {
         return;
       }
       final profile = widget.profile;
+      if (result == PinVerification.weakLegacyPin) {
+        final upgraded = await _forcePinUpgrade(pin);
+        if (!upgraded) return;
+      }
       var permissions = profile.permissions;
       var role = profile.role;
       var extras = profile.extraPermissions;
@@ -136,16 +140,6 @@ class _PinGateState extends State<PinGate> {
       );
       await AppState.instance.load();
       if (!mounted) return;
-      if (result == PinVerification.weakLegacyPin) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'PIN Anda masih 4 digit. Segera ganti ke minimal 6 digit di '
-              'Pengaturan.',
-            ),
-          ),
-        );
-      }
       if (widget.unlockOnly) {
         Navigator.of(context).pop();
       } else {
@@ -164,14 +158,99 @@ class _PinGateState extends State<PinGate> {
     }
   }
 
+  /// PIN lama yang pendek tidak boleh dipakai masuk. Pengguna wajib membuat
+  /// PIN minimal 6 digit dahulu.
+  Future<bool> _forcePinUpgrade(String oldPin) async {
+    final next = TextEditingController();
+    final confirm = TextEditingController();
+    String? error;
+    var saving = false;
+    final changed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Ganti PIN wajib'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'PIN di perangkat ini masih kurang dari 6 digit. Buat PIN '
+                'baru minimal 6 digit untuk melanjutkan.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: next,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'PIN baru (minimal 6 digit)',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: confirm,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(labelText: 'Ulangi PIN baru'),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: saving ? null : () => Navigator.pop(context, false),
+              child: const Text('Keluar'),
+            ),
+            FilledButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final value = next.text.trim();
+                      if (value.length < 6 || value != confirm.text.trim()) {
+                        setDialogState(
+                          () => error =
+                              'PIN baru minimal 6 digit dan harus sama.',
+                        );
+                        return;
+                      }
+                      setDialogState(() => saving = true);
+                      final ok = await PinService.instance.change(
+                        oldPin: oldPin,
+                        newPin: value,
+                      );
+                      if (context.mounted) Navigator.pop(context, ok);
+                    },
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    next.dispose();
+    confirm.dispose();
+    return changed ?? false;
+  }
+
   Future<void> _switchAccount() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Keluar dari akun ini?'),
-        content: const Text(
-          'PIN dan sesi di perangkat ini akan dihapus. '
-          'Data transaksi tetap tersimpan.',
+        content: Text(
+          widget.profile.isOwner
+              ? 'PIN dan sesi dihapus. Database lokal di perangkat ini juga '
+                  'dihapus; masuk lagi memerlukan salinan dari server akun.'
+              : 'PIN dan sesi di perangkat ini akan dihapus. '
+                  'Data transaksi tetap tersimpan.',
         ),
         actions: [
           TextButton(

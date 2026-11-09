@@ -253,7 +253,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return result;
   }
 
-  Future<String?> _askOwnerPin() async {
+  Future<String?> _askOwnerPin({
+    String reason =
+        'Masukkan PIN pemilik untuk menyalin passphrase backup. '
+        'Passphrase tidak ditampilkan di layar.',
+  }) async {
     final controller = TextEditingController();
     String? error;
     final result = await showDialog<String>(
@@ -264,10 +268,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                'Masukkan PIN pemilik untuk menyalin passphrase backup. '
-                'Passphrase tidak ditampilkan di layar.',
-              ),
+              Text(reason),
               const SizedBox(height: 12),
               TextField(
                 controller: controller,
@@ -323,13 +324,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     switch (verification) {
       case PinVerification.ok:
-      case PinVerification.weakLegacyPin:
         final value = await BackupService.instance.autoPassphrase();
         await Clipboard.setData(ClipboardData(text: value));
         if (!mounted) return;
         showSnack(
           context,
           'Passphrase disalin. Hapus clipboard setelah dipakai.',
+        );
+      case PinVerification.weakLegacyPin:
+        showSnack(
+          context,
+          'Ganti PIN ke minimal 6 digit sebelum membuka passphrase.',
+          error: true,
         );
       case PinVerification.locked:
         showSnack(
@@ -406,7 +412,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       if (!mounted) return;
       if (result.ok) {
-        await AppState.instance.load();
+        await AppState.instance.reloadStore();
         AppState.instance.touch();
         _nama.text = AppState.instance.storeName;
         _alamat.text = AppState.instance.storeAddress;
@@ -872,8 +878,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 alignment: Alignment.centerLeft,
                 child: OutlinedButton.icon(
                   onPressed: () async {
+                    if (!AppState.instance.isOwner) {
+                      showSnack(
+                        context,
+                        'Hanya pemilik yang dapat mengekspor ringkasan.',
+                        error: true,
+                      );
+                      return;
+                    }
+                    final pin = await _askOwnerPin(
+                      reason:
+                          'Masukkan PIN pemilik untuk mengekspor ringkasan '
+                          'owner.',
+                    );
+                    if (pin == null || !mounted) return;
                     try {
-                      final path = await OwnerSummaryService.instance.export();
+                      final path = await OwnerSummaryService.instance.export(
+                        actor: AppState.instance.requireOperator,
+                        pin: pin,
+                      );
                       if (!context.mounted) return;
                       showSnack(
                         context,
@@ -1091,9 +1114,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   builder: (ctx) => AlertDialog(
                     title: const Text('Keluar akun?'),
-                    content: const Text(
-                      'Data toko tetap tersimpan di perangkat ini. '
-                      'Untuk masuk kembali Anda perlu akun dan PIN.',
+                    content: Text(
+                      AppState.instance.isOwner
+                          ? 'Database lokal di perangkat ini akan dihapus. '
+                              'Masuk lagi memerlukan akun dan salinan data '
+                              'dari server akun.'
+                          : 'Sesi di perangkat ini akan berakhir. '
+                              'Data toko tetap tersimpan.',
                     ),
                     actions: [
                       TextButton(

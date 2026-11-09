@@ -17,13 +17,14 @@ class Customer {
   final String? alamat;
 
   factory Customer.fromRow(Map<String, Object?> row) => Customer(
-        id: row['id'] as int,
-        syncId: row['sync_id'] as String,
-        nama: row['nama'] as String,
-        nomorHp: row['nomor_hp'] as String,
-        alamat: row['alamat'] as String?,
-      );
+    id: row['id'] as int,
+    syncId: row['sync_id'] as String,
+    nama: row['nama'] as String,
+    nomorHp: row['nomor_hp'] as String,
+    alamat: row['alamat'] as String?,
+  );
 }
+
 class VehicleUnit {
   const VehicleUnit({
     required this.id,
@@ -67,20 +68,20 @@ class VehicleUnit {
   }
 
   factory VehicleUnit.fromRow(Map<String, Object?> row) => VehicleUnit(
-        id: row['id'] as int,
-        customerId: row['customer_id'] as int?,
-        unitType: row['unit_type'] as String? ?? 'MOBIL',
-        nopol: row['nopol'] as String?,
-        merek: row['merek'] as String?,
-        tipe: row['tipe'] as String?,
-        jenisMobil: row['jenis_mobil'] as String?,
-        tahunMobil: row['tahun_mobil'] as int?,
-        noRangka: row['no_rangka'] as String?,
-        noMesin: row['no_mesin'] as String?,
-        kmTerakhir: row['km_terakhir'] as int?,
-        tipeRadiator: row['tipe_radiator'] as String?,
-        labelRadiator: row['label_radiator'] as String?,
-      );
+    id: row['id'] as int,
+    customerId: row['customer_id'] as int?,
+    unitType: row['unit_type'] as String? ?? 'MOBIL',
+    nopol: row['nopol'] as String?,
+    merek: row['merek'] as String?,
+    tipe: row['tipe'] as String?,
+    jenisMobil: row['jenis_mobil'] as String?,
+    tahunMobil: row['tahun_mobil'] as int?,
+    noRangka: row['no_rangka'] as String?,
+    noMesin: row['no_mesin'] as String?,
+    kmTerakhir: row['km_terakhir'] as int?,
+    tipeRadiator: row['tipe_radiator'] as String?,
+    labelRadiator: row['label_radiator'] as String?,
+  );
 }
 
 class StockItem {
@@ -115,25 +116,22 @@ class StockItem {
   bool get negatif => jumlahMilli < 0;
   bool get lowStock => jumlahMilli <= stokMinimum * 1000;
 
-  String get jumlahLabel => formatQuantity(
-        jumlahMilli,
-        desimal,
-        satuan: satuan,
-      );
+  String get jumlahLabel =>
+      formatQuantity(jumlahMilli, desimal, satuan: satuan);
 
   factory StockItem.fromRow(Map<String, Object?> row) => StockItem(
-        id: row['id'] as int,
-        kode: row['kode'] as String,
-        nama: row['nama'] as String,
-        hargaModalCents: row['harga_modal'] as int? ?? 0,
-        hargaJualCents: row['harga_jual'] as int? ?? 0,
-        jumlah: row['jumlah'] as int? ?? 0,
-        stokMinimum: row['stok_minimum'] as int? ?? 0,
-        satuan: row['satuan'] as String? ?? 'pcs',
-        desimal: row['desimal'] as int? ?? 0,
-        jumlahMilliOverride: row['jumlah_milli'] as int?,
-        intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
-      );
+    id: row['id'] as int,
+    kode: row['kode'] as String,
+    nama: row['nama'] as String,
+    hargaModalCents: row['harga_modal'] as int? ?? 0,
+    hargaJualCents: row['harga_jual'] as int? ?? 0,
+    jumlah: ((row['jumlah_milli'] as num?)?.toInt() ?? 0) ~/ 1000,
+    stokMinimum: row['stok_minimum'] as int? ?? 0,
+    satuan: row['satuan'] as String? ?? 'pcs',
+    desimal: row['desimal'] as int? ?? 0,
+    jumlahMilliOverride: row['jumlah_milli'] as int?,
+    intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
+  );
 }
 
 class ServiceCatalog {
@@ -152,12 +150,12 @@ class ServiceCatalog {
   final int intervalBulan;
 
   factory ServiceCatalog.fromRow(Map<String, Object?> row) => ServiceCatalog(
-        id: row['id'] as int,
-        nama: row['nama'] as String,
-        hargaCents: row['harga_jual'] as int? ?? 0,
-        hargaModalCents: row['harga_modal'] as int? ?? 0,
-        intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
-      );
+    id: row['id'] as int,
+    nama: row['nama'] as String,
+    hargaCents: row['harga_jual'] as int? ?? 0,
+    hargaModalCents: row['harga_modal'] as int? ?? 0,
+    intervalBulan: row['interval_servis_bulan'] as int? ?? 0,
+  );
 }
 
 class ServiceRecordSummary {
@@ -257,8 +255,11 @@ class ServiceRecordSummary {
     final due = jatuhTempo;
     if (due == null || sisaBayarCents <= 0 || isVoid) return false;
     final today = DateTime.now();
-    return DateTime(today.year, today.month, today.day)
-        .isAfter(DateTime(due.year, due.month, due.day));
+    return DateTime(
+      today.year,
+      today.month,
+      today.day,
+    ).isAfter(DateTime(due.year, due.month, due.day));
   }
 
   int get sisaBayarCents {
@@ -292,8 +293,7 @@ class ServiceRecordSummary {
         customerNama: (row['customer_nama'] as String?) ?? '',
         unitLabel: (row['unit_label'] as String?) ?? '',
         keluhan: (row['keluhan_awal'] as String?) ?? '',
-        jenisTransaksi:
-            row['jenis_transaksi'] as String? ?? 'servis_langsung',
+        jenisTransaksi: row['jenis_transaksi'] as String? ?? 'servis_langsung',
         biayaJasaCents: row['biaya_jasa'] as int? ?? 0,
         totalPartCents: row['total_part'] as int? ?? 0,
         diskonCents: row['diskon'] as int? ?? 0,
@@ -336,8 +336,7 @@ class ServiceRecordSummary {
         pajakDiserapCents: (row['pajak_diserap'] as num?)?.toInt() ?? 0,
         pajakMode: row['pajak_mode'] as String? ?? 'TANPA',
         pajakPersenBp: (row['pajak_persen_bp'] as num?)?.toInt() ?? 0,
-        pajakPenanggung:
-            row['pajak_penanggung'] as String? ?? 'PEMBELI',
+        pajakPenanggung: row['pajak_penanggung'] as String? ?? 'PEMBELI',
       );
 }
 
@@ -351,11 +350,13 @@ class JobDraft {
     this.intervalBulan = 0,
     this.syncId,
     int? hargaTerdaftarCents,
+    bool hargaBebas = false,
     this.hargaFinalCents = 0,
     this.diskonAlokasiCents = 0,
     this.alasanDiskon,
     this.disetujuiOleh,
-  }) : hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
+  })  : hargaTerdaftarCents = hargaTerdaftarCents ?? 0,
+        hargaBebas = hargaBebas ? 1 : 0;
 
   String deskripsi;
   int jumlah;
@@ -364,7 +365,10 @@ class JobDraft {
   int modalCents;
   final int intervalBulan;
   final String? syncId;
-  final int hargaTerdaftarCents;
+
+  /// Tarif acuan dari katalog. Nol berarti tidak ada tarif acuan.
+  int hargaTerdaftarCents;
+  int hargaBebas;
   int hargaFinalCents;
   int diskonAlokasiCents;
   String? alasanDiskon;
@@ -390,7 +394,7 @@ class PartDraft {
     this.alasanDiskon,
     this.disetujuiOleh,
   }) : qtyMilli = qtyMilli ?? jumlah * 1000,
-       hargaTerdaftarCents = hargaTerdaftarCents ?? hargaCents;
+       hargaTerdaftarCents = hargaTerdaftarCents ?? 0;
 
   final int stockItemId;
   String nama;
@@ -400,7 +404,7 @@ class PartDraft {
   int modalCents;
   final int intervalBulan;
   final String? syncId;
-  final int hargaTerdaftarCents;
+  int hargaTerdaftarCents;
   int hargaFinalCents;
   int diskonAlokasiCents;
   String? alasanDiskon;
@@ -491,7 +495,8 @@ class SaleReturnRow {
       id: row['id'] as int,
       noRetur: row['no_retur'] as String? ?? '',
       noNota: row['no_nota'] as String? ?? '',
-      waktu: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
+      waktu:
+          DateTime.tryParse('${row['created_at']}')?.toLocal() ??
           DateTime.now(),
       totalCents: (row['total'] as num?)?.toInt() ?? 0,
       alasan: row['alasan'] as String? ?? '',
@@ -577,6 +582,7 @@ class ReportSummary {
     this.returJasaCents = 0,
     this.returPartCents = 0,
     this.returModalCents = 0,
+    this.returDitagihCents = 0,
     this.totalDppCents = 0,
     this.pajakCents = 0,
     this.pajakDiserapCents = 0,
@@ -602,15 +608,20 @@ class ReportSummary {
   final int returPartCents;
   final int returModalCents;
 
-  /// Total DPP nota aktif pada periode. Omzet dan laba memakai DPP; kas dan
-  /// piutang tetap memakai nilai yang ditagihkan (termasuk PPN).
+  /// Nilai retur yang benar-benar mengurangi tagihan (termasuk PPN).
+  /// `returJasaCents`/`returPartCents` memakai DPP untuk omzet dan laba.
+  final int returDitagihCents;
+
+  /// Total DPP nota aktif pada periode setelah dikurangi retur aktif. Omzet
+  /// dan laba memakai DPP; kas dan piutang memakai nilai ditagih (termasuk
+  /// PPN). Angka ini harus sama dengan rekap PPN.
   final int totalDppCents;
   final int pajakCents;
   final int pajakDiserapCents;
 
   int get returCents => returJasaCents + returPartCents;
 
-  int get totalNetCents => totalCents - returCents;
+  int get totalNetCents => totalCents - returDitagihCents;
 
   int get totalModalCents => totalModalPartCents + totalModalJasaCents;
   int get labaKotorCents => labaKotorPartCents + labaKotorJasaCents;
@@ -694,8 +705,11 @@ class EstimateAgingRow {
     final expiry = masaBerlaku;
     if (expiry == null || converted) return false;
     final today = DateTime.now();
-    return DateTime(today.year, today.month, today.day)
-        .isAfter(DateTime(expiry.year, expiry.month, expiry.day));
+    return DateTime(
+      today.year,
+      today.month,
+      today.day,
+    ).isAfter(DateTime(expiry.year, expiry.month, expiry.day));
   }
 
   int get varianceCents {

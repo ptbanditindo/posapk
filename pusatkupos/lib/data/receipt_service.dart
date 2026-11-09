@@ -69,7 +69,7 @@ class ReceiptService {
     );
     final phoneRows = await db.db.rawQuery(
       '''
-      SELECT c.nomor_hp
+      SELECT COALESCE(NULLIF(TRIM(r.customer_hp), ''), c.nomor_hp) AS nomor_hp
       FROM service_records r
       LEFT JOIN vehicle_or_units u ON u.id = r.unit_id
       LEFT JOIN customers c ON c.id = COALESCE(r.customer_id, u.customer_id)

@@ -4,10 +4,9 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/dates.dart';
 import '../core/ids.dart';
-import '../core/quantity.dart';
 import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
-import 'models.dart';
+import 'stock_ledger.dart';
 
 extension NoteSyncDatabase on AppDatabase {
   Future<Map<String, Object?>> noteSyncPayload(
@@ -17,12 +16,14 @@ extension NoteSyncDatabase on AppDatabase {
     final target = executor ?? db;
     final rows = await target.rawQuery(
       '''
-      SELECT r.*, c.sync_id AS customer_sync_id, c.nama AS customer_nama,
-        c.nomor_hp AS customer_hp, c.alamat AS customer_alamat,
+      SELECT r.*, c.sync_id AS customer_sync_id,
+        c.nama AS customer_nama_master, c.nomor_hp AS customer_hp_master,
+        c.alamat AS customer_alamat,
         c.wa_consent AS customer_wa_consent,
         c.do_not_contact AS customer_do_not_contact,
         c.created_at AS customer_created_at,
-        u.sync_id AS unit_sync_id, u.unit_type, u.nopol, u.merek, u.tipe,
+        u.sync_id AS unit_sync_id, u.unit_type, u.nopol AS unit_nopol_master,
+        u.merek, u.tipe,
         u.jenis_mobil, u.tahun_mobil, u.no_rangka, u.no_mesin, u.km_terakhir,
         u.tipe_radiator, u.label_radiator,
         u.created_at AS unit_created_at
@@ -90,12 +91,16 @@ extension NoteSyncDatabase on AppDatabase {
           'line_sync_id': item['line_sync_id'],
           'deskripsi': item['deskripsi'],
           'jumlah': item['jumlah'],
-          'jumlah_milli': item['jumlah_milli'] ??
+          'jumlah_milli':
+              item['jumlah_milli'] ??
               ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000,
           'qty_asal_milli': item['qty_asal_milli'],
           'harga_satuan': item['harga_satuan'],
           'subtotal': item['subtotal'],
           'modal_satuan': item['modal_satuan'] ?? 0,
+          'dpp_cents': item['dpp_cents'] ?? 0,
+          'ppn_cents': item['ppn_cents'] ?? 0,
+          'total_ditagih_cents': item['total_ditagih_cents'] ?? 0,
           'stock_sync_id': stockSync,
         });
       }
@@ -109,6 +114,14 @@ extension NoteSyncDatabase on AppDatabase {
         'dpp': retur['dpp'] ?? 0,
         'pajak': retur['pajak'] ?? 0,
         'pajak_diserap': retur['pajak_diserap'] ?? 0,
+        'dpp_cents': retur['dpp_cents'] ?? retur['dpp'] ?? 0,
+        'ppn_cents': retur['ppn_cents'] ?? retur['pajak'] ?? 0,
+        'total_ditagih_cents':
+            retur['total_ditagih_cents'] ?? retur['total'] ?? 0,
+        'metode_refund': retur['metode_refund'] ?? 'CASH',
+        'voided_at': retur['voided_at'],
+        'void_reason': retur['void_reason'],
+        'voided_by': retur['voided_by'],
         'alasan': retur['alasan'],
         'dibuat_oleh': retur['dibuat_oleh'],
         'created_at': retur['created_at'],
@@ -134,7 +147,8 @@ extension NoteSyncDatabase on AppDatabase {
             'nama': stockRow['nama'],
             'harga_modal': stockRow['harga_modal'],
             'harga_jual': stockRow['harga_jual'],
-            'jumlah': stockRow['jumlah'],
+            'jumlah':
+                ((stockRow['jumlah_milli'] as num?)?.toInt() ?? 0) ~/ 1000,
             'jumlah_milli': stockRow['jumlah_milli'],
             'satuan': stockRow['satuan'] ?? 'pcs',
             'desimal': stockRow['desimal'] ?? 0,
@@ -147,7 +161,8 @@ extension NoteSyncDatabase on AppDatabase {
         'stock_sync_id': stock?['sync_id'],
         'nama_part': part['nama_part'],
         'jumlah': part['jumlah'],
-        'jumlah_milli': part['jumlah_milli'] ??
+        'jumlah_milli':
+            part['jumlah_milli'] ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000,
         'harga_satuan': part['harga_satuan'],
         'subtotal': part['subtotal'],
@@ -168,8 +183,8 @@ extension NoteSyncDatabase on AppDatabase {
           ? <String, Object?>{}
           : {
               'sync_id': row['customer_sync_id'],
-              'nama': row['customer_nama'],
-              'nomor_hp': row['customer_hp'],
+              'nama': row['customer_nama_master'],
+              'nomor_hp': row['customer_hp_master'],
               'alamat': row['customer_alamat'],
               'wa_consent': row['customer_wa_consent'] ?? 1,
               'do_not_contact': row['customer_do_not_contact'] ?? 0,
@@ -181,7 +196,7 @@ extension NoteSyncDatabase on AppDatabase {
               'sync_id': row['unit_sync_id'],
               'customer_sync_id': row['customer_sync_id'],
               'unit_type': row['unit_type'],
-              'nopol': row['nopol'],
+              'nopol': row['unit_nopol_master'],
               'merek': row['merek'],
               'tipe': row['tipe'],
               'jenis_mobil': row['jenis_mobil'],
@@ -196,6 +211,11 @@ extension NoteSyncDatabase on AppDatabase {
       'record': {
         'sync_id': row['sync_id'],
         'no_nota': row['no_nota'],
+        'request_id': row['request_id'],
+        'request_payload_hash': row['request_payload_hash'],
+        'customer_nama': row['customer_nama'] ?? '',
+        'customer_hp': row['customer_hp'] ?? '',
+        'unit_nopol': row['unit_nopol'] ?? '',
         'jenis_transaksi': row['jenis_transaksi'] ?? 'servis_langsung',
         'mode_saat_dibuat_json': row['mode_saat_dibuat_json'] ?? '{}',
         'diskon_snapshot_json': row['diskon_snapshot_json'] ?? '{}',
@@ -228,6 +248,7 @@ extension NoteSyncDatabase on AppDatabase {
         'total_dibayar': row['total_dibayar'],
         'sisa_bayar': row['sisa_bayar'],
         'jatuh_tempo': row['jatuh_tempo'],
+        'kredit_disetujui_oleh': row['kredit_disetujui_oleh'],
         'status': row['status'],
         'void_reason': row['void_reason'],
         'voided_at': row['voided_at'],
@@ -263,6 +284,7 @@ extension NoteSyncDatabase on AppDatabase {
               'harga': job['harga'],
               'subtotal': job['subtotal'],
               'harga_jual_terdaftar': job['harga_jual_terdaftar'] ?? 0,
+              'harga_bebas': job['harga_bebas'] ?? 0,
               'harga_batas_saat_transaksi':
                   job['harga_batas_saat_transaksi'] ?? 0,
               'harga_final': job['harga_final'] ?? job['harga'] ?? 0,
@@ -284,6 +306,7 @@ extension NoteSyncDatabase on AppDatabase {
               'waktu': payment['waktu'],
               'operator': payment['operator'],
               'request_id': payment['request_id'],
+              'kas_kategori': payment['kas_kategori'],
               'catatan': payment['catatan'],
             },
           )
@@ -392,7 +415,8 @@ extension NoteSyncDatabase on AppDatabase {
       final activeReturns = await txn.query(
         'sale_returns',
         columns: ['id'],
-        where: "service_record_id = ? AND deleted_at IS NULL "
+        where:
+            "service_record_id = ? AND deleted_at IS NULL "
             "AND status = 'AKTIF'",
         whereArgs: [existingRecord.first['id']],
       );
@@ -427,7 +451,8 @@ extension NoteSyncDatabase on AppDatabase {
           limit: 1,
         );
         if (movement.isNotEmpty) continue;
-        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+        final qtyMilli =
+            (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         final partSync = part['sync_id'] as String? ?? '';
         var returnedMilli = 0;
@@ -448,40 +473,19 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         }
         final restockMilli = qtyMilli - returnedMilli;
         if (restockMilli <= 0) continue;
-        final before = StockItem.fromRow(stock.first);
-        final nextMilli = before.jumlahMilli + restockMilli;
-        final stockHlc = await nextSyncHlc(txn);
-        await txn.update(
-          'stock_items',
-          {
-            'jumlah': wholeQuantity(nextMilli),
-            'jumlah_milli': nextMilli,
-            'sync_hlc_wall': stockHlc.wall,
-            'sync_hlc_counter': stockHlc.counter,
-            'updated_at': nowIso(),
-          },
-          where: 'id = ?',
-          whereArgs: [stock.first['id']],
+        await StockLedger.instance.apply(
+          txn,
+          stockItemId: stock.first['id'] as int,
+          stockSyncId: '${stock.first['sync_id']}',
+          jenis: 'MASUK',
+          deltaMilli: restockMilli,
+          movementSyncId: movementKey,
+          sumberEntity: 'void',
+          sumberSyncId: partSync,
+          serviceRecordId: existingRecord.first['id'] as int,
+          namaItem: '${part['nama_part'] ?? ''}',
+          alasan: 'Void $recordSync',
         );
-        await txn.insert('stock_movements', {
-          'sync_id': movementKey,
-          'stock_item_id': stock.first['id'],
-          'stock_sync_id': stock.first['sync_id'],
-          'nama_item': part['nama_part'],
-          'jenis': 'MASUK',
-          'jumlah': wholeQuantity(restockMilli),
-          'jumlah_milli': restockMilli,
-          'stok_sebelum_milli': before.jumlahMilli,
-          'stok_sesudah_milli': nextMilli,
-          'sumber_entity': 'void',
-          'sumber_sync_id': partSync,
-          'alasan': 'Void $recordSync',
-          'service_record_id': existingRecord.first['id'],
-          'sync_hlc_wall': stockHlc.wall,
-          'sync_hlc_counter': stockHlc.counter,
-          'created_at': nowIso(),
-          'updated_at': nowIso(),
-        });
       }
       // Komisi pada nota VOID tidak boleh tetap aktif. Tandai lokal agar
       // laporan komisi konsisten meski amplop komisi belum/tidak diterima.
@@ -538,7 +542,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           code: 'nota_butuh_induk',
         );
       }
-      final recordVoid = existingRecord.first['voided_at'] != null ||
+      final recordVoid =
+          existingRecord.first['voided_at'] != null ||
           '${existingRecord.first['status']}' == 'VOID';
       for (final payment in payments) {
         // Nota VOID bersifat terminal; hanya refund yang boleh menyusul.
@@ -610,7 +615,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
             whereArgs: [localCustomerId],
             limit: 1,
           );
-          needsRepair = localCustomer.isEmpty ||
+          needsRepair =
+              localCustomer.isEmpty ||
               localCustomer.first['deleted_at'] != null;
         }
         if (needsRepair) {
@@ -670,15 +676,13 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
             entity: 'nota',
             entityId: recordSync,
             reason: 'no_nota_bentrok',
-            detail: {
-              'no_nota_asal': incomingNoNota,
-              'no_nota_baru': next,
-            },
+            detail: {'no_nota_asal': incomingNoNota, 'no_nota_baru': next},
           );
           changed = true;
         }
       }
-      changed = changed ||
+      changed =
+          changed ||
           await _applyPostSaleFields(
             txn,
             existingRecord.first,
@@ -688,7 +692,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           );
       // Retur divalidasi lebih dulu: refund tunai hanya boleh ikut bila retur
       // yang menjadi dasarnya diterima.
-      var returnAdded = false;
+      var returnChanged = false;
       final rejectedReturnSyncs = <String>{};
       for (final retur in returns) {
         final result = await _upsertReturn(
@@ -697,13 +701,15 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           recordSync,
           retur,
         );
-        returnAdded = returnAdded || result == 'added';
+        returnChanged =
+            returnChanged || result == 'added' || result == 'updated';
         if (result == 'rejected') {
           rejectedReturnSyncs.add('${retur['sync_id'] ?? ''}');
         }
       }
       var paymentAdded = false;
-      final localVoid = existingRecord.first['voided_at'] != null ||
+      final localVoid =
+          existingRecord.first['voided_at'] != null ||
           '${existingRecord.first['status']}' == 'VOID';
       for (final payment in payments) {
         if (localVoid && '${payment['jenis'] ?? ''}' != 'REFUND') {
@@ -721,8 +727,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         );
         paymentAdded = paymentAdded || inserted;
       }
-      changed = changed || returnAdded || paymentAdded;
-      if (returnAdded || paymentAdded) {
+      changed = changed || returnChanged || paymentAdded;
+      if (returnChanged || paymentAdded) {
         if (localVoid) {
           await _syncVoidTotals(txn, existingRecord.first['id'] as int);
         } else {
@@ -732,7 +738,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           );
         }
       }
-      if (returnAdded) {
+      if (returnChanged) {
         // Tarif komisi memakai snapshot nota yang ikut dikirim, bukan tarif
         // master perangkat ini.
         await AppDatabase.instance.recalculateRecordCommissions(
@@ -850,6 +856,38 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         }
       }
     }
+    final incomingRequestId = '${record['request_id'] ?? ''}'.trim();
+    final incomingRequestHash =
+        '${record['request_payload_hash'] ?? ''}'.trim();
+    if (incomingRequestId.isNotEmpty) {
+      final duplicate = await txn.query(
+        'service_records',
+        columns: ['sync_id', 'request_payload_hash', 'no_nota'],
+        where: 'request_id = ?',
+        whereArgs: [incomingRequestId],
+        limit: 1,
+      );
+      if (duplicate.isNotEmpty) {
+        final localHash =
+            '${duplicate.first['request_payload_hash'] ?? ''}'.trim();
+        final samePayload = localHash.isEmpty ||
+            incomingRequestHash.isEmpty ||
+            localHash == incomingRequestHash;
+        await _recordPendingConflict(
+          txn,
+          entity: 'nota',
+          entityId: recordSync,
+          reason: samePayload
+              ? 'request_id_sudah_dipakai'
+              : 'request_payload_berbeda',
+          detail: {
+            'request_id': incomingRequestId,
+            'nota_lokal': duplicate.first['no_nota'],
+          },
+        );
+        return 'duplicate';
+      }
+    }
     var noNota = record['no_nota'] as String? ?? await allocateNextNota(txn);
     final conflict = await txn.query(
       'service_records',
@@ -866,10 +904,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         entity: 'nota',
         entityId: recordSync,
         reason: 'no_nota_bentrok',
-        detail: {
-          'no_nota_asal': noNotaAsal,
-          'no_nota_baru': noNota,
-        },
+        detail: {'no_nota_asal': noNotaAsal, 'no_nota_baru': noNota},
       );
     }
     final incomingVoid =
@@ -885,7 +920,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       for (final part in parts) {
         final stockSync = part['stock_sync_id'] as String? ?? '';
         if (stockSync.isEmpty) continue;
-        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+        final qtyMilli =
+            (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         if (qtyMilli <= 0) continue;
         needed[stockSync] = (needed[stockSync] ?? 0) + qtyMilli;
@@ -922,7 +958,12 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'unit_id': unitId,
       'customer_id': customerId,
       'no_nota': noNota,
-      'request_id': null,
+      'request_id': incomingRequestId.isEmpty ? null : incomingRequestId,
+      'request_payload_hash':
+          incomingRequestHash.isEmpty ? null : incomingRequestHash,
+      'customer_nama': '${record['customer_nama'] ?? ''}',
+      'customer_hp': '${record['customer_hp'] ?? ''}',
+      'unit_nopol': '${record['unit_nopol'] ?? ''}',
       'jenis_transaksi': record['jenis_transaksi'] ?? 'servis_langsung',
       'mode_saat_dibuat_json': record['mode_saat_dibuat_json'] ?? '{}',
       'diskon_snapshot_json': record['diskon_snapshot_json'] ?? '{}',
@@ -950,9 +991,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           : record['total_efektif'] ?? record['total_servis'] ?? 0,
       'total_kas_diterima': autoCancel
           ? 0
-          : record['total_kas_diterima'] ??
-                record['total_dibayar'] ??
-                0,
+          : record['total_kas_diterima'] ?? record['total_dibayar'] ?? 0,
       'commission_snapshot_json': record['commission_snapshot_json'] ?? '{}',
       'metode_bayar': record['metode_bayar'] ?? 'CASH',
       'bayar': record['bayar'] ?? 0,
@@ -962,6 +1001,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'total_dibayar': record['total_dibayar'] ?? 0,
       'sisa_bayar': autoCancel ? 0 : record['sisa_bayar'] ?? 0,
       'jatuh_tempo': record['jatuh_tempo'],
+      'kredit_disetujui_oleh': record['kredit_disetujui_oleh'],
       'status': autoCancel ? 'VOID' : record['status'] ?? 'AKTIF',
       'void_reason': autoCancel ? autoCancelReason : record['void_reason'],
       'voided_at': autoCancel ? nowIso() : record['voided_at'],
@@ -998,6 +1038,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         'harga': job['harga'] ?? 0,
         'subtotal': job['subtotal'] ?? 0,
         'harga_jual_terdaftar': job['harga_jual_terdaftar'] ?? 0,
+        'harga_bebas': job['harga_bebas'] ?? 0,
         'harga_batas_saat_transaksi': job['harga_batas_saat_transaksi'] ?? 0,
         'harga_final': job['harga_final'] ?? job['harga'] ?? 0,
         'diskon_alokasi': job['diskon_alokasi'] ?? 0,
@@ -1026,15 +1067,42 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           final postSale =
               (stock?['jumlah_milli'] as num?)?.toInt() ??
               ((stock?['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-          final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+          final qtyMilli =
+              (part['jumlah_milli'] as num?)?.toInt() ??
               ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+          var kode = '${stock?['kode'] ?? stockSync}';
+          final clash = await txn.query(
+            'stock_items',
+            columns: ['sync_id', 'nama'],
+            where: 'kode = ? AND deleted_at IS NULL',
+            whereArgs: [kode],
+            limit: 1,
+          );
+          if (clash.isNotEmpty) {
+            final kodeBaru = await _uniqueStockCode(txn, kode);
+            await _recordPendingConflict(
+              txn,
+              entity: 'stock',
+              entityId: stockSync,
+              reason: 'kode_barang_bentrok',
+              detail: {
+                'kode_asal': kode,
+                'kode_baru': kodeBaru,
+                'barang_lama_sync_id': clash.first['sync_id'],
+                'barang_lama_nama': clash.first['nama'],
+                'barang_masuk_nama': stock?['nama'] ?? part['nama_part'],
+                'no_nota': noNota,
+                'record_sync_id': recordSync,
+              },
+            );
+            kode = kodeBaru;
+          }
           stockId = await txn.insert('stock_items', {
             'sync_id': stockSync,
-            'kode': stock?['kode'] ?? stockSync,
+            'kode': kode,
             'nama': stock?['nama'] ?? part['nama_part'],
             'harga_modal': stock?['harga_modal'] ?? 0,
             'harga_jual': stock?['harga_jual'] ?? 0,
-            'jumlah': wholeQuantity(postSale + qtyMilli),
             'jumlah_milli': postSale + qtyMilli,
             'satuan': stock?['satuan'] ?? 'pcs',
             'desimal': stock?['desimal'] ?? 0,
@@ -1046,72 +1114,39 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           stockId = stockRows.first['id'] as int;
         }
         final movementKey = 'sale-${part['sync_id']}';
-        final movement = await txn.query(
-          'stock_movements',
-          where: 'sync_id = ?',
-          whereArgs: [movementKey],
-          limit: 1,
+        final qtyMilli =
+            (part['jumlah_milli'] as num?)?.toInt() ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        final result = await StockLedger.instance.apply(
+          txn,
+          stockItemId: stockId,
+          stockSyncId: stockSync,
+          jenis: 'KELUAR',
+          deltaMilli: -qtyMilli,
+          movementSyncId: movementKey,
+          sumberEntity: 'service_part',
+          sumberSyncId: '${part['sync_id']}',
+          serviceRecordId: recordId,
+          namaItem: '${part['nama_part'] ?? ''}',
+          alasan: 'Penjualan ${record['no_nota']}',
+          allowNegative: true,
         );
-        if (movement.isEmpty) {
-          final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
-              ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-          final current = await txn.query(
-            'stock_items',
-            where: 'id = ?',
-            whereArgs: [stockId],
-            limit: 1,
-          );
-          final before = StockItem.fromRow(current.first);
-          final nextMilli = before.jumlahMilli - qtyMilli;
-          final stockHlc = await nextSyncHlc(txn);
-          await txn.update(
-            'stock_items',
-            {
-              'jumlah': wholeQuantity(nextMilli),
-              'jumlah_milli': nextMilli,
-              'sync_hlc_wall': stockHlc.wall,
-              'sync_hlc_counter': stockHlc.counter,
-              'updated_at': nowIso(),
+        if (!result.existing && result.afterMilli < 0) {
+          await _recordPendingConflict(
+            txn,
+            entity: 'stock',
+            entityId: stockSync,
+            reason: 'stok_negatif',
+            detail: {
+              'no_nota': noNota,
+              'record_sync_id': recordSync,
+              'stock_sync_id': stockSync,
+              'nama_item': part['nama_part'],
+              'stok_sebelum_milli': result.beforeMilli,
+              'stok_sesudah_milli': result.afterMilli,
+              'sumber_entity': 'service_part',
             },
-            where: 'id = ?',
-            whereArgs: [stockId],
           );
-          await txn.insert('stock_movements', {
-            'sync_id': movementKey,
-            'stock_item_id': stockId,
-            'stock_sync_id': stockSync,
-            'nama_item': part['nama_part'],
-            'jenis': 'KELUAR',
-            'jumlah': wholeQuantity(-qtyMilli),
-            'jumlah_milli': -qtyMilli,
-            'stok_sebelum_milli': before.jumlahMilli,
-            'stok_sesudah_milli': nextMilli,
-            'sumber_entity': 'service_part',
-            'sumber_sync_id': part['sync_id'],
-            'alasan': 'Penjualan ${record['no_nota']}',
-            'service_record_id': recordId,
-            'sync_hlc_wall': stockHlc.wall,
-            'sync_hlc_counter': stockHlc.counter,
-            'created_at': nowIso(),
-            'updated_at': nowIso(),
-          });
-          if (nextMilli < 0) {
-            await _recordPendingConflict(
-              txn,
-              entity: 'stock',
-              entityId: stockSync,
-              reason: 'stok_negatif',
-              detail: {
-                'no_nota': noNota,
-                'record_sync_id': recordSync,
-                'stock_sync_id': stockSync,
-                'nama_item': part['nama_part'],
-                'stok_sebelum_milli': before.jumlahMilli,
-                'stok_sesudah_milli': nextMilli,
-                'sumber_entity': 'service_part',
-              },
-            );
-          }
         }
       }
       await txn.insert('service_parts', {
@@ -1120,7 +1155,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         'stock_item_id': stockId,
         'nama_part': part['nama_part'] ?? '',
         'jumlah': part['jumlah'] ?? 0,
-        'jumlah_milli': part['jumlah_milli'] ??
+        'jumlah_milli':
+            part['jumlah_milli'] ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000,
         'harga_satuan': part['harga_satuan'] ?? 0,
         'subtotal': part['subtotal'] ?? 0,
@@ -1138,7 +1174,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       });
     }
     final rejectedReturnSyncs = <String>{};
-    var returnAdded = false;
+    var returnChanged = false;
     if (autoCancel) {
       // Nota batal otomatis tidak boleh menambah kas, piutang, atau retur.
       await _recordPendingConflict(
@@ -1155,7 +1191,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     } else {
       for (final retur in returns) {
         final result = await _upsertReturn(txn, recordId, recordSync, retur);
-        returnAdded = returnAdded || result == 'added';
+        returnChanged =
+            returnChanged || result == 'added' || result == 'updated';
         if (result == 'rejected') {
           rejectedReturnSyncs.add('${retur['sync_id'] ?? ''}');
         }
@@ -1176,7 +1213,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     } else {
       await _recalculateRecordTotals(txn, recordId);
     }
-    if (returnAdded) {
+    if (returnChanged) {
       await AppDatabase.instance.recalculateRecordCommissions(
         txn,
         recordId,
@@ -1205,20 +1242,16 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         limit: 1,
       );
       if (existing.isNotEmpty) continue;
-      await txn.insert(
-        'service_record_mechanics',
-        {
-          'sync_id': mechanic['sync_id'] ?? newSyncId(),
-          'service_record_id': recordId,
-          'employee_sync_id': employeeSync,
-          'employee_nama_snapshot': mechanic['employee_nama_snapshot'],
-          'peran': mechanic['peran'],
-          'urutan': mechanic['urutan'] ?? 0,
-          'created_at': nowIso(),
-          'updated_at': nowIso(),
-        },
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
+      await txn.insert('service_record_mechanics', {
+        'sync_id': mechanic['sync_id'] ?? newSyncId(),
+        'service_record_id': recordId,
+        'employee_sync_id': employeeSync,
+        'employee_nama_snapshot': mechanic['employee_nama_snapshot'],
+        'peran': mechanic['peran'],
+        'urutan': mechanic['urutan'] ?? 0,
+        'created_at': nowIso(),
+        'updated_at': nowIso(),
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
     final snapshot = '${record['commission_snapshot_json'] ?? ''}'.trim();
     if (snapshot.isEmpty || snapshot == '{}') return;
@@ -1314,6 +1347,9 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       if (rows.isNotEmpty) return false;
     }
     final paymentSyncId = syncId.isEmpty ? newSyncId() : syncId;
+    final kasKategori = '${payment['kas_kategori'] ?? ''}'.trim().isEmpty
+        ? ('${payment['jenis'] ?? ''}' == 'REFUND' ? 'REFUND' : 'PENJUALAN')
+        : '${payment['kas_kategori']}';
     await txn.insert('service_payments', {
       'sync_id': paymentSyncId,
       'service_record_id': recordId,
@@ -1323,30 +1359,25 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'waktu': payment['waktu'] ?? nowIso(),
       'operator': payment['operator'] ?? 'Pemilik',
       'request_id': requestId.isEmpty ? 'sync-$paymentSyncId' : requestId,
+      'kas_kategori': kasKategori,
       'catatan': payment['catatan'],
       'created_at': nowIso(),
       'updated_at': nowIso(),
     });
     // Buku kas ikut disamakan agar rekonsiliasi perangkat tidak berbeda.
-    await txn.insert(
-      'cash_ledger',
-      {
-        'sync_id': newSyncId(),
-        'waktu': payment['waktu'] ?? nowIso(),
-        'kategori': '${payment['jenis'] ?? ''}' == 'REFUND'
-            ? 'REFUND'
-            : 'PENJUALAN',
-        'sumber_entity': 'service_payment',
-        'sumber_sync_id': paymentSyncId,
-        'nominal': payment['nominal'] ?? 0,
-        'metode': payment['metode'] ?? 'CASH',
-        'operator': payment['operator'],
-        'catatan': payment['catatan'],
-        'created_at': nowIso(),
-        'updated_at': nowIso(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
+    await txn.insert('cash_ledger', {
+      'sync_id': newSyncId(),
+      'waktu': payment['waktu'] ?? nowIso(),
+      'kategori': kasKategori,
+      'sumber_entity': 'service_payment',
+      'sumber_sync_id': paymentSyncId,
+      'nominal': payment['nominal'] ?? 0,
+      'metode': payment['metode'] ?? 'CASH',
+      'operator': payment['operator'],
+      'catatan': payment['catatan'],
+      'created_at': nowIso(),
+      'updated_at': nowIso(),
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
     return true;
   }
 
@@ -1363,21 +1394,28 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     final requestId = '${retur['request_id'] ?? ''}'.trim();
     final existing = await txn.query(
       'sale_returns',
-      columns: ['id'],
       where: 'sync_id = ?',
       whereArgs: [syncId],
       limit: 1,
     );
-    if (existing.isNotEmpty) return 'duplicate';
+    if (existing.isNotEmpty) {
+      return _applyReturnVoidRemote(txn, existing.first, retur, recordId);
+    }
     if (requestId.isNotEmpty) {
       final existingRequest = await txn.query(
         'sale_returns',
-        columns: ['id'],
         where: 'request_id = ?',
         whereArgs: [requestId],
         limit: 1,
       );
-      if (existingRequest.isNotEmpty) return 'duplicate';
+      if (existingRequest.isNotEmpty) {
+        return _applyReturnVoidRemote(
+          txn,
+          existingRequest.first,
+          retur,
+          recordId,
+        );
+      }
     }
     final recordRows = await txn.query(
       'service_records',
@@ -1389,8 +1427,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     if (recordRows.isEmpty) return 'rejected';
     final recordRow = recordRows.first;
     final noNota = '${recordRow['no_nota'] ?? ''}';
-    if (recordRow['voided_at'] != null ||
-        '${recordRow['status']}' == 'VOID') {
+    if (recordRow['voided_at'] != null || '${recordRow['status']}' == 'VOID') {
       await _recordReturnConflict(
         txn,
         returSync: syncId,
@@ -1412,8 +1449,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       final lineType = '${item['line_type'] ?? 'part'}';
       final lineSync = '${item['line_sync_id'] ?? ''}';
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
-      final qtyMilli =
-          (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
+      final qtyMilli = (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
       if (lineSync.isEmpty || qtyMilli <= 0) {
         await _recordReturnConflict(
           txn,
@@ -1459,13 +1495,13 @@ SELECT COALESCE(SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000)), 0)
 FROM sale_return_items ri
 JOIN sale_returns sr ON sr.id = ri.return_id
 WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
+  AND sr.status = 'AKTIF'
   AND ri.deleted_at IS NULL AND ri.line_type = ?
   AND ri.line_sync_id = ?
 ''',
         [recordId, lineType, lineSync],
       );
-      final returned =
-          (returnedRows.first['total'] as num?)?.toInt() ?? 0;
+      final returned = (returnedRows.first['total'] as num?)?.toInt() ?? 0;
       if (returned + entry.value > soldMilli) {
         await _recordReturnConflict(
           txn,
@@ -1488,16 +1524,15 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     final createdAt = retur['created_at'] ?? nowIso();
     var modalTotal = 0;
     for (final item in items) {
-      final qtyMilli = (item['jumlah_milli'] as num?)?.toInt() ??
+      final qtyMilli =
+          (item['jumlah_milli'] as num?)?.toInt() ??
           ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000;
       final modal = (item['modal_satuan'] as num?)?.toInt() ?? 0;
       modalTotal += (modal * qtyMilli / 1000).round();
     }
     final total = (retur['total'] as num?)?.toInt() ?? 0;
-    final requestedRefund =
-        (retur['total_refund'] as num?)?.toInt() ?? 0;
-    final totalRefund =
-        requestedRefund.clamp(0, total < 0 ? 0 : total).toInt();
+    final requestedRefund = (retur['total_refund'] as num?)?.toInt() ?? 0;
+    final totalRefund = requestedRefund.clamp(0, total < 0 ? 0 : total).toInt();
     final returnId = await txn.insert('sale_returns', {
       'sync_id': syncId,
       'service_record_id': recordId,
@@ -1512,6 +1547,11 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'dpp': retur['dpp'] ?? 0,
       'pajak': retur['pajak'] ?? 0,
       'pajak_diserap': retur['pajak_diserap'] ?? 0,
+      'dpp_cents': retur['dpp_cents'] ?? retur['dpp'] ?? 0,
+      'ppn_cents': retur['ppn_cents'] ?? retur['pajak'] ?? 0,
+      'total_ditagih_cents':
+          retur['total_ditagih_cents'] ?? retur['total'] ?? 0,
+      'metode_refund': retur['metode_refund'] ?? 'CASH',
       'alasan': retur['alasan'] ?? 'Retur dari perangkat lain',
       'dibuat_oleh': retur['dibuat_oleh'],
       'created_at': createdAt,
@@ -1519,8 +1559,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     });
     for (final item in items) {
       final jumlah = (item['jumlah'] as num?)?.toInt() ?? 0;
-      final qtyMilli = (item['jumlah_milli'] as num?)?.toInt() ??
-          jumlah * 1000;
+      final qtyMilli = (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
       final lineType = '${item['line_type'] ?? 'part'}';
       final lineSyncId = '${item['line_sync_id'] ?? ''}';
       int? stockId;
@@ -1546,11 +1585,15 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         'deskripsi': item['deskripsi'] ?? '',
         'jumlah': jumlah,
         'jumlah_milli': qtyMilli,
-        'qty_asal_milli': (item['qty_asal_milli'] as num?)?.toInt() ??
+        'qty_asal_milli':
+            (item['qty_asal_milli'] as num?)?.toInt() ??
             soldByKey['$lineType:$lineSyncId'],
         'harga_satuan': item['harga_satuan'] ?? 0,
         'subtotal': item['subtotal'] ?? 0,
         'modal_satuan': item['modal_satuan'] ?? 0,
+        'dpp_cents': item['dpp_cents'] ?? 0,
+        'ppn_cents': item['ppn_cents'] ?? 0,
+        'total_ditagih_cents': item['total_ditagih_cents'] ?? 0,
         'stock_item_id': stockId,
         'created_at': createdAt,
         'updated_at': nowIso(),
@@ -1565,6 +1608,74 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       }
       if (lineType != 'part' || stockId == null) continue;
       final movementKey = 'retur-$syncId-$itemSyncId';
+      await StockLedger.instance.apply(
+        txn,
+        stockItemId: stockId,
+        stockSyncId: stockSync,
+        jenis: 'MASUK',
+        deltaMilli: qtyMilli,
+        movementSyncId: movementKey,
+        sumberEntity: 'sale_return_item',
+        sumberSyncId: itemSyncId,
+        serviceRecordId: recordId,
+        namaItem: '${item['deskripsi'] ?? ''}',
+        alasan: 'Retur $noNota',
+      );
+    }
+    return 'added';
+  }
+
+  /// Menerapkan pembatalan retur dari perangkat lain. Stok yang dahulu
+  /// dikembalikan ditarik lagi dan qty retur pada baris nota dikurangi.
+  /// Pembayaran balik refund ikut dikirim pada amplop yang sama.
+  Future<String> _applyReturnVoidRemote(
+    DatabaseExecutor txn,
+    Map<String, Object?> existing,
+    Map<String, Object?> retur,
+    int recordId,
+  ) async {
+    if ('${retur['status'] ?? 'AKTIF'}' != 'VOID') return 'duplicate';
+    if ('${existing['status']}' == 'VOID') return 'duplicate';
+    final returnId = existing['id'] as int;
+    final returnSync = '${existing['sync_id']}';
+    final recordSync = '${existing['nota_sync_id'] ?? ''}';
+    final now = nowIso();
+    await txn.update(
+      'sale_returns',
+      {
+        'status': 'VOID',
+        'voided_at': retur['voided_at'] ?? now,
+        'void_reason': retur['void_reason'] ?? 'Reversal retur',
+        'voided_by': retur['voided_by'],
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [returnId],
+    );
+    final items = await txn.query(
+      'sale_return_items',
+      where: 'return_id = ? AND deleted_at IS NULL',
+      whereArgs: [returnId],
+    );
+    for (final item in items) {
+      final lineType = '${item['line_type'] ?? 'part'}';
+      final lineSyncId = '${item['line_sync_id'] ?? ''}';
+      final qtyMilli =
+          (item['jumlah_milli'] as num?)?.toInt() ??
+          ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+      if (qtyMilli <= 0) continue;
+      if (lineSyncId.isNotEmpty) {
+        final table = lineType == 'jasa' ? 'service_jobs' : 'service_parts';
+        await txn.rawUpdate(
+          'UPDATE $table SET qty_retur_milli = '
+          'MAX(0, qty_retur_milli - ?), updated_at = ? WHERE sync_id = ?',
+          [qtyMilli, now, lineSyncId],
+        );
+      }
+      if (lineType != 'part') continue;
+      final stockItemId = item['stock_item_id'] as int?;
+      if (stockItemId == null) continue;
+      final movementKey = 'retur-void-$returnSync-${item['sync_id']}';
       final movement = await txn.query(
         'stock_movements',
         columns: ['id'],
@@ -1576,47 +1687,43 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       final stockRows = await txn.query(
         'stock_items',
         where: 'id = ?',
-        whereArgs: [stockId],
+        whereArgs: [stockItemId],
         limit: 1,
       );
       if (stockRows.isEmpty) continue;
-      final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ??
-          ((stockRows.first['jumlah'] as num?)?.toInt() ?? 0) * 1000;
-      final nextMilli = before + qtyMilli;
-      final stockHlc = await nextSyncHlc(txn);
-      await txn.update(
-        'stock_items',
-        {
-          'jumlah': wholeQuantity(nextMilli),
-          'jumlah_milli': nextMilli,
-          'sync_hlc_wall': stockHlc.wall,
-          'sync_hlc_counter': stockHlc.counter,
-          'updated_at': nowIso(),
-        },
-        where: 'id = ?',
-        whereArgs: [stockId],
+      final before = (stockRows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
+      var applied = qtyMilli;
+      if (before < applied) {
+        applied = before < 0 ? 0 : before;
+        await _recordReturnConflict(
+          txn,
+          returSync: returnSync,
+          recordSync: recordSync,
+          reason: 'stok_negatif',
+          detail: {
+            'stock_sync_id': stockRows.first['sync_id'],
+            'diminta_milli': qtyMilli,
+            'tersedia_milli': before,
+            'diterapkan_milli': applied,
+          },
+        );
+      }
+      if (applied <= 0) continue;
+      await StockLedger.instance.apply(
+        txn,
+        stockItemId: stockItemId,
+        stockSyncId: '${stockRows.first['sync_id']}',
+        jenis: 'KELUAR',
+        deltaMilli: -applied,
+        movementSyncId: movementKey,
+        sumberEntity: 'sale_return_reversal',
+        sumberSyncId: '${item['sync_id']}',
+        serviceRecordId: recordId,
+        namaItem: '${item['deskripsi'] ?? ''}',
+        alasan: 'Reversal retur ${existing['no_retur'] ?? ''}',
       );
-      await txn.insert('stock_movements', {
-        'sync_id': movementKey,
-        'stock_item_id': stockId,
-        'stock_sync_id': stockRows.first['sync_id'],
-        'nama_item': item['deskripsi'] ?? '',
-        'jenis': 'MASUK',
-        'jumlah': wholeQuantity(qtyMilli),
-        'jumlah_milli': qtyMilli,
-        'stok_sebelum_milli': before,
-        'stok_sesudah_milli': nextMilli,
-        'sumber_entity': 'sale_return_item',
-        'sumber_sync_id': itemSyncId,
-        'alasan': 'Retur $noNota',
-        'service_record_id': recordId,
-        'sync_hlc_wall': stockHlc.wall,
-        'sync_hlc_counter': stockHlc.counter,
-        'created_at': nowIso(),
-        'updated_at': nowIso(),
-      });
     }
-    return 'added';
+    return 'updated';
   }
 
   Future<int> _soldMilli(
@@ -1669,6 +1776,22 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
 
   /// Satu baris tertunda per entitas+alasan; konflik berulang hanya
   /// memperbarui rinciannya sehingga indeks unik parsial tidak dilanggar.
+  Future<String> _uniqueStockCode(DatabaseExecutor txn, String kode) async {
+    var suffix = 2;
+    while (true) {
+      final candidate = '$kode-$suffix';
+      final rows = await txn.query(
+        'stock_items',
+        columns: ['id'],
+        where: 'kode = ? AND deleted_at IS NULL',
+        whereArgs: [candidate],
+        limit: 1,
+      );
+      if (rows.isEmpty) return candidate;
+      suffix++;
+    }
+  }
+
   Future<void> _recordPendingConflict(
     DatabaseExecutor txn, {
     required String entity,
@@ -1679,7 +1802,8 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     final existing = await txn.query(
       'sync_conflicts',
       columns: ['id'],
-      where: "entity = ? AND entity_id = ? AND reason = ? "
+      where:
+          "entity = ? AND entity_id = ? AND reason = ? "
           "AND status IN ('open', 'review')",
       whereArgs: [entity, entityId, reason],
       limit: 1,
@@ -1705,19 +1829,13 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
-  Future<void> _recalculateRecordTotals(
-    DatabaseExecutor txn,
-    int recordId,
-  ) =>
+  Future<void> _recalculateRecordTotals(DatabaseExecutor txn, int recordId) =>
       AppDatabase.instance.recalculateRecordTotals(txn, recordId);
 
   /// Nota VOID tidak dihitung sebagai piutang, tetapi `total_dibayar` tetap
   /// diselaraskan dengan ledger pembayaran (termasuk refund) supaya laporan
   /// kas dan digest rekonsiliasi sama di semua perangkat.
-  Future<void> _syncVoidTotals(
-    DatabaseExecutor txn,
-    int recordId,
-  ) async {
+  Future<void> _syncVoidTotals(DatabaseExecutor txn, int recordId) async {
     final rows = await txn.rawQuery(
       'SELECT COALESCE(SUM(nominal), 0) AS total FROM service_payments '
       'WHERE service_record_id = ?',

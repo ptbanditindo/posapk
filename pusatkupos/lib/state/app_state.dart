@@ -6,7 +6,18 @@ import '../auth/operator.dart';
 import '../data/app_database.dart';
 import '../data/feature_flags.dart';
 import '../data/pin_service.dart';
+import '../data/restore_lock.dart';
 import '../data/store_settings.dart';
+
+/// Tahap UI yang boleh ditampilkan. Aksi tulis hanya dibuka pada `ready`.
+enum AppScene {
+  starting,
+  unauthenticated,
+  ready,
+  recovering,
+  restoring,
+  switchingStore,
+}
 
 class AppState extends ChangeNotifier {
   AppState._();
@@ -21,9 +32,32 @@ class AppState extends ChangeNotifier {
   int revision = 0;
   int storeRevision = 0;
   Operator? operator;
+  bool _booted = false;
+  bool _switchingStore = false;
 
   bool get pinConfigured => _pinHash != null;
   bool get isOwner => operator?.isOwner ?? false;
+
+  AppScene get scene {
+    if (RestoreLock.instance.isRestoring) return AppScene.restoring;
+    if (_switchingStore) return AppScene.switchingStore;
+    if (!_booted) return AppScene.starting;
+    if (operator != null) return AppScene.ready;
+    if (pinConfigured) return AppScene.recovering;
+    return AppScene.unauthenticated;
+  }
+
+  void beginStoreSwitch() {
+    if (_switchingStore) return;
+    _switchingStore = true;
+    notifyListeners();
+  }
+
+  void endStoreSwitch() {
+    if (!_switchingStore) return;
+    _switchingStore = false;
+    notifyListeners();
+  }
 
   /// Dipakai operasi tulis: tidak boleh ada fallback identitas "owner".
   Operator get requireOperator {
@@ -52,6 +86,7 @@ class AppState extends ChangeNotifier {
       _ => ThemeMode.system,
     };
     await FeatureFlagsService.instance.load();
+    _booted = true;
     notifyListeners();
   }
 

@@ -39,6 +39,10 @@ class PriceLine {
   int get subtotal => (hargaTerdaftar * qtyMilli / 1000).round();
   int get batasTotal => (hargaModal * qtyMilli / 1000).round();
 
+  /// Jasa adalah keahlian, bukan pembelian: jasa tanpa modal tidak memiliki
+  /// lantai harga. Barang, atau jasa yang memang mencatat modal, tetap dibatasi.
+  bool get kenaBatasModal => jenis == 'part' || hargaModal > 0;
+
   int hargaFinal = 0;
   int diskonAlokasi = 0;
 
@@ -134,11 +138,14 @@ class PriceRules {
         'Diskon melebihi total tagihan.',
       );
     }
-    final modalTotal = lines.fold<int>(0, (sum, line) => sum + line.batasTotal);
+    final modalTotal = lines.fold<int>(
+      0,
+      (sum, line) => sum + (line.kenaBatasModal ? line.batasTotal : 0),
+    );
     final marginTotal = bruto - modalTotal;
     if (!allowBelowMinimum) {
       for (final line in lines) {
-        if (line.hargaTerdaftar < line.hargaModal) {
+        if (line.kenaBatasModal && line.hargaTerdaftar < line.hargaModal) {
           throw PriceRuleViolation(
             'di_bawah_batas_minimal',
             'Harga ${line.label} ${formatRupiah(line.hargaTerdaftar)} '
@@ -161,7 +168,9 @@ class PriceRules {
     // ruang, sehingga total alokasi tetap sama dengan diskon nota.
     final capacity = <int>[
       for (final line in lines)
-        allowBelowMinimum ? line.subtotal : line.subtotal - line.batasTotal,
+        allowBelowMinimum || !line.kenaBatasModal
+            ? line.subtotal
+            : line.subtotal - line.batasTotal,
     ];
     final shares = List<int>.filled(lines.length, 0);
     var remaining = diskonCents;
@@ -198,16 +207,17 @@ class PriceRules {
           ? 0
           : (finalTotal * 1000 / line.qtyMilli).round();
     }
+    bool belowFloor(PriceLine line) =>
+        line.kenaBatasModal &&
+        line.subtotal - line.diskonAlokasi < line.batasTotal;
     var belowMinimum = false;
     for (final line in lines) {
-      if (line.subtotal - line.diskonAlokasi < line.batasTotal) {
+      if (belowFloor(line)) {
         belowMinimum = true;
       }
     }
     if (belowMinimum && !allowBelowMinimum) {
-      final line = lines.firstWhere(
-        (item) => item.subtotal - item.diskonAlokasi < item.batasTotal,
-      );
+      final line = lines.firstWhere(belowFloor);
       throw PriceRuleViolation(
         'di_bawah_batas_minimal',
         'Diskon membuat harga ${line.label} '
@@ -217,7 +227,7 @@ class PriceRules {
     }
     if (belowMinimum) {
       for (final line in lines) {
-        if (line.subtotal - line.diskonAlokasi < line.batasTotal) {
+        if (belowFloor(line)) {
           line.disetujuiOleh = disetujuiOleh ?? 'Pemilik';
         }
       }

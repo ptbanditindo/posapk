@@ -10,8 +10,8 @@ import 'package:sqflite/sqflite.dart';
 ///
 /// Konvensi:
 /// - Uang dalam rupiah integer.
-/// - Kuantitas barang dalam `jumlah_milli` (1/1000 satuan); `jumlah` adalah
-///   nilai utuh untuk tampilan/kompatibilitas baca.
+/// - Kuantitas barang hanya dalam `jumlah_milli` (1/1000 satuan); tidak ada
+///   kolom `jumlah` ganda.
 /// - Setiap entitas tersinkron memiliki `sync_id`, `store_id`, `device_id`,
 ///   HLC, dan `deleted_at`.
 Future<void> createCleanSchema(Database db) async {
@@ -19,7 +19,7 @@ Future<void> createCleanSchema(Database db) async {
   // Identitas perangkat, pemilik, lisensi, dan pengaturan
   // ---------------------------------------------------------------------------
   await db.execute('''
-    CREATE TABLE app_settings (
+    CREATE TABLE app_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )
@@ -35,7 +35,7 @@ Future<void> createCleanSchema(Database db) async {
     )
   ''');
   await db.execute('''
-    CREATE TABLE license (
+    CREATE TABLE licenses (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       plan TEXT NOT NULL DEFAULT 'free',
       period_end TEXT,
@@ -59,9 +59,8 @@ Future<void> createCleanSchema(Database db) async {
   // ---------------------------------------------------------------------------
   // Akun, peran, izin, dan akses toko
   //
-  // Akun melekat pada user, bukan perangkat. `store_ids_json` dipertahankan
-  // untuk tampilan cepat, sedangkan `employee_store_access` menjadi sumber
-  // otorisasi per toko yang dapat disinkronkan dan diaudit.
+  // Akun melekat pada user, bukan perangkat. `employee_store_access` adalah
+  // satu-satunya sumber keanggotaan toko; tidak ada salinan JSON di akun.
   // ---------------------------------------------------------------------------
   await db.execute('''
     CREATE TABLE employee_accounts (
@@ -73,7 +72,6 @@ Future<void> createCleanSchema(Database db) async {
       nama TEXT NOT NULL,
       role_base TEXT NOT NULL DEFAULT 'KASIR',
       extra_permissions_json TEXT NOT NULL DEFAULT '[]',
-      store_ids_json TEXT NOT NULL DEFAULT '[]',
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       password_iterations INTEGER NOT NULL DEFAULT 120000,
@@ -218,6 +216,7 @@ Future<void> createCleanSchema(Database db) async {
       sumber TEXT,
       wa_consent INTEGER NOT NULL DEFAULT 1,
       do_not_contact INTEGER NOT NULL DEFAULT 0,
+      limit_kredit_cents INTEGER NOT NULL DEFAULT 0,
       last_contact_at TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
@@ -282,8 +281,7 @@ Future<void> createCleanSchema(Database db) async {
       harga_modal INTEGER NOT NULL DEFAULT 0,
       harga_jual INTEGER NOT NULL DEFAULT 0,
       harga_jual_minimum INTEGER NOT NULL DEFAULT 0,
-      jumlah INTEGER NOT NULL DEFAULT 0,
-      jumlah_milli INTEGER,
+      jumlah_milli INTEGER NOT NULL DEFAULT 0,
       stok_minimum INTEGER NOT NULL DEFAULT 0,
       satuan TEXT NOT NULL DEFAULT 'pcs',
       desimal INTEGER NOT NULL DEFAULT 0,
@@ -309,9 +307,7 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE UNIQUE INDEX ux_stock_barcode_aktif '
     'ON stock_items(barcode) WHERE barcode IS NOT NULL AND deleted_at IS NULL',
   );
-  await db.execute(
-    'CREATE INDEX ix_stock_items_nama ON stock_items(nama)',
-  );
+  await db.execute('CREATE INDEX ix_stock_items_nama ON stock_items(nama)');
   await db.execute(
     'CREATE INDEX ix_stock_items_deleted ON stock_items(deleted_at)',
   );
@@ -504,6 +500,10 @@ Future<void> createCleanSchema(Database db) async {
       customer_id INTEGER,
       no_nota TEXT NOT NULL UNIQUE,
       request_id TEXT UNIQUE,
+      request_payload_hash TEXT,
+      customer_nama TEXT NOT NULL DEFAULT '',
+      customer_hp TEXT NOT NULL DEFAULT '',
+      unit_nopol TEXT NOT NULL DEFAULT '',
       jenis_transaksi TEXT NOT NULL DEFAULT 'servis_langsung',
       mode_saat_dibuat_json TEXT NOT NULL DEFAULT '{}',
       diskon_snapshot_json TEXT NOT NULL DEFAULT '{}',
@@ -538,6 +538,7 @@ Future<void> createCleanSchema(Database db) async {
       total_dibayar INTEGER NOT NULL DEFAULT 0,
       sisa_bayar INTEGER NOT NULL DEFAULT 0,
       jatuh_tempo TEXT,
+      kredit_disetujui_oleh TEXT,
       status TEXT NOT NULL DEFAULT 'AKTIF',
       void_reason TEXT,
       voided_at TEXT,
@@ -618,7 +619,8 @@ Future<void> createCleanSchema(Database db) async {
     BEFORE UPDATE OF biaya_jasa, total_part, diskon, pajak, pajak_dpp,
       pajak_diserap, pajak_mode, pajak_persen_bp, pajak_penanggung,
       biaya_lain, total_servis, total_estimasi_terakhir,
-      mode_saat_dibuat_json, diskon_snapshot_json, pajak_snapshot_json
+      mode_saat_dibuat_json, diskon_snapshot_json, pajak_snapshot_json,
+      request_payload_hash, customer_nama, customer_hp, unit_nopol
     ON service_records
     FOR EACH ROW
     WHEN NEW.biaya_jasa IS NOT OLD.biaya_jasa
@@ -636,6 +638,10 @@ Future<void> createCleanSchema(Database db) async {
       OR NEW.mode_saat_dibuat_json IS NOT OLD.mode_saat_dibuat_json
       OR NEW.diskon_snapshot_json IS NOT OLD.diskon_snapshot_json
       OR NEW.pajak_snapshot_json IS NOT OLD.pajak_snapshot_json
+      OR NEW.request_payload_hash IS NOT OLD.request_payload_hash
+      OR NEW.customer_nama IS NOT OLD.customer_nama
+      OR NEW.customer_hp IS NOT OLD.customer_hp
+      OR NEW.unit_nopol IS NOT OLD.unit_nopol
     BEGIN
       SELECT RAISE(ABORT, 'komponen biaya nota tidak boleh diubah');
     END
@@ -676,6 +682,7 @@ Future<void> createCleanSchema(Database db) async {
       harga INTEGER NOT NULL,
       subtotal INTEGER NOT NULL,
       harga_jual_terdaftar INTEGER NOT NULL DEFAULT 0,
+      harga_bebas INTEGER NOT NULL DEFAULT 0,
       harga_batas_saat_transaksi INTEGER NOT NULL DEFAULT 0,
       harga_final INTEGER NOT NULL DEFAULT 0,
       diskon_alokasi INTEGER NOT NULL DEFAULT 0,
@@ -694,6 +701,7 @@ Future<void> createCleanSchema(Database db) async {
       CHECK (harga >= 0),
       CHECK (subtotal >= 0),
       CHECK (harga_jual_terdaftar >= 0),
+      CHECK (harga_bebas IN (0, 1)),
       CHECK (harga_batas_saat_transaksi >= 0),
       CHECK (harga_final >= 0),
       CHECK (diskon_alokasi >= 0),
@@ -717,7 +725,7 @@ Future<void> createCleanSchema(Database db) async {
     CREATE TRIGGER trg_service_jobs_snapshot_immutable
     BEFORE UPDATE OF service_record_id, harga_jasa_id, harga_jasa_sync_id,
       deskripsi, jumlah, harga, subtotal, harga_jual_terdaftar,
-      harga_batas_saat_transaksi, harga_final, diskon_alokasi,
+      harga_bebas, harga_batas_saat_transaksi, harga_final, diskon_alokasi,
       diskon_persen_snapshot, interval_servis_bulan,
       komisi_mode_snapshot, komisi_nilai_snapshot
     ON service_jobs
@@ -730,6 +738,7 @@ Future<void> createCleanSchema(Database db) async {
       OR NEW.harga IS NOT OLD.harga
       OR NEW.subtotal IS NOT OLD.subtotal
       OR NEW.harga_jual_terdaftar IS NOT OLD.harga_jual_terdaftar
+      OR NEW.harga_bebas IS NOT OLD.harga_bebas
       OR NEW.harga_batas_saat_transaksi IS NOT OLD.harga_batas_saat_transaksi
       OR NEW.harga_final IS NOT OLD.harga_final
       OR NEW.diskon_alokasi IS NOT OLD.diskon_alokasi
@@ -900,9 +909,7 @@ Future<void> createCleanSchema(Database db) async {
     'CREATE UNIQUE INDEX ux_cash_ledger_source '
     'ON cash_ledger(store_id, sumber_entity, sumber_sync_id)',
   );
-  await db.execute(
-    'CREATE INDEX ix_cash_ledger_waktu ON cash_ledger(waktu)',
-  );
+  await db.execute('CREATE INDEX ix_cash_ledger_waktu ON cash_ledger(waktu)');
 
   // ---------------------------------------------------------------------------
   // Ledger stok append-only
@@ -927,6 +934,8 @@ Future<void> createCleanSchema(Database db) async {
       stok_sebelum_milli INTEGER,
       stok_sesudah_milli INTEGER,
       opname_absolut_milli INTEGER,
+      opname_basis_milli INTEGER,
+      harga_pokok_satuan_cents INTEGER NOT NULL DEFAULT 0,
       alasan TEXT,
       sumber_entity TEXT NOT NULL DEFAULT '',
       sumber_sync_id TEXT NOT NULL DEFAULT '',
@@ -999,9 +1008,15 @@ Future<void> createCleanSchema(Database db) async {
       dpp INTEGER NOT NULL DEFAULT 0,
       pajak INTEGER NOT NULL DEFAULT 0,
       pajak_diserap INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
+      metode_refund TEXT NOT NULL DEFAULT 'CASH',
       alasan TEXT NOT NULL,
       dibuat_oleh TEXT,
       voided_at TEXT,
+      void_reason TEXT,
+      voided_by TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -1023,12 +1038,14 @@ Future<void> createCleanSchema(Database db) async {
     'ON sale_returns(service_record_id)',
   );
   // Retur bersifat append-only: identitas dan nilai baris tidak boleh diubah
-  // setelah dibuat. `total_refund` hanya boleh diisi sekali dari nol.
+  // setelah dibuat. Satu-satunya transisi yang diizinkan adalah AKTIF -> VOID
+  // melalui dokumen reversal; `total_refund` hanya boleh diisi sekali dari nol.
   await db.execute('''
     CREATE TRIGGER trg_sale_returns_immutable
     BEFORE UPDATE OF service_record_id, nota_sync_id, no_nota, no_retur,
       request_id, status, total, total_modal_kembali, dpp, pajak,
-      pajak_diserap, alasan, voided_at
+      pajak_diserap, dpp_cents, ppn_cents, total_ditagih_cents, metode_refund,
+      alasan, voided_at, void_reason, voided_by
     ON sale_returns
     FOR EACH ROW
     WHEN NEW.service_record_id IS NOT OLD.service_record_id
@@ -1036,14 +1053,32 @@ Future<void> createCleanSchema(Database db) async {
       OR NEW.no_nota IS NOT OLD.no_nota
       OR NEW.no_retur IS NOT OLD.no_retur
       OR NEW.request_id IS NOT OLD.request_id
-      OR NEW.status IS NOT OLD.status
       OR NEW.total IS NOT OLD.total
       OR NEW.total_modal_kembali IS NOT OLD.total_modal_kembali
       OR NEW.dpp IS NOT OLD.dpp
       OR NEW.pajak IS NOT OLD.pajak
       OR NEW.pajak_diserap IS NOT OLD.pajak_diserap
+      OR NEW.dpp_cents IS NOT OLD.dpp_cents
+      OR NEW.ppn_cents IS NOT OLD.ppn_cents
+      OR NEW.total_ditagih_cents IS NOT OLD.total_ditagih_cents
+      OR NEW.metode_refund IS NOT OLD.metode_refund
       OR NEW.alasan IS NOT OLD.alasan
-      OR NEW.voided_at IS NOT OLD.voided_at
+      OR (
+        NEW.status IS NOT OLD.status
+        AND NOT (OLD.status = 'AKTIF' AND NEW.status = 'VOID')
+      )
+      OR (
+        NEW.voided_at IS NOT OLD.voided_at
+        AND NOT (OLD.status = 'AKTIF' AND NEW.status = 'VOID')
+      )
+      OR (
+        NEW.void_reason IS NOT OLD.void_reason
+        AND NOT (OLD.status = 'AKTIF' AND NEW.status = 'VOID')
+      )
+      OR (
+        NEW.voided_by IS NOT OLD.voided_by
+        AND NOT (OLD.status = 'AKTIF' AND NEW.status = 'VOID')
+      )
     BEGIN
       SELECT RAISE(ABORT, 'retur bersifat final');
     END
@@ -1075,6 +1110,9 @@ Future<void> createCleanSchema(Database db) async {
       harga_satuan INTEGER NOT NULL DEFAULT 0,
       subtotal INTEGER NOT NULL DEFAULT 0,
       modal_satuan INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
       stock_item_id INTEGER,
       stock_sync_id TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
@@ -1104,7 +1142,8 @@ Future<void> createCleanSchema(Database db) async {
     CREATE TRIGGER trg_sale_return_items_immutable
     BEFORE UPDATE OF return_id, line_type, line_sync_id, service_job_sync_id,
       service_part_sync_id, deskripsi, jumlah, jumlah_milli, qty_asal_milli,
-      harga_satuan, subtotal, modal_satuan, stock_item_id, stock_sync_id
+      harga_satuan, subtotal, modal_satuan, dpp_cents, ppn_cents,
+      total_ditagih_cents, stock_item_id, stock_sync_id
     ON sale_return_items
     FOR EACH ROW
     WHEN NEW.return_id IS NOT OLD.return_id
@@ -1119,6 +1158,9 @@ Future<void> createCleanSchema(Database db) async {
       OR NEW.harga_satuan IS NOT OLD.harga_satuan
       OR NEW.subtotal IS NOT OLD.subtotal
       OR NEW.modal_satuan IS NOT OLD.modal_satuan
+      OR NEW.dpp_cents IS NOT OLD.dpp_cents
+      OR NEW.ppn_cents IS NOT OLD.ppn_cents
+      OR NEW.total_ditagih_cents IS NOT OLD.total_ditagih_cents
       OR NEW.stock_item_id IS NOT OLD.stock_item_id
       OR NEW.stock_sync_id IS NOT OLD.stock_sync_id
     BEGIN
@@ -1126,7 +1168,8 @@ Future<void> createCleanSchema(Database db) async {
     END
   ''');
   // Batas retur dihitung lintas semua retur aktif untuk baris nota yang sama,
-  // bukan hanya di dalam satu dokumen retur.
+  // bukan hanya di dalam satu dokumen retur. Retur yang sudah direversal tidak
+  // boleh lagi mengurangi sisa qty.
   await db.execute('''
     CREATE TRIGGER trg_sale_return_items_batas
     BEFORE INSERT ON sale_return_items
@@ -1137,6 +1180,7 @@ Future<void> createCleanSchema(Database db) async {
         FROM sale_return_items ri
         JOIN sale_returns sr ON sr.id = ri.return_id
         WHERE sr.deleted_at IS NULL AND ri.deleted_at IS NULL
+          AND sr.status = 'AKTIF'
           AND ri.line_type = NEW.line_type
           AND ri.line_sync_id = NEW.line_sync_id
       ), 0) > NEW.qty_asal_milli
@@ -1233,6 +1277,7 @@ Future<void> createCleanSchema(Database db) async {
       cycle_key TEXT NOT NULL DEFAULT '',
       tanggal TEXT NOT NULL,
       nominal INTEGER NOT NULL,
+      gaji_pokok INTEGER NOT NULL DEFAULT 0,
       potongan_hutang INTEGER NOT NULL DEFAULT 0,
       cicilan_hutang INTEGER NOT NULL DEFAULT 0,
       bonus INTEGER NOT NULL DEFAULT 0,
@@ -1240,6 +1285,8 @@ Future<void> createCleanSchema(Database db) async {
       kas_keluar INTEGER NOT NULL DEFAULT 0,
       metode TEXT NOT NULL DEFAULT 'CASH',
       status TEXT NOT NULL DEFAULT 'AKTIF',
+      paid_by TEXT,
+      paid_by_employee_sync_id TEXT,
       konflik_sync_id TEXT,
       catatan TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
@@ -1248,6 +1295,7 @@ Future<void> createCleanSchema(Database db) async {
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
       CHECK (nominal >= 0),
+      CHECK (gaji_pokok >= 0),
       CHECK (potongan_hutang >= 0),
       CHECK (cicilan_hutang >= 0),
       CHECK (bonus >= 0),
@@ -1322,6 +1370,14 @@ Future<void> createCleanSchema(Database db) async {
       revisi_dari_sync_id TEXT,
       alasan_revisi TEXT,
       masa_berlaku TEXT,
+      jenis_transaksi TEXT NOT NULL DEFAULT 'servis_langsung',
+      diskon_cents INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
+      pajak_mode TEXT NOT NULL DEFAULT 'TANPA',
+      pajak_persen_bp INTEGER NOT NULL DEFAULT 0,
+      pajak_penanggung TEXT NOT NULL DEFAULT 'PEMBELI',
       total INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'aktif',
       disetujui_oleh TEXT,
@@ -1337,7 +1393,14 @@ Future<void> createCleanSchema(Database db) async {
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      CHECK (diskon_cents >= 0),
+      CHECK (dpp_cents >= 0),
+      CHECK (ppn_cents >= 0),
+      CHECK (total_ditagih_cents >= 0),
+      CHECK (pajak_mode IN ('TANPA', 'EKSLUSIF', 'INKLUSIF')),
+      CHECK (pajak_persen_bp BETWEEN 0 AND 10000),
+      CHECK (pajak_penanggung IN ('PEMBELI', 'BENGKEL'))
     )
   ''');
   await db.execute(
@@ -1353,11 +1416,19 @@ Future<void> createCleanSchema(Database db) async {
       estimate_sync_id TEXT NOT NULL,
       jenis TEXT NOT NULL,
       stock_sync_id TEXT,
+      jasa_sync_id TEXT,
       deskripsi TEXT NOT NULL,
       satuan TEXT NOT NULL DEFAULT 'pcs',
       jumlah INTEGER NOT NULL,
       jumlah_milli INTEGER NOT NULL,
       harga_jual_terdaftar INTEGER NOT NULL DEFAULT 0,
+      harga_input INTEGER NOT NULL DEFAULT 0,
+      harga_bebas INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
+      pajak_mode TEXT NOT NULL DEFAULT 'TANPA',
+      pajak_penanggung TEXT NOT NULL DEFAULT 'PEMBELI',
       harga_batas_saat_transaksi INTEGER NOT NULL DEFAULT 0,
       harga_final INTEGER NOT NULL DEFAULT 0,
       harga_modal INTEGER NOT NULL DEFAULT 0,
@@ -1371,6 +1442,13 @@ Future<void> createCleanSchema(Database db) async {
       deleted_at TEXT,
       CHECK (COALESCE(jumlah_milli, jumlah * 1000) > 0),
       CHECK (harga_jual_terdaftar >= 0),
+      CHECK (harga_input >= 0),
+      CHECK (harga_bebas IN (0, 1)),
+      CHECK (dpp_cents >= 0),
+      CHECK (ppn_cents >= 0),
+      CHECK (total_ditagih_cents >= 0),
+      CHECK (pajak_mode IN ('TANPA', 'EKSLUSIF', 'INKLUSIF')),
+      CHECK (pajak_penanggung IN ('PEMBELI', 'BENGKEL')),
       CHECK (harga_batas_saat_transaksi >= 0),
       CHECK (harga_final >= 0),
       CHECK (harga_modal >= 0),
@@ -1607,17 +1685,6 @@ Future<void> createCleanSchema(Database db) async {
       updated_at TEXT NOT NULL
     )
   ''');
-  await db.execute('''
-    CREATE TABLE sync_peer_digests (
-      source_device_id TEXT NOT NULL,
-      tanggal TEXT NOT NULL,
-      data_type TEXT NOT NULL,
-      jumlah INTEGER NOT NULL DEFAULT 0,
-      hash TEXT NOT NULL DEFAULT '',
-      received_at TEXT NOT NULL,
-      PRIMARY KEY (source_device_id, tanggal, data_type)
-    )
-  ''');
 
   await createOperationalSchema(db);
 }
@@ -1627,7 +1694,89 @@ Future<void> createCleanSchema(Database db) async {
 /// Fungsi ini idempoten dan dipanggil saat database dibuka agar instalasi
 /// lama pada masa pengembangan tetap mendapatkan tabel baru tanpa migrasi
 /// data. Tabel transaksi tetap append-only dan memakai HLC yang sama.
-Future<void> createOperationalSchema(Database db) async {
+Future<void> createOperationalSchema(DatabaseExecutor db) async {
+  // ---------------------------------------------------------------------------
+  // Fondasi skema v3: audit terpadu, saldo stok turunan, payroll, fitur
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      actor TEXT NOT NULL,
+      actor_employee_sync_id TEXT,
+      actor_role TEXT NOT NULL,
+      aksi TEXT NOT NULL,
+      entity TEXT NOT NULL,
+      entity_id TEXT NOT NULL DEFAULT '',
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      alasan TEXT,
+      created_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_audit_events_entity '
+    'ON audit_events(entity, entity_id, created_at)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS feature_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id TEXT NOT NULL,
+      feature_key TEXT NOT NULL,
+      before_enabled INTEGER,
+      after_enabled INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      actor_employee_sync_id TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS stock_balances (
+      store_id TEXT NOT NULL,
+      stock_sync_id TEXT NOT NULL,
+      qty_milli INTEGER NOT NULL DEFAULT 0,
+      value_cents INTEGER NOT NULL DEFAULT 0,
+      avg_cost_cents INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_id, stock_sync_id)
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS employee_payroll_profiles (
+      employee_sync_id TEXT PRIMARY KEY,
+      jenis_imbalan TEXT NOT NULL DEFAULT 'KOMISI',
+      gaji_bulanan_cents INTEGER NOT NULL DEFAULT 0,
+      komisi_mode TEXT NOT NULL DEFAULT 'PERSEN',
+      komisi_barang_bp INTEGER NOT NULL DEFAULT 0,
+      komisi_jasa_bp INTEGER NOT NULL DEFAULT 0,
+      payroll_period TEXT NOT NULL DEFAULT 'BULANAN',
+      payroll_tanggal INTEGER NOT NULL DEFAULT 1,
+      payroll_hari INTEGER NOT NULL DEFAULT 1,
+      bank_nama TEXT,
+      bank_nomor TEXT,
+      bank_pemilik TEXT,
+      tanggal_masuk TEXT,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS salary_components (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      salary_sync_id TEXT NOT NULL,
+      jenis TEXT NOT NULL,
+      nominal_cents INTEGER NOT NULL,
+      referensi_sync_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_salary_components_salary '
+    'ON salary_components(salary_sync_id)',
+  );
+
   // ---------------------------------------------------------------------------
   // Fitur opsional per toko
   // ---------------------------------------------------------------------------
@@ -1662,6 +1811,7 @@ Future<void> createOperationalSchema(Database db) async {
       stock_sync_id TEXT NOT NULL,
       nama_item TEXT NOT NULL DEFAULT '',
       jumlah_fisik_milli INTEGER NOT NULL,
+      basis_milli INTEGER,
       alasan TEXT,
       status TEXT NOT NULL DEFAULT 'TERTUNDA',
       missing_devices_json TEXT NOT NULL DEFAULT '[]',
@@ -1709,6 +1859,7 @@ Future<void> createOperationalSchema(Database db) async {
       total INTEGER NOT NULL DEFAULT 0,
       total_dibayar INTEGER NOT NULL DEFAULT 0,
       sisa_utang INTEGER NOT NULL DEFAULT 0,
+      refund_accumulated_cents INTEGER NOT NULL DEFAULT 0,
       catatan TEXT,
       created_by TEXT,
       void_reason TEXT,
@@ -1848,9 +1999,15 @@ Future<void> createOperationalSchema(Database db) async {
       total INTEGER NOT NULL DEFAULT 0,
       total_modal_kembali INTEGER NOT NULL DEFAULT 0,
       total_kas_kembali INTEGER NOT NULL DEFAULT 0,
+      metode_refund TEXT NOT NULL DEFAULT 'CASH',
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
       alasan TEXT NOT NULL,
       dibuat_oleh TEXT,
       voided_at TEXT,
+      void_reason TEXT,
+      voided_by TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -1884,6 +2041,7 @@ Future<void> createOperationalSchema(Database db) async {
       harga_satuan INTEGER NOT NULL DEFAULT 0,
       subtotal INTEGER NOT NULL DEFAULT 0,
       modal_satuan INTEGER NOT NULL DEFAULT 0,
+      harga_pokok_satuan INTEGER NOT NULL DEFAULT 0,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -1920,6 +2078,80 @@ Future<void> createOperationalSchema(Database db) async {
       ), 0);
     END
   ''');
+  // Hanya transisi AKTIF -> VOID yang sah dan bersifat final.
+  await db.execute('''
+    CREATE TRIGGER IF NOT EXISTS trg_purchase_return_status_transition
+    BEFORE UPDATE OF status ON supplier_purchase_returns
+    FOR EACH ROW
+    WHEN NEW.status IS NOT OLD.status
+      AND NOT (OLD.status = 'AKTIF' AND NEW.status = 'VOID')
+    BEGIN
+      SELECT RAISE(ABORT, 'status retur pembelian tidak valid');
+    END
+  ''');
+  await db.execute('''
+    CREATE TRIGGER IF NOT EXISTS trg_purchase_return_void_final
+    BEFORE UPDATE ON supplier_purchase_returns
+    FOR EACH ROW
+    WHEN OLD.status = 'VOID' AND (
+      NEW.status IS NOT 'VOID'
+      OR NEW.total IS NOT OLD.total
+      OR NEW.total_kas_kembali IS NOT OLD.total_kas_kembali
+      OR NEW.voided_at IS NOT OLD.voided_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'retur pembelian sudah final');
+    END
+  ''');
+
+  // Dokumen reversal append-only: satu dokumen membatalkan satu retur.
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS sale_return_reversals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      return_id INTEGER NOT NULL,
+      return_sync_id TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL UNIQUE,
+      total_refund_cents INTEGER NOT NULL DEFAULT 0,
+      alasan TEXT NOT NULL,
+      dibuat_oleh TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (total_refund_cents >= 0),
+      FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_sale_return_reversal '
+    'ON sale_return_reversals(return_id) WHERE deleted_at IS NULL',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS purchase_return_reversals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      return_id INTEGER NOT NULL,
+      return_sync_id TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL UNIQUE,
+      total_kas_cents INTEGER NOT NULL DEFAULT 0,
+      alasan TEXT NOT NULL,
+      dibuat_oleh TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (total_kas_cents >= 0),
+      FOREIGN KEY (return_id) REFERENCES supplier_purchase_returns(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_return_reversal '
+    'ON purchase_return_reversals(return_id) WHERE deleted_at IS NULL',
+  );
 
   // Saldo HPP rata-rata bergerak per toko/barang (BD-15).
   await db.execute('''
@@ -1975,6 +2207,7 @@ Future<void> createOperationalSchema(Database db) async {
       ref_nama_snapshot TEXT NOT NULL DEFAULT '',
       jumlah_milli INTEGER NOT NULL DEFAULT 0,
       nominal INTEGER NOT NULL DEFAULT 0,
+      unit_cost_cents INTEGER NOT NULL DEFAULT 0,
       catatan TEXT,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
       sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
@@ -1984,6 +2217,7 @@ Future<void> createOperationalSchema(Database db) async {
       CHECK (jenis IN ('STOK', 'UTANG_SUPPLIER', 'PIUTANG_PELANGGAN')),
       CHECK (jumlah_milli >= 0),
       CHECK (nominal >= 0),
+      CHECK (unit_cost_cents >= 0),
       CHECK (
         (jenis = 'STOK' AND jumlah_milli > 0)
         OR (jenis <> 'STOK' AND nominal > 0)
@@ -1995,6 +2229,110 @@ Future<void> createOperationalSchema(Database db) async {
   await db.execute(
     'CREATE INDEX IF NOT EXISTS ix_opening_items '
     'ON opening_balance_items(opening_id, jenis)',
+  );
+
+  // Saldo awal utang/piutang sebagai dokumen yang dapat dibayar/ditagih
+  // (PUR-02/PUR-03). `sync_id` sama dengan baris saldo awal asal agar
+  // idempoten saat diterapkan dari perangkat lain.
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS opening_payables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      opening_sync_id TEXT NOT NULL DEFAULT '',
+      supplier_sync_id TEXT NOT NULL DEFAULT '',
+      supplier_nama_snapshot TEXT NOT NULL DEFAULT '',
+      nominal_cents INTEGER NOT NULL,
+      terbayar_cents INTEGER NOT NULL DEFAULT 0,
+      jatuh_tempo TEXT,
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'LUNAS', 'VOID')),
+      CHECK (nominal_cents > 0),
+      CHECK (terbayar_cents >= 0 AND terbayar_cents <= nominal_cents)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_opening_payables '
+    'ON opening_payables(store_id, status)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS payable_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      payable_sync_id TEXT NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      nominal_cents INTEGER NOT NULL,
+      metode TEXT NOT NULL DEFAULT 'CASH',
+      waktu TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      cash_sync_id TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (nominal_cents > 0),
+      CHECK (metode IN ('CASH', 'TRANSFER'))
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_payable_payments '
+    'ON payable_payments(payable_sync_id)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS opening_receivables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      opening_sync_id TEXT NOT NULL DEFAULT '',
+      customer_sync_id TEXT NOT NULL DEFAULT '',
+      customer_nama_snapshot TEXT NOT NULL DEFAULT '',
+      nominal_cents INTEGER NOT NULL,
+      terbayar_cents INTEGER NOT NULL DEFAULT 0,
+      jatuh_tempo TEXT,
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'LUNAS', 'VOID')),
+      CHECK (nominal_cents > 0),
+      CHECK (terbayar_cents >= 0 AND terbayar_cents <= nominal_cents)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_opening_receivables '
+    'ON opening_receivables(store_id, status)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS receivable_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      receivable_sync_id TEXT NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      nominal_cents INTEGER NOT NULL,
+      metode TEXT NOT NULL DEFAULT 'CASH',
+      waktu TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      cash_sync_id TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (nominal_cents > 0),
+      CHECK (metode IN ('CASH', 'TRANSFER'))
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_receivable_payments '
+    'ON receivable_payments(receivable_sync_id)',
   );
 
   // Pengingat jatuh tempo yang sudah ditampilkan (BD-21).

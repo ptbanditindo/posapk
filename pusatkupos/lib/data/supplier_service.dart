@@ -1,16 +1,14 @@
 import 'package:sqflite/sqflite.dart';
 
+import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/phone.dart';
 import 'app_database.dart';
+import 'feature_flags.dart';
 
-const supplierStatuses = [
-  'DIPESAN',
-  'DIKIRIM',
-  'TIDAK_TERSEDIA',
-  'ARSIP',
-];
+const supplierStatuses = ['DIPESAN', 'DIKIRIM', 'TIDAK_TERSEDIA', 'ARSIP'];
 
 const supplierStatusLabels = {
   'DIPESAN': 'Dipesan',
@@ -55,8 +53,11 @@ class SupplierService {
     String? alamat,
     String? catatan,
     bool aktif = true,
+    required Operator actor,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
+    Permissions.require(actor, permissionSupplier);
+    FeatureGate.require(featureSupplierHub);
     final cleanName = nama.trim();
     if (cleanName.length < 2) {
       throw ArgumentError('Nama supplier minimal 2 karakter.');
@@ -80,9 +81,7 @@ class SupplierService {
         limit: 1,
       );
       if (duplicate.isNotEmpty && duplicate.first['id'] != id) {
-        throw StateError(
-          'Supplier "${duplicate.first['nama']}" sudah ada.',
-        );
+        throw StateError('Supplier "${duplicate.first['nama']}" sudah ada.');
       }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       if (id != null) {
@@ -122,8 +121,11 @@ class SupplierService {
 
   Future<void> deleteSupplier(
     int id, {
+    required Operator actor,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
+    Permissions.require(actor, permissionSupplier);
+    FeatureGate.require(featureSupplierHub);
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
@@ -170,8 +172,11 @@ class SupplierService {
   Future<void> syncItemSuppliers(
     int stockItemId,
     Set<int> supplierIds, {
+    required Operator actor,
     Future<void> Function(Transaction txn, int supplierId)? enqueue,
   }) async {
+    Permissions.require(actor, permissionSupplier);
+    FeatureGate.require(featureSupplierHub);
     final db = AppDatabase.instance.db;
     await db.transaction((txn) async {
       final current = await txn.query(
@@ -180,16 +185,13 @@ class SupplierService {
         where: 'stock_item_id = ? AND deleted_at IS NULL',
         whereArgs: [stockItemId],
       );
-      final existing = current
-          .map((row) => row['supplier_id'] as int)
-          .toSet();
+      final existing = current.map((row) => row['supplier_id'] as int).toSet();
       final now = nowIso();
       for (final supplierId in existing.difference(supplierIds)) {
         await txn.update(
           'supplier_items',
           {'deleted_at': now, 'updated_at': now},
-          where:
-              'supplier_id = ? AND stock_item_id = ? AND deleted_at IS NULL',
+          where: 'supplier_id = ? AND stock_item_id = ? AND deleted_at IS NULL',
           whereArgs: [supplierId, stockItemId],
         );
       }
@@ -240,10 +242,9 @@ class SupplierService {
   }
 
   Future<List<Map<String, Object?>>> lowStockItems({int? supplierId}) async {
-    final rows = await AppDatabase.instance.db.rawQuery(
-      '''
+    final rows = await AppDatabase.instance.db.rawQuery('''
       SELECT st.id AS stock_item_id, st.kode, st.nama, st.satuan,
-        COALESCE(st.jumlah_milli, st.jumlah * 1000) AS jumlah_milli,
+        st.jumlah_milli AS jumlah_milli,
         COALESCE(st.desimal, 0) AS desimal,
         st.stok_minimum,
         s.id AS supplier_id, s.nama AS supplier_nama, s.nomor_hp,
@@ -257,20 +258,18 @@ class SupplierService {
       WHERE s.deleted_at IS NULL
         AND i.deleted_at IS NULL
         AND st.deleted_at IS NULL
-        AND COALESCE(st.jumlah_milli, st.jumlah * 1000) <=
+        AND st.jumlah_milli <=
         (CASE WHEN st.stok_minimum > 0 THEN st.stok_minimum ELSE 3 END) * 1000
         ${supplierId == null ? '' : 'AND s.id = $supplierId'}
       ORDER BY s.nama COLLATE NOCASE, st.nama COLLATE NOCASE
-      ''',
-    );
+      ''');
     return rows;
   }
 
   Future<List<Map<String, Object?>>> followupRows({int? supplierId}) async {
-    final rows = await AppDatabase.instance.db.rawQuery(
-      '''
+    final rows = await AppDatabase.instance.db.rawQuery('''
       SELECT st.id AS stock_item_id, st.nama, st.satuan,
-        COALESCE(st.jumlah_milli, st.jumlah * 1000) AS jumlah_milli,
+        st.jumlah_milli AS jumlah_milli,
         COALESCE(st.desimal, 0) AS desimal,
         st.stok_minimum,
         s.id AS supplier_id, s.nama AS supplier_nama, s.nomor_hp,
@@ -287,8 +286,7 @@ class SupplierService {
         AND st.deleted_at IS NULL
         ${supplierId == null ? '' : 'AND s.id = $supplierId'}
       ORDER BY s.nama COLLATE NOCASE, st.nama COLLATE NOCASE
-      ''',
-    );
+      ''');
     return rows;
   }
 
@@ -298,8 +296,9 @@ class SupplierService {
     required String status,
     String? catatan,
     Future<void> Function(Transaction txn, int supplierId, int stockItemId)?
-        enqueue,
+    enqueue,
   }) async {
+    FeatureGate.require(featureSupplierHub);
     if (!supplierStatuses.contains(status)) {
       throw ArgumentError('Status supplier tidak dikenal.');
     }

@@ -26,6 +26,14 @@ Future<void> deleteDatabaseSidecars(String path) async {
   throw UnsupportedError('Restore file tidak tersedia di platform ini.');
 }
 
+Future<void> deleteDatabaseFiles(String path) async {}
+
+Future<void> deleteViewerDatabases(String directory) async {}
+
+Future<void> moveFile(String from, String to) async {
+  throw UnsupportedError('Pemulihan database tidak tersedia di sini.');
+}
+
 Future<void> replaceDatabase(String path, String tempPath) async {
   throw UnsupportedError('Restore file tidak tersedia di platform ini.');
 }

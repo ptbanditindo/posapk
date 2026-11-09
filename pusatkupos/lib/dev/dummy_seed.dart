@@ -120,13 +120,13 @@ Future<void> _insertAccount({
   final now = nowIso();
   final (passwordHash, passwordSalt) = await _hash(password);
   final (pinHash, pinSalt) = await _hash(pin);
+  final accountSyncId = newSyncId();
   await db.insert('employee_accounts', {
-    'sync_id': newSyncId(),
+    'sync_id': accountSyncId,
     'username': username,
     'nama': nama,
     'role_base': role,
     'extra_permissions_json': jsonEncode(extraPermissions),
-    'store_ids_json': jsonEncode(const ['utama']),
     'password_hash': passwordHash,
     'password_salt': passwordSalt,
     'password_iterations': _seedIterations,
@@ -136,6 +136,18 @@ Future<void> _insertAccount({
     'must_change_password': 0,
     'aktif': 1,
     'permission_version': 1,
+    'created_at': now,
+    'updated_at': now,
+  });
+  await db.insert('employee_store_access', {
+    'sync_id': newSyncId(),
+    'store_id': 'utama',
+    'employee_sync_id': accountSyncId,
+    'role_base': role,
+    'extra_permissions_json': jsonEncode(extraPermissions),
+    'permissions_explicit': 1,
+    'aktif': 1,
+    'version': 1,
     'created_at': now,
     'updated_at': now,
   });
@@ -332,7 +344,6 @@ Future<int> _stock({
     'nama': nama,
     'harga_modal': _rp(modal),
     'harga_jual': _rp(jual),
-    'jumlah': jumlah,
     'jumlah_milli': jumlah * 1000,
     'stok_minimum': 5,
     'satuan': 'pcs',
@@ -402,8 +413,7 @@ Future<void> _part(
     'updated_at': nowIso(),
   });
   await db.rawUpdate(
-    'UPDATE stock_items SET jumlah = jumlah - 1, '
-    'jumlah_milli = jumlah_milli - 1000 WHERE id = ?',
+    'UPDATE stock_items SET jumlah_milli = jumlah_milli - 1000 WHERE id = ?',
     [stockId],
   );
   await db.insert('stock_movements', {

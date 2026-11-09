@@ -9,6 +9,7 @@ import '../core/ids.dart';
 import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'feature_flags.dart';
+import 'stock_ledger.dart';
 
 class PurchaseLineInput {
   const PurchaseLineInput({
@@ -547,6 +548,7 @@ class PurchaseService {
     required List<PurchaseReturnLineInput> lines,
     required String alasan,
     required Operator actor,
+    String? metodeRefund,
     String? requestId,
     Future<void> Function(Transaction txn, int id)? enqueue,
   }) async {
@@ -580,8 +582,16 @@ class PurchaseService {
       if ('${purchase['status']}' != 'AKTIF') {
         throw StateError('Retur pada pembelian VOID ditolak.');
       }
-      var total = 0;
-      var totalModal = 0;
+      final refundMethod = await _resolveRefundMethod(
+        txn,
+        purchaseId,
+        metodeRefund,
+      );
+      final purchasePpn = (purchase['ppn'] as num?)?.toInt() ?? 0;
+      final purchaseBase =
+          ((purchase['total'] as num?)?.toInt() ?? 0) - purchasePpn;
+      var totalDpp = 0;
+      var totalPpn = 0;
       final prepared = <Map<String, Object?>>[];
       for (final line in lines) {
         if (line.qtyMilli <= 0) {
@@ -622,18 +632,22 @@ class PurchaseService {
         }
         final harga = (item['harga_satuan'] as num?)?.toInt() ?? 0;
         final modal = (item['harga_pokok_satuan'] as num?)?.toInt() ?? 0;
-        final subtotal = _mulDiv(line.qtyMilli, harga, 1000);
-        total += subtotal;
-        totalModal += _mulDiv(line.qtyMilli, modal, 1000);
+        final subtotal = _mulDiv(line.qtyMilli, modal, 1000);
+        final ppn = purchaseBase <= 0
+            ? 0
+            : _mulDiv(subtotal, purchasePpn, purchaseBase);
+        totalDpp += subtotal;
+        totalPpn += ppn;
         prepared.add({
           'item': item,
           'stock': stockRows.first,
           'qty': line.qtyMilli,
           'harga': harga,
           'modal': modal,
-          'subtotal': subtotal,
+          'subtotal': subtotal + ppn,
         });
       }
+      final totalDitagih = totalDpp + totalPpn;
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
       final now = nowIso();
       final deviceId = await _deviceId(txn);
@@ -654,9 +668,13 @@ class PurchaseService {
         'no_retur': noRetur,
         'request_id': request,
         'status': 'AKTIF',
-        'total': total,
-        'total_modal_kembali': totalModal,
+        'total': totalDitagih,
+        'total_modal_kembali': totalDpp,
         'total_kas_kembali': 0,
+        'metode_refund': refundMethod,
+        'dpp_cents': totalDpp,
+        'ppn_cents': totalPpn,
+        'total_ditagih_cents': totalDitagih,
         'alasan': cleanReason,
         'dibuat_oleh': actor.label,
         'sync_hlc_wall': hlc.wall,
@@ -679,6 +697,7 @@ class PurchaseService {
           'harga_satuan': line['harga'],
           'subtotal': line['subtotal'],
           'modal_satuan': line['modal'],
+          'harga_pokok_satuan': line['modal'],
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'created_at': now,
@@ -709,7 +728,12 @@ class PurchaseService {
           hlcCounter: hlc.counter,
         );
       }
-      final refund = await _recalculateTotals(txn, purchaseId);
+      final previousRefund =
+          (purchase['refund_accumulated_cents'] as num?)?.toInt() ?? 0;
+      final targetRefund = await _recalculateTotals(txn, purchaseId);
+      final refund = targetRefund > previousRefund
+          ? targetRefund - previousRefund
+          : 0;
       if (refund > 0) {
         await txn.update(
           'supplier_purchase_returns',
@@ -717,11 +741,20 @@ class PurchaseService {
           where: 'id = ?',
           whereArgs: [returnId],
         );
+        await txn.update(
+          'supplier_purchases',
+          {
+            'refund_accumulated_cents': previousRefund + refund,
+            'updated_at': now,
+          },
+          where: 'id = ?',
+          whereArgs: [purchaseId],
+        );
         await _writeCash(
           txn,
           sumberSyncId: returnSyncId,
           nominal: refund,
-          metode: 'CASH',
+          metode: refundMethod,
           kategori: 'RETUR_PEMBELIAN',
           operator: actor.label,
           catatan: 'Retur $noRetur',
@@ -747,6 +780,181 @@ class PurchaseService {
       });
       if (enqueue != null) await enqueue(txn, returnId);
       return returnId;
+    });
+  }
+
+  Future<void> reverseReturn({
+    required int returnId,
+    required String alasan,
+    required Operator actor,
+    String? requestId,
+    Future<void> Function(Transaction txn, int id)? enqueue,
+  }) async {
+    FeatureFlagsService.instance.requirePurchaseDebt();
+    if (!actor.isOwner) {
+      throw StateError('Reversal retur pembelian hanya untuk pemilik.');
+    }
+    final cleanReason = alasan.trim();
+    if (cleanReason.isEmpty) {
+      throw ArgumentError('Alasan reversal wajib diisi.');
+    }
+    final request = requestId ?? newSyncId();
+    await AppDatabase.instance.db.transaction((txn) async {
+      final existing = await txn.query(
+        'purchase_return_reversals',
+        columns: ['return_id'],
+        where: 'request_id = ?',
+        whereArgs: [request],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) return;
+      final rows = await txn.query(
+        'supplier_purchase_returns',
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [returnId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('Retur pembelian tidak ditemukan.');
+      final retur = rows.first;
+      if ('${retur['status']}' != 'AKTIF') {
+        throw StateError('Retur pembelian sudah dibatalkan.');
+      }
+      final purchaseRows = await txn.query(
+        'supplier_purchases',
+        where: 'id = ?',
+        whereArgs: [retur['purchase_id']],
+        limit: 1,
+      );
+      if (purchaseRows.isEmpty) throw StateError('Pembelian tidak ditemukan.');
+      final purchase = purchaseRows.first;
+      final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final now = nowIso();
+      final deviceId = await _deviceId(txn);
+      final kasKembali = (retur['total_kas_kembali'] as num?)?.toInt() ?? 0;
+      final reversalSyncId = newSyncId();
+      await txn.insert('purchase_return_reversals', {
+        'sync_id': reversalSyncId,
+        'store_id': _storeId,
+        'device_id': deviceId,
+        'return_id': returnId,
+        'return_sync_id': '${retur['sync_id']}',
+        'request_id': request,
+        'total_kas_cents': kasKembali,
+        'alasan': cleanReason,
+        'dibuat_oleh': actor.label,
+        'created_at': now,
+        'updated_at': now,
+      });
+      final items = await txn.query(
+        'supplier_purchase_return_items',
+        where: 'return_id = ? AND deleted_at IS NULL',
+        whereArgs: [returnId],
+      );
+      for (final item in items) {
+        final purchaseItemRows = await txn.query(
+          'supplier_purchase_items',
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [item['purchase_item_id']],
+          limit: 1,
+        );
+        if (purchaseItemRows.isEmpty) {
+          throw StateError('Baris pembelian retur tidak ditemukan.');
+        }
+        final purchaseItem = purchaseItemRows.first;
+        final qty = (item['jumlah_milli'] as num?)?.toInt() ?? 0;
+        final returned =
+            (purchaseItem['qty_retur_milli'] as num?)?.toInt() ?? 0;
+        final next = returned - qty;
+        await txn.update(
+          'supplier_purchase_items',
+          {'qty_retur_milli': next < 0 ? 0 : next, 'updated_at': now},
+          where: 'id = ?',
+          whereArgs: [purchaseItem['id']],
+        );
+        final stockRows = await txn.query(
+          'stock_items',
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [purchaseItem['stock_item_id']],
+          limit: 1,
+        );
+        if (stockRows.isEmpty) {
+          throw StateError('Barang retur tidak ditemukan.');
+        }
+        final stock = stockRows.first;
+        await _applyStockIn(
+          txn,
+          stockItemId: stock['id'] as int,
+          stockSyncId: '${stock['sync_id']}',
+          nama: '${stock['nama']}',
+          qtyMilli: qty,
+          hargaPokokSatuan: (item['harga_pokok_satuan'] as num?)?.toInt() ??
+              (item['modal_satuan'] as num?)?.toInt() ??
+              0,
+          sumberSyncId: '${item['sync_id']}',
+          alasan: 'Reversal retur ${retur['no_retur']}',
+          operator: actor.label,
+          hlcWall: hlc.wall,
+          hlcCounter: hlc.counter,
+          sumberEntity: 'retur_pembelian_reversal',
+        );
+      }
+      await txn.update(
+        'supplier_purchase_returns',
+        {
+          'status': 'VOID',
+          'void_reason': cleanReason,
+          'voided_at': now,
+          'voided_by': actor.label,
+          'sync_hlc_wall': hlc.wall,
+          'sync_hlc_counter': hlc.counter,
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [returnId],
+      );
+      final previousRefund =
+          (purchase['refund_accumulated_cents'] as num?)?.toInt() ?? 0;
+      final remaining = previousRefund - kasKembali;
+      await txn.update(
+        'supplier_purchases',
+        {
+          'refund_accumulated_cents': remaining < 0 ? 0 : remaining,
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [purchase['id']],
+      );
+      if (kasKembali > 0) {
+        await _writeCash(
+          txn,
+          sumberSyncId: reversalSyncId,
+          nominal: -kasKembali,
+          metode: '${retur['metode_refund'] ?? 'CASH'}',
+          kategori: 'REVERSAL_RETUR_PEMBELIAN',
+          operator: actor.label,
+          catatan: 'Reversal retur ${retur['no_retur']}',
+          hlcWall: hlc.wall,
+          hlcCounter: hlc.counter,
+          sumberEntity: 'purchase_return_reversal',
+        );
+      }
+      await _recalculateTotals(txn, purchase['id'] as int);
+      await txn.insert('business_audits', {
+        'sync_id': newSyncId(),
+        'store_id': _storeId,
+        'waktu': now,
+        'aktor': actor.label,
+        'aktor_employee_sync_id': actor.employeeSyncId,
+        'aksi': 'reversal_retur_pembelian',
+        'entity': 'supplier_purchase_return',
+        'entity_id': '${retur['sync_id']}',
+        'before_json': '{"status":"AKTIF"}',
+        'after_json': '{"status":"VOID"}',
+        'alasan': cleanReason,
+        'created_at': now,
+        'updated_at': now,
+      });
+      if (enqueue != null) await enqueue(txn, returnId);
     });
   }
 
@@ -855,15 +1063,15 @@ class PurchaseService {
         amount: (row['sisa_utang'] as num?)?.toInt() ?? 0,
       );
     }
-    // Saldo awal utang supplier ikut aging agar laporan utang lengkap.
+    // Saldo awal utang supplier ikut aging memakai sisa yang belum dibayar.
     final openingRows = await AppDatabase.instance.db.rawQuery(
       '''
-      SELECT obi.ref_sync_id, obi.ref_nama_snapshot, obi.nominal, ob.posted_at
-      FROM opening_balance_items obi
-      JOIN opening_balances ob ON ob.id = obi.opening_id
-      WHERE ob.store_id = ? AND ob.status = 'AKTIF'
-        AND ob.deleted_at IS NULL AND obi.deleted_at IS NULL
-        AND obi.jenis = 'UTANG_SUPPLIER'
+      SELECT supplier_sync_id, supplier_nama_snapshot,
+        nominal_cents - terbayar_cents AS sisa,
+        COALESCE(jatuh_tempo, created_at) AS posted_at
+      FROM opening_payables
+      WHERE store_id = ? AND status <> 'VOID' AND deleted_at IS NULL
+        AND nominal_cents > terbayar_cents
       ''',
       [_storeId],
     );
@@ -872,7 +1080,7 @@ class PurchaseService {
         'suppliers',
         columns: ['id'],
         where: 'sync_id = ?',
-        whereArgs: [row['ref_sync_id']],
+        whereArgs: [row['supplier_sync_id']],
         limit: 1,
       );
       final supplierId = supplierRows.isEmpty
@@ -880,9 +1088,9 @@ class PurchaseService {
           : (supplierRows.first['id'] as num).toInt();
       addRow(
         supplierId: supplierId,
-        supplierNama: '${row['ref_nama_snapshot']}',
+        supplierNama: '${row['supplier_nama_snapshot']}',
         tanggal: '${row['posted_at']}',
-        amount: (row['nominal'] as num?)?.toInt() ?? 0,
+        amount: (row['sisa'] as num?)?.toInt() ?? 0,
       );
     }
     final result = groups.values.toList()
@@ -930,24 +1138,24 @@ class PurchaseService {
   Future<Map<String, int>> purchaseTotals() async {
     final rows = await AppDatabase.instance.db.rawQuery(
       volumeQuery,
+      [_storeId],
     );
     final row = rows.first;
     final opening = await AppDatabase.instance.db.rawQuery(
       '''
-      SELECT COALESCE(SUM(obi.nominal), 0) AS total
-      FROM opening_balance_items obi
-      JOIN opening_balances ob ON ob.id = obi.opening_id
-      WHERE ob.store_id = ? AND ob.status = 'AKTIF'
-        AND ob.deleted_at IS NULL AND obi.deleted_at IS NULL
-        AND obi.jenis = 'UTANG_SUPPLIER'
+      SELECT COALESCE(SUM(nominal_cents - terbayar_cents), 0) AS total
+      FROM opening_payables
+      WHERE store_id = ? AND status <> 'VOID' AND deleted_at IS NULL
       ''',
       [_storeId],
     );
     final openingDebt = (opening.first['total'] as num?)?.toInt() ?? 0;
+    final purchaseDebt = (row['total_utang'] as num?)?.toInt() ?? 0;
     return {
       'total_pembelian': (row['total_pembelian'] as num?)?.toInt() ?? 0,
-      'total_utang':
-          ((row['total_utang'] as num?)?.toInt() ?? 0) + openingDebt,
+      'total_utang': purchaseDebt,
+      'total_utang_awal': openingDebt,
+      'total_utang_semua': purchaseDebt + openingDebt,
       'total_dibayar': (row['total_dibayar'] as num?)?.toInt() ?? 0,
       'jumlah_nota': (row['jumlah_nota'] as num?)?.toInt() ?? 0,
     };
@@ -968,12 +1176,16 @@ class PurchaseService {
         sp.stock_item_id,
         sp.nama_part,
         SUM(sp.jumlah_milli - sp.qty_retur_milli) AS qty_milli,
-        SUM(((sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_final) / 1000)
-          AS pendapatan,
-        SUM(((sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_modal) / 1000)
-          AS hpp,
-        SUM(((sp.jumlah_milli - sp.qty_retur_milli) *
-             (sp.harga_final - sp.harga_modal)) / 1000) AS margin
+        CAST(ROUND(SUM(
+          (sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_final
+        ) / 1000.0) AS INTEGER) AS pendapatan,
+        CAST(ROUND(SUM(
+          (sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_modal
+        ) / 1000.0) AS INTEGER) AS hpp,
+        CAST(ROUND(SUM(
+          (sp.jumlah_milli - sp.qty_retur_milli) *
+            (sp.harga_final - sp.harga_modal)
+        ) / 1000.0) AS INTEGER) AS margin
       FROM service_parts sp
       JOIN service_records r ON r.id = sp.service_record_id
       WHERE r.deleted_at IS NULL AND r.status = 'AKTIF'
@@ -991,8 +1203,9 @@ class PurchaseService {
       '''
       SELECT s.id, s.nama, s.satuan, s.jumlah_milli,
         COALESCE(c.hpp_rata_milli, s.harga_modal, 0) AS hpp_satuan,
-        (s.jumlah_milli * COALESCE(c.hpp_rata_milli, s.harga_modal, 0)) / 1000
-          AS nilai_persediaan
+        CAST(ROUND(
+          s.jumlah_milli * COALESCE(c.hpp_rata_milli, s.harga_modal, 0) / 1000.0
+        ) AS INTEGER) AS nilai_persediaan
       FROM stock_items s
       LEFT JOIN stock_cost_state c
         ON c.stock_sync_id = s.sync_id AND c.store_id = ?
@@ -1013,7 +1226,7 @@ class PurchaseService {
         AS total_dibayar,
       COUNT(CASE WHEN status = 'AKTIF' THEN 1 END) AS jumlah_nota
     FROM supplier_purchases
-    WHERE deleted_at IS NULL
+    WHERE deleted_at IS NULL AND store_id = ?
   ''';
 
   /// Penerapan pembelian dari perangkat lain. Stok masuk, HPP, kas DP, dan
@@ -1321,12 +1534,24 @@ class PurchaseService {
     if (syncId.isEmpty) return;
     final existing = await txn.query(
       'supplier_purchase_returns',
-      columns: ['id'],
       where: 'sync_id = ?',
       whereArgs: [syncId],
       limit: 1,
     );
-    if (existing.isNotEmpty) return;
+    if (existing.isNotEmpty) {
+      final row = existing.first;
+      if ('${payload['status'] ?? 'AKTIF'}' == 'VOID' &&
+          '${row['status']}' == 'AKTIF') {
+        await _applyPurchaseReturnVoidRemote(
+          txn,
+          row,
+          payload,
+          wall: wall,
+          counter: counter,
+        );
+      }
+      return;
+    }
     final purchaseSync = '${payload['purchase_sync_id'] ?? ''}';
     final purchases = await txn.query(
       'supplier_purchases',
@@ -1377,6 +1602,10 @@ class PurchaseService {
       'total': 0,
       'total_modal_kembali': 0,
       'total_kas_kembali': 0,
+      'metode_refund': '${payload['metode_refund'] ?? 'CASH'}',
+      'dpp_cents': 0,
+      'ppn_cents': 0,
+      'total_ditagih_cents': 0,
       'alasan': '${payload['alasan'] ?? 'Retur pembelian'}',
       'dibuat_oleh': payload['dibuat_oleh'],
       'sync_hlc_wall': wall,
@@ -1384,8 +1613,11 @@ class PurchaseService {
       'created_at': payload['created_at'] ?? now,
       'updated_at': now,
     });
-    var total = 0;
-    var totalModal = 0;
+    var totalDpp = 0;
+    var totalPpn = 0;
+    final purchasePpn = (purchase['ppn'] as num?)?.toInt() ?? 0;
+    final purchaseBase =
+        ((purchase['total'] as num?)?.toInt() ?? 0) - purchasePpn;
     final items = (payload['items'] as List? ?? const [])
         .whereType<Map>()
         .map((row) => Map<String, Object?>.from(row))
@@ -1466,12 +1698,16 @@ class PurchaseService {
           (purchaseItem['harga_satuan'] as num?)?.toInt() ??
           0;
       final modal =
+          (item['harga_pokok_satuan'] as num?)?.toInt() ??
           (item['modal_satuan'] as num?)?.toInt() ??
           (purchaseItem['harga_pokok_satuan'] as num?)?.toInt() ??
           0;
-      final subtotal = _mulDiv(appliedQty, harga, 1000);
-      total += subtotal;
-      totalModal += _mulDiv(appliedQty, modal, 1000);
+      final subtotal = _mulDiv(appliedQty, modal, 1000);
+      final ppn = purchaseBase <= 0
+          ? 0
+          : _mulDiv(subtotal, purchasePpn, purchaseBase);
+      totalDpp += subtotal;
+      totalPpn += ppn;
       await txn.insert('supplier_purchase_return_items', {
         'sync_id': itemSync.isEmpty ? newSyncId() : itemSync,
         'store_id': '${payload['store_id'] ?? _storeId}',
@@ -1482,8 +1718,9 @@ class PurchaseService {
         'nama_snapshot': item['nama_snapshot'],
         'jumlah_milli': appliedQty,
         'harga_satuan': harga,
-        'subtotal': subtotal,
+        'subtotal': subtotal + ppn,
         'modal_satuan': modal,
+        'harga_pokok_satuan': modal,
         'sync_hlc_wall': wall,
         'sync_hlc_counter': counter,
         'created_at': payload['created_at'] ?? now,
@@ -1511,13 +1748,30 @@ class PurchaseService {
         hlcCounter: counter,
       );
     }
+    final totalDitagih = totalDpp + totalPpn;
     await txn.update(
       'supplier_purchase_returns',
-      {'total': total, 'total_modal_kembali': totalModal, 'updated_at': now},
+      {
+        'total': totalDitagih,
+        'total_modal_kembali': totalDpp,
+        'dpp_cents': totalDpp,
+        'ppn_cents': totalPpn,
+        'total_ditagih_cents': totalDitagih,
+        'updated_at': now,
+      },
       where: 'id = ?',
       whereArgs: [returnId],
     );
-    final refund = await _recalculateTotals(txn, purchase['id'] as int);
+    final refundMethod =
+        '${payload['metode_refund'] ?? 'CASH'}'.toUpperCase() == 'TRANSFER'
+        ? 'TRANSFER'
+        : 'CASH';
+    final previousRefund =
+        (purchase['refund_accumulated_cents'] as num?)?.toInt() ?? 0;
+    final targetRefund = await _recalculateTotals(txn, purchase['id'] as int);
+    final refund = targetRefund > previousRefund
+        ? targetRefund - previousRefund
+        : 0;
     if (refund > 0) {
       await txn.update(
         'supplier_purchase_returns',
@@ -1525,11 +1779,20 @@ class PurchaseService {
         where: 'id = ?',
         whereArgs: [returnId],
       );
+      await txn.update(
+        'supplier_purchases',
+        {
+          'refund_accumulated_cents': previousRefund + refund,
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [purchase['id']],
+      );
       await _writeCash(
         txn,
         sumberSyncId: syncId,
         nominal: refund,
-        metode: 'CASH',
+        metode: refundMethod,
         kategori: 'RETUR_PEMBELIAN',
         operator: '${payload['dibuat_oleh'] ?? ''}',
         catatan: 'Retur $noRetur',
@@ -1538,6 +1801,116 @@ class PurchaseService {
         sumberEntity: 'supplier_purchase_return',
       );
     }
+  }
+
+  Future<void> _applyPurchaseReturnVoidRemote(
+    DatabaseExecutor txn,
+    Map<String, Object?> retur,
+    Map<String, Object?> payload, {
+    required int wall,
+    required int counter,
+  }) async {
+    final returnId = retur['id'] as int;
+    final purchaseRows = await txn.query(
+      'supplier_purchases',
+      where: 'id = ?',
+      whereArgs: [retur['purchase_id']],
+      limit: 1,
+    );
+    if (purchaseRows.isEmpty) return;
+    final purchase = purchaseRows.first;
+    final now = nowIso();
+    final kasKembali = (retur['total_kas_kembali'] as num?)?.toInt() ?? 0;
+    final items = await txn.query(
+      'supplier_purchase_return_items',
+      where: 'return_id = ? AND deleted_at IS NULL',
+      whereArgs: [returnId],
+    );
+    for (final item in items) {
+      final purchaseItemRows = await txn.query(
+        'supplier_purchase_items',
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [item['purchase_item_id']],
+        limit: 1,
+      );
+      if (purchaseItemRows.isEmpty) continue;
+      final purchaseItem = purchaseItemRows.first;
+      final qty = (item['jumlah_milli'] as num?)?.toInt() ?? 0;
+      final returned =
+          (purchaseItem['qty_retur_milli'] as num?)?.toInt() ?? 0;
+      final next = returned - qty;
+      await txn.update(
+        'supplier_purchase_items',
+        {'qty_retur_milli': next < 0 ? 0 : next, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [purchaseItem['id']],
+      );
+      final stockRows = await txn.query(
+        'stock_items',
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [purchaseItem['stock_item_id']],
+        limit: 1,
+      );
+      if (stockRows.isEmpty) continue;
+      final stock = stockRows.first;
+      await _applyStockIn(
+        txn,
+        stockItemId: stock['id'] as int,
+        stockSyncId: '${stock['sync_id']}',
+        nama: '${stock['nama']}',
+        qtyMilli: qty,
+        hargaPokokSatuan: (item['harga_pokok_satuan'] as num?)?.toInt() ??
+            (item['modal_satuan'] as num?)?.toInt() ??
+            0,
+        sumberSyncId: '${item['sync_id']}',
+        alasan: 'Reversal retur ${retur['no_retur']}',
+        operator: '${payload['voided_by'] ?? payload['dibuat_oleh'] ?? ''}',
+        hlcWall: wall,
+        hlcCounter: counter,
+        sumberEntity: 'retur_pembelian_reversal',
+      );
+    }
+    await txn.update(
+      'supplier_purchase_returns',
+      {
+        'status': 'VOID',
+        'void_reason': '${payload['void_reason'] ?? 'Reversal retur'}',
+        'voided_at': payload['voided_at'] ?? now,
+        'voided_by': payload['voided_by'] ?? payload['dibuat_oleh'],
+        'sync_hlc_wall': wall,
+        'sync_hlc_counter': counter,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [returnId],
+    );
+    final previousRefund =
+        (purchase['refund_accumulated_cents'] as num?)?.toInt() ?? 0;
+    final remaining = previousRefund - kasKembali;
+    await txn.update(
+      'supplier_purchases',
+      {
+        'refund_accumulated_cents': remaining < 0 ? 0 : remaining,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [purchase['id']],
+    );
+    if (kasKembali > 0) {
+      await _writeCash(
+        txn,
+        sumberSyncId: '${retur['sync_id']}',
+        nominal: -kasKembali,
+        metode: '${retur['metode_refund'] ?? 'CASH'}',
+        kategori: 'REVERSAL_RETUR_PEMBELIAN',
+        operator: '${payload['voided_by'] ?? ''}',
+        catatan: 'Reversal retur ${retur['no_retur']}',
+        hlcWall: wall,
+        hlcCounter: counter,
+        sumberEntity: 'purchase_return_reversal',
+      );
+    }
+    await _recalculateTotals(txn, purchase['id'] as int);
   }
 
   Future<void> _applyPurchaseVoidRemote(
@@ -1688,54 +2061,23 @@ class PurchaseService {
     required String operator,
     required int hlcWall,
     required int hlcCounter,
+    String sumberEntity = 'pembelian_item',
   }) async {
-    final rows = await txn.query(
-      'stock_items',
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [stockItemId],
-      limit: 1,
-    );
-    if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
-    final before = (rows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
-    final after = before + qtyMilli;
-    final now = nowIso();
-    await txn.update(
-      'stock_items',
-      {
-        'jumlah': after ~/ 1000,
-        'jumlah_milli': after,
-        'sync_hlc_wall': hlcWall,
-        'sync_hlc_counter': hlcCounter,
-        'updated_at': now,
-      },
-      where: 'id = ?',
-      whereArgs: [stockItemId],
-    );
-    await txn.insert('stock_movements', {
-      'sync_id': newSyncId(),
-      'store_id': _storeId,
-      'stock_item_id': stockItemId,
-      'stock_sync_id': stockSyncId,
-      'nama_item': nama,
-      'jenis': 'MASUK',
-      'jumlah': qtyMilli ~/ 1000,
-      'jumlah_milli': qtyMilli,
-      'stok_sebelum_milli': before,
-      'stok_sesudah_milli': after,
-      'sumber_entity': 'pembelian_item',
-      'sumber_sync_id': sumberSyncId,
-      'operator': operator,
-      'alasan': alasan,
-      'sync_hlc_wall': hlcWall,
-      'sync_hlc_counter': hlcCounter,
-      'created_at': now,
-      'updated_at': now,
-    });
-    await _updateCostState(
+    await StockLedger.instance.apply(
       txn,
+      stockItemId: stockItemId,
       stockSyncId: stockSyncId,
-      addQtyMilli: qtyMilli,
-      addHppSatuan: hargaPokokSatuan,
+      jenis: 'MASUK',
+      deltaMilli: qtyMilli,
+      unitCostCents: hargaPokokSatuan,
+      sumberEntity: sumberEntity,
+      sumberSyncId: sumberSyncId,
+      namaItem: nama,
+      alasan: alasan,
+      operator: operator,
+      storeId: _storeId,
+      hlcWall: hlcWall,
+      hlcCounter: hlcCounter,
     );
   }
 
@@ -1752,106 +2094,26 @@ class PurchaseService {
     required int hlcCounter,
     String sumberEntity = 'retur_pembelian_item',
   }) async {
-    final rows = await txn.query(
-      'stock_items',
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [stockItemId],
-      limit: 1,
-    );
-    if (rows.isEmpty) throw StateError('Barang tidak ditemukan.');
-    final before = (rows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
-    if (before < qtyMilli) {
-      throw StateError('Stok $nama tidak cukup.');
-    }
-    final after = before - qtyMilli;
-    final now = nowIso();
-    await txn.update(
-      'stock_items',
-      {
-        'jumlah': after ~/ 1000,
-        'jumlah_milli': after,
-        'sync_hlc_wall': hlcWall,
-        'sync_hlc_counter': hlcCounter,
-        'updated_at': now,
-      },
-      where: 'id = ?',
-      whereArgs: [stockItemId],
-    );
-    await txn.insert('stock_movements', {
-      'sync_id': newSyncId(),
-      'store_id': _storeId,
-      'stock_item_id': stockItemId,
-      'stock_sync_id': stockSyncId,
-      'nama_item': nama,
-      'jenis': 'KELUAR',
-      'jumlah': qtyMilli ~/ 1000,
-      'jumlah_milli': -qtyMilli,
-      'stok_sebelum_milli': before,
-      'stok_sesudah_milli': after,
-      'sumber_entity': sumberEntity,
-      'sumber_sync_id': sumberSyncId,
-      'operator': operator,
-      'alasan': alasan,
-      'sync_hlc_wall': hlcWall,
-      'sync_hlc_counter': hlcCounter,
-      'created_at': now,
-      'updated_at': now,
-    });
-    await _updateCostState(
+    await StockLedger.instance.apply(
       txn,
+      stockItemId: stockItemId,
       stockSyncId: stockSyncId,
-      addQtyMilli: -qtyMilli,
-      addHppSatuan: null,
+      jenis: 'KELUAR',
+      deltaMilli: -qtyMilli,
+      sumberEntity: sumberEntity,
+      sumberSyncId: sumberSyncId,
+      namaItem: nama,
+      alasan: alasan,
+      operator: operator,
+      storeId: _storeId,
+      hlcWall: hlcWall,
+      hlcCounter: hlcCounter,
     );
-  }
-
-  Future<void> _updateCostState(
-    DatabaseExecutor txn, {
-    required String stockSyncId,
-    required int addQtyMilli,
-    required int? addHppSatuan,
-  }) async {
-    final rows = await txn.query(
-      'stock_cost_state',
-      where: 'store_id = ? AND stock_sync_id = ?',
-      whereArgs: [_storeId, stockSyncId],
-      limit: 1,
-    );
-    var qty = rows.isEmpty ? 0 : (rows.first['qty_milli'] as num?)?.toInt() ?? 0;
-    var hpp = rows.isEmpty
-        ? 0
-        : (rows.first['hpp_rata_milli'] as num?)?.toInt() ?? 0;
-    if (addHppSatuan != null && addQtyMilli > 0) {
-      final value = qty * hpp + addQtyMilli * addHppSatuan;
-      qty += addQtyMilli;
-      hpp = qty <= 0 ? 0 : ((value + qty ~/ 2) ~/ qty);
-    } else {
-      qty += addQtyMilli;
-      if (qty < 0) qty = 0;
-    }
-    if (qty == 0) hpp = 0;
-    final now = nowIso();
-    if (rows.isEmpty) {
-      await txn.insert('stock_cost_state', {
-        'store_id': _storeId,
-        'stock_sync_id': stockSyncId,
-        'qty_milli': qty,
-        'hpp_rata_milli': hpp,
-        'updated_at': now,
-      });
-    } else {
-      await txn.update(
-        'stock_cost_state',
-        {'qty_milli': qty, 'hpp_rata_milli': hpp, 'updated_at': now},
-        where: 'store_id = ? AND stock_sync_id = ?',
-        whereArgs: [_storeId, stockSyncId],
-      );
-    }
   }
 
   Future<String> _deviceId(DatabaseExecutor txn) async {
     final rows = await txn.query(
-      'app_settings',
+      'app_meta',
       columns: ['key', 'value'],
       where: "key IN ('sync.relay_device_id', 'device.current_id')",
     );
@@ -1892,6 +2154,32 @@ class PurchaseService {
       'created_at': now,
       'updated_at': now,
     });
+  }
+
+  Future<String> _resolveRefundMethod(
+    DatabaseExecutor txn,
+    int purchaseId,
+    String? requested,
+  ) async {
+    final explicit = (requested ?? '').trim().toUpperCase();
+    if (explicit.isNotEmpty) {
+      if (explicit != 'CASH' && explicit != 'TRANSFER') {
+        throw ArgumentError('Metode refund tidak valid.');
+      }
+      return explicit;
+    }
+    final rows = await txn.query(
+      'supplier_payments',
+      columns: ['metode'],
+      where: 'purchase_id = ? AND deleted_at IS NULL AND voided_at IS NULL '
+          'AND nominal > 0',
+      whereArgs: [purchaseId],
+      orderBy: 'waktu DESC, id DESC',
+      limit: 1,
+    );
+    final metode =
+        rows.isEmpty ? 'CASH' : '${rows.first['metode']}'.toUpperCase();
+    return metode == 'TRANSFER' ? 'TRANSFER' : 'CASH';
   }
 
   Future<int> _recalculateTotals(DatabaseExecutor txn, int purchaseId) async {

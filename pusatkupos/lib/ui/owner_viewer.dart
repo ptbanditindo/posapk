@@ -183,9 +183,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           'Ringkasan milik akun lain. Keluar lalu masuk dengan akun tersebut.',
         );
       }
-      await _seedOwner(payload);
+      await AppDatabase.instance.runViewerWrite(() => _seedOwner(payload));
       if (persist) {
-        await AppDatabase.instance.setSetting(_summaryKey, raw);
+        await AppDatabase.instance.runViewerWrite(
+          () => AppDatabase.instance.setSetting(_summaryKey, raw),
+        );
       }
       if (!mounted) return;
       setState(() {
@@ -230,7 +232,12 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
     }
   }
 
-  Future<void> _connectViewer({bool silent = false}) async {
+  Future<void> _connectViewer({bool silent = false}) =>
+      AppDatabase.instance.runViewerWrite(
+        () => _connectViewerBody(silent: silent),
+      );
+
+  Future<void> _connectViewerBody({required bool silent}) async {
     if (_summary == null) {
       if (!silent) _snack('Ringkasan belum tersedia.', error: true);
       return;
@@ -688,8 +695,8 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       builder: (context) => AlertDialog(
         title: const Text('Keluar dari ringkasan?'),
         content: const Text(
-          'PIN dan sesi dihapus. Salinan data toko di perangkat ini tetap '
-          'terpisah dari pembukuan lokal.',
+          'PIN dan sesi dihapus. Salinan ringkasan di perangkat ini juga '
+          'dihapus; masuk lagi memerlukan salinan baru dari server akun.',
         ),
         actions: [
           TextButton(

@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import '../core/app_config.dart';
 import '../data/license_service.dart';
 import '../data/reconciliation_service.dart';
+import '../data/restore_lock.dart';
 import 'sync_service.dart';
 
 /// Sinkronisasi otomatis selama aplikasi berjalan.
@@ -27,6 +28,21 @@ class SyncScheduler with WidgetsBindingObserver {
   Timer? _timer;
   bool _started = false;
   bool _running = false;
+  Completer<void>? _tickDone;
+
+  bool get isStarted => _started;
+
+  /// Menunggu putaran `tick` yang sedang berjalan selesai, termasuk pekerjaan
+  /// sebelum `syncNow` dipanggil.
+  Future<void> whenIdle() async {
+    final done = _tickDone;
+    if (done == null) return;
+    try {
+      await done.future;
+    } catch (_) {
+      // Alasan gagal sudah dicatat di `sync.last_error`.
+    }
+  }
   DateTime? _lastAttempt;
   Duration _interval = const Duration(minutes: defaultIntervalMinutes);
 
@@ -97,7 +113,7 @@ class SyncScheduler with WidgetsBindingObserver {
   }
 
   Future<void> tick({bool force = false}) async {
-    if (_running) return;
+    if (_running || RestoreLock.instance.isRestoring) return;
     final now = DateTime.now();
     if (!force &&
         _lastAttempt != null &&
@@ -106,6 +122,8 @@ class SyncScheduler with WidgetsBindingObserver {
     }
     _running = true;
     _lastAttempt = now;
+    final done = Completer<void>();
+    _tickDone = done;
     try {
       if (!serviceConfigured) return;
       if (!await LicenseService.instance.isPremium()) return;
@@ -128,6 +146,8 @@ class SyncScheduler with WidgetsBindingObserver {
       // Pesan tersimpan di `sync.last_error`; periode berikutnya mencoba lagi.
     } finally {
       _running = false;
+      if (identical(_tickDone, done)) _tickDone = null;
+      done.complete();
     }
   }
 }

@@ -74,6 +74,19 @@ Android meminta izin Bluetooth saat mencari/menghubungkan printer (API 31+:
 OTG. Izin fitur `bluetooth` dan `usb.host` ditandai tidak wajib sehingga
 aplikasi tetap bisa dipasang di perangkat tanpa Bluetooth/USB OTG.
 
+### Matriks platform
+
+| Platform | Status | Database | Catatan |
+|---|---|---|---|
+| Android | Target utama | SQLCipher | Kunci database di secure storage; printer Bluetooth/USB; APK rilis |
+| Windows | Pengembangan/desktop | SQLite FFI | Tidak terenkripsi; `encryptionNote` ditampilkan |
+| Web | Pengembangan | SQLite FFI web | Tidak terenkripsi; secure storage terbatas; bukan untuk data produksi |
+| iOS/macOS | Kode tersedia | SQLCipher | Folder platform belum dikonfigurasi di repositori |
+| Linux | Kode tersedia | SQLite FFI | Folder platform belum dikonfigurasi di repositori |
+
+Pengujian otomatis berjalan di Dart VM dengan database SQLite in-memory
+(`test/support/test_database.dart`) dan tidak menyentuh database pengguna.
+
 ```bash
 # Sekali saja: salin contoh konfigurasi build.
 cp .env.example .env   # PowerShell: Copy-Item .env.example .env
@@ -137,6 +150,63 @@ mengharapkan layanan:
 - Menolak snapshot yang tidak menyertakan putaran sinkron lengkap dan
   memverifikasi tanda tangan perangkat pada metadata snapshot.
 - Menjaga kuota follow-up gratis berdasarkan kode arsip database.
+
+## Catatan rilis — remediasi audit (9 November 2026)
+
+Rilis ini menutup rangkaian temuan audit internal. Perubahan yang terlihat
+pengguna:
+
+- **Uang**: seluruh nominal ditampilkan dalam rupiah bulat tanpa sen (mis.
+  Rp 5.001); pembulatan hanya untuk tampilan, sedangkan nilai tersimpan tetap
+  dalam sen agar perhitungan pajak dan HPP tetap akurat.
+- **Retur dan void**: retur penjualan/pembelian mengembalikan stok dan kas
+  secara inkremental, mendukung refund bertahap dan override metode refund.
+  Pembatalan retur (reversal) hanya oleh pemilik dengan alasan dan audit;
+  nota yang masih memiliki retur aktif tidak dapat di-void.
+- **Stok**: saldo, mutasi, HPP rata-rata, dan nilai persediaan berasal dari
+  satu ledger. Opname memakai selisih terhadap saldo berjalan, dan koreksi
+  berulang aman.
+- **Pembelian dan utang**: pembayaran utang, retur pembelian, saldo awal
+  utang/piutang, dan aging memakai dokumen yang dapat dibayar/ditagih.
+- **PPN**: estimasi dan nota menyimpan snapshot DPP/PPN; rekap PPN neto retur
+  sama dengan ringkasan laporan; pembayaran PPN tercatat.
+- **Gaji**: pembayaran gaji mencatat pembayar, komponen pokok/komisi, kas,
+  dan audit; hanya peran berizin yang dapat membayar.
+- **Modul dan Fitur**: pemilik dapat mengaktifkan/menonaktifkan modul per toko
+  lewat Pengaturan setelah verifikasi PIN. Fitur nonaktif menolak penulisan
+  lokal dan delta baru dari perangkat lain, tetapi data lama tetap terbaca dan
+  tidak dihapus; setiap perubahan tercatat di riwayat fitur.
+- **Multi-toko**: perpindahan toko diserialkan, menunggu sinkronisasi idle,
+  dan mengembalikan sesi lama bila toko tujuan gagal dibuka. Izin karyawan
+  dihitung ulang untuk toko yang aktif.
+- **Keamanan sesi**: sesi hilang tidak lagi disintesis menjadi pemilik;
+  onboarding pada perangkat yang sudah memiliki pemilik meminta kode
+  pemulihan; PIN lemah dimigrasikan; mode ringkasan hanya-baca pada level
+  koneksi database. Saat pemilik keluar, database lokal beserta kunci
+  identitasnya dihapus sehingga masuk lagi memerlukan salinan dari server
+  akun; karyawan yang keluar hanya mengakhiri sesinya dan data toko tetap
+  tersimpan.
+- **Startup dan restore**: database rusak dikarantina (bukan dihapus) dan
+  layar pemulihan menyediakan coba lagi, restore backup, ekspor, atau mode
+  aman. Selama restore atau pindah toko, aksi lain diblokir dan state
+  operator/pengaturan/fitur disegarkan setelah selesai. Simpan nota dan buka
+  struk dipisah, sehingga kegagalan struk tidak lagi dilaporkan sebagai gagal
+  simpan.
+- **Backup/snapshot**: backup memverifikasi kelengkapan (versi skema, kontrak,
+  checksum), snapshot memuat seluruh tabel bersama termasuk status fitur, dan
+  restore bersifat atomik.
+
+Batasan yang masih berlaku:
+
+- Sign-out pemilik menghapus database lokal. Tanpa akun server, data yang
+  sudah dihapus tidak dapat dipulihkan dari perangkat; buat backup terlebih
+  dahulu bila masih diperlukan.
+- Kredit hanya dibuka untuk peran yang diberi izin `beri_kredit`, wajib jatuh
+  tempo saat masih ada sisa bayar, dan pelampauan limit pelanggan memerlukan
+  persetujuan pemilik/penanggung jawab.
+- Verifikasi runtime Android/SQLCipher dan printer belum dijalankan pada rilis
+  ini karena lingkungan build tanpa emulator. Seluruh verifikasi otomatis
+  berjalan di Dart VM dengan SQLite FFI.
 
 ## Rencana Play Store shell
 

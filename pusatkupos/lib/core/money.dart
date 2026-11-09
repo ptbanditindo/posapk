@@ -1,10 +1,12 @@
 import 'package:intl/intl.dart';
 
-final NumberFormat _rupiah = NumberFormat.currency(
+final NumberFormat _rupiahWhole = NumberFormat.currency(
   locale: 'id_ID',
   symbol: 'Rp ',
   decimalDigits: 0,
 );
+
+final NumberFormat _rupiahPlain = NumberFormat.decimalPattern('id_ID');
 
 class RupiahFormatException implements Exception {
   RupiahFormatException(this.message);
@@ -78,11 +80,11 @@ int? tryParseRupiahToCents(String raw) {
   }
 }
 
-String formatRupiah(int cents) => _rupiah.format(cents / 100);
+/// Seluruh nominal ditampilkan dalam rupiah bulat tanpa sen. Pembulatan hanya
+/// untuk tampilan; nilai tersimpan tetap dalam sen agar pajak dan HPP akurat.
+String formatRupiah(int cents) => _rupiahWhole.format((cents / 100).round());
 
-String formatRupiahPlain(int cents) {
-  final value = (cents / 100).round();
-  return NumberFormat.decimalPattern('id_ID').format(value);
-}
+String formatRupiahPlain(int cents) =>
+    _rupiahPlain.format((cents / 100).round());
 
 int clampNonNegative(int value) => value < 0 ? 0 : value;

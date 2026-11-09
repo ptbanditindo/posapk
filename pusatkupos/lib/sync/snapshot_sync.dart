@@ -3,104 +3,22 @@ import 'dart:typed_data';
 
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_config.dart';
 import '../core/dates.dart';
 import '../data/app_database.dart';
 import 'crypto.dart';
 import 'snapshot_platform_stub.dart'
     if (dart.library.io) 'snapshot_platform_io.dart';
 
-const snapshotTables = [
-  'employee_accounts',
-  'employee_store_access',
-  'document_counters',
-  'customers',
-  'vehicle_or_units',
-  'stock_items',
-  'harga_jasa',
-  'service_records',
-  'service_jobs',
-  'service_parts',
-  'service_payments',
-  'sale_returns',
-  'sale_return_items',
-  'service_record_mechanics',
-  'service_record_commissions',
-  'employee_debts',
-  'salary_payments',
-  'stock_movements',
-  'nota_adjustments',
-  'store_settings',
-  'estimates',
-  'estimate_items',
-  'work_orders',
-  'work_order_status_log',
-  'day_digests',
-  'reconciliation_requests',
-  'followup_items',
-  'followup_events',
-  'wa_message_logs',
-  'suppliers',
-  'supplier_items',
-  'supplier_followups',
-  'store_features',
-  'supplier_purchases',
-  'supplier_purchase_items',
-  'supplier_payments',
-  'supplier_purchase_returns',
-  'supplier_purchase_return_items',
-  'stock_cost_state',
-  'opening_balances',
-  'opening_balance_items',
-  'pajak_pembayaran',
-];
-
-const snapshotDeleteOrder = [
-  'employee_store_access',
-  'employee_accounts',
-  'document_counters',
-  'service_payments',
-  'sale_return_items',
-  'sale_returns',
-  'supplier_purchase_return_items',
-  'supplier_purchase_returns',
-  'supplier_payments',
-  'supplier_purchase_items',
-  'supplier_purchases',
-  'pajak_pembayaran',
-  'opening_balance_items',
-  'opening_balances',
-  'store_features',
-  'service_jobs',
-  'service_parts',
-  'service_record_mechanics',
-  'service_record_commissions',
-  'employee_debts',
-  'salary_payments',
-  'stock_movements',
-  'estimate_items',
-  'estimates',
-  'work_order_status_log',
-  'work_orders',
-  'nota_adjustments',
-  'reconciliation_requests',
-  'day_digests',
-  'store_settings',
-  'followup_events',
-  'wa_message_logs',
-  'followup_items',
-  'supplier_followups',
-  'supplier_items',
-  'suppliers',
-  'service_records',
-  'vehicle_or_units',
-  'customers',
-  'stock_items',
-  'harga_jasa',
-];
-
+/// Tabel yang tidak boleh ikut dipulihkan dari snapshot: identitas perangkat,
+/// kunci lokal, antrean sync, dan konflik milik perangkat penerima.
+///
+/// Daftar tabel bersama tidak ditulis manual. [snapshotSharedTableOrder]
+/// menurunkannya dari skema database aktif agar tabel baru (mis. `cash_ledger`,
+/// `opname_holds`, `audit_events`) otomatis ikut terbawa.
 const snapshotLocalTables = [
   'owner_identity',
-  'license',
+  'licenses',
   'permission_audits',
   'devices',
   'login_guards',
@@ -111,6 +29,59 @@ const snapshotLocalTables = [
   'sync_conflicts',
   'device_sync_status',
 ];
+
+const _snapshotExcludedTables = {
+  'app_meta',
+  ...snapshotLocalTables,
+  'sqlite_sequence',
+};
+
+/// Urutan tabel bersama dari skema aktif, induk lebih dulu (aman untuk insert
+/// dengan foreign key aktif). Urutan hapus adalah kebalikannya.
+Future<List<String>> snapshotSharedTableOrder(Database db) async {
+  final rows = await db.rawQuery(
+    "SELECT name FROM sqlite_master WHERE type = 'table' "
+    "ORDER BY name",
+  );
+  final tables = [
+    for (final row in rows)
+      if (!_snapshotExcludedTables.contains('${row['name']}') &&
+          !'${row['name']}'.startsWith('sqlite_'))
+        '${row['name']}',
+  ];
+  final known = tables.toSet();
+  final parents = <String, Set<String>>{};
+  for (final table in tables) {
+    final fks = await db.rawQuery('PRAGMA foreign_key_list("$table")');
+    parents[table] = {
+      for (final fk in fks)
+        if ('${fk['table']}' != table && known.contains('${fk['table']}'))
+          '${fk['table']}',
+    };
+  }
+  final ordered = <String>[];
+  final placed = <String>{};
+  while (ordered.length < tables.length) {
+    final ready = [
+      for (final table in tables)
+        if (!placed.contains(table) &&
+            parents[table]!.every(placed.contains))
+          table,
+    ];
+    if (ready.isEmpty) {
+      // Siklus referensi (tidak ada di skema saat ini); sisanya mengikuti
+      // urutan nama agar hasil tetap deterministik.
+      ordered.addAll([
+        for (final table in tables)
+          if (!placed.contains(table)) table,
+      ]);
+      break;
+    }
+    ordered.addAll(ready);
+    placed.addAll(ready);
+  }
+  return ordered;
+}
 
 const snapshotLocalSettingsWhere =
     "key = 'app.created_at' OR key = 'app.role' "
@@ -133,8 +104,8 @@ extension SnapshotDatabase on AppDatabase {
       sanitize: const [
         // Akun ikut snapshot untuk komisi/komisi/payroll, tetapi kredensial
         // lokal tidak boleh ikut tersebar.
-        'UPDATE employee_accounts SET password_hash = '', '
-            'password_salt = '', pin_hash = NULL, pin_salt = NULL',
+        "UPDATE employee_accounts SET password_hash = '', "
+            "password_salt = '', pin_hash = NULL, pin_salt = NULL",
       ],
     );
     final checksum = sha256Hex(raw);
@@ -147,6 +118,9 @@ extension SnapshotDatabase on AppDatabase {
       'store_seq': storeSeq,
       'hlc_wall': wall,
       'hlc_counter': 0,
+      'schema_version': AppDatabase.schemaVersion,
+      'schema_contract_version': AppDatabase.schemaContractVersion,
+      'app_version': appVersion,
     });
     final signature = await signPayload(
       devicePrivateKey,
@@ -162,6 +136,9 @@ extension SnapshotDatabase on AppDatabase {
       'checksum': checksum,
       'hlc_wall': wall,
       'hlc_counter': 0,
+      'schema_version': AppDatabase.schemaVersion,
+      'schema_contract_version': AppDatabase.schemaContractVersion,
+      'app_version': appVersion,
     };
   }
 
@@ -183,11 +160,27 @@ extension SnapshotDatabase on AppDatabase {
     final storeSeq = (data['store_seq'] as num?)?.toInt() ?? 0;
     final hlcWall = (data['hlc_wall'] as num?)?.toInt() ?? 0;
     final hlcCounter = (data['hlc_counter'] as num?)?.toInt() ?? 0;
+    final snapshotVersion = (data['schema_version'] as num?)?.toInt() ?? 0;
+    final snapshotContract =
+        (data['schema_contract_version'] as num?)?.toInt() ?? 0;
+    final snapshotApp = data['app_version'] as String? ?? '';
     final snapshotDevice = data['device_id'] as String? ?? '';
     final snapshotStore = data['store_id'] as String? ?? '';
     final snapshotId = data['id'] as String? ?? 'snapshot-$storeSeq';
     if (ciphertext.isEmpty || nonce.isEmpty || signature.isEmpty) {
       throw StateError('Snapshot tidak lengkap.');
+    }
+    if (snapshotVersion > AppDatabase.schemaVersion) {
+      throw StateError(
+        'Snapshot dibuat oleh aplikasi versi lebih baru '
+        '(skema v$snapshotVersion). Perbarui aplikasi sebelum menerapkan.',
+      );
+    }
+    if (snapshotContract > AppDatabase.schemaContractVersion) {
+      throw StateError(
+        'Snapshot memakai kontrak v$snapshotContract yang belum didukung '
+        'aplikasi ini (v${AppDatabase.schemaContractVersion}).',
+      );
     }
     if (snapshotStore.isNotEmpty && snapshotStore != storeId) {
       throw StateError('Snapshot milik toko lain.');
@@ -242,6 +235,10 @@ extension SnapshotDatabase on AppDatabase {
       'store_seq': storeSeq,
       'hlc_wall': hlcWall,
       'hlc_counter': hlcCounter,
+      if (snapshotVersion > 0) 'schema_version': snapshotVersion,
+      if (snapshotContract > 0)
+        'schema_contract_version': snapshotContract,
+      if (snapshotApp.isNotEmpty) 'app_version': snapshotApp,
     });
     final valid = await verifyPayload(
       senderPublicKey,
@@ -267,11 +264,12 @@ extension SnapshotDatabase on AppDatabase {
         'pin_iterations',
       ],
     );
+    final tableOrder = await snapshotSharedTableOrder(db);
     final counts = await importSnapshotBytes(
       Uint8List.fromList(raw),
       db,
-      tables: snapshotTables,
-      deleteOrder: snapshotDeleteOrder,
+      tables: tableOrder,
+      deleteOrder: tableOrder.reversed.toList(),
       afterImport: (txn) async {
         await _preserveLocalCounters(txn, localCounters);
         await _preserveLocalCredentials(txn, localAccounts);

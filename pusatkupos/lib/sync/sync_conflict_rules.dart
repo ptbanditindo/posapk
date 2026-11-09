@@ -1,3 +1,5 @@
+import '../auth/permissions.dart';
+
 /// Kegagalan yang masih bisa berhasil bila dicoba lagi setelah delta lain
 /// (misalnya induk baris) diterapkan.
 class RetryableSyncException implements Exception {
@@ -75,6 +77,7 @@ class SenderProfile {
       'ubah_status',
       'ubah_stok',
       'koreksi',
+      'beri_kredit',
     },
     'KEDUANYA': {
       'buat_nota',
@@ -83,6 +86,7 @@ class SenderProfile {
       'ubah_status',
       'ubah_stok',
       'koreksi',
+      'beri_kredit',
     },
   };
 
@@ -161,6 +165,8 @@ class SyncConflictRules {
     'peran_tidak_berhak',
     'pengirim_dicabut',
     'akun_pengirim_nonaktif',
+    'toko_tidak_cocok',
+    'pembayaran_ppn_melebihi_sisa',
   };
 
   static bool isFinal(String reason) =>
@@ -172,6 +178,7 @@ class SyncConflictRules {
     'unit',
     'stock',
     'stock_movement',
+    'supplier',
     'supplier_followup',
     'estimate',
     'work_order',
@@ -191,6 +198,7 @@ class SyncConflictRules {
     'nota_adjustment': 'koreksi',
     'stock': 'ubah_stok',
     'stock_movement': 'ubah_stok',
+    'supplier': 'ubah_supplier',
     'supplier_purchase': 'buat_pembelian',
     'supplier_payment': 'bayar_utang',
     'supplier_purchase_return': 'buat_pembelian',
@@ -201,6 +209,7 @@ class SyncConflictRules {
     required SenderProfile sender,
     required String entity,
     required String action,
+    Map<String, Object?> payload = const {},
   }) {
     // Status perangkat/akun diperiksa sebelum isi payload dipercaya. Amplop
     // lama dari perangkat yang sudah dicabut atau akun nonaktif tidak boleh
@@ -225,6 +234,10 @@ class SyncConflictRules {
                 ? 'ubah_status'
                 : 'buat_nota';
         if (!sender.can(required)) return 'peran_tidak_berhak_$required';
+        if (_notaNeedsCreditPermission(payload) &&
+            !sender.can(permissionCredit)) {
+          return 'peran_tidak_berhak_$permissionCredit';
+        }
       }
       final required = employeeExtraPermission[entity];
       if (required != null && !sender.can(required)) {
@@ -235,6 +248,17 @@ class SyncConflictRules {
       }
     }
     return null;
+  }
+
+  /// Nota dengan sisa bayar butuh izin kredit pengirim, kecuali sudah
+  /// disetujui (label persetujuan ikut pada payload).
+  static bool _notaNeedsCreditPermission(Map<String, Object?> payload) {
+    final record = payload['record'];
+    if (record is! Map) return false;
+    final sisa = (record['sisa_bayar'] as num?)?.toInt() ?? 0;
+    if (sisa <= 0) return false;
+    final approver = '${record['kredit_disetujui_oleh'] ?? ''}'.trim();
+    return approver.isEmpty;
   }
 
   /// 1, 2, 4, ... menit, dibatasi 240 menit.

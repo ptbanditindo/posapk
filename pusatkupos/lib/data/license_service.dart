@@ -87,7 +87,7 @@ class LicenseService {
   }
 
   Future<Map<String, Object?>?> license() async {
-    final rows = await AppDatabase.instance.db.query('license', limit: 1);
+    final rows = await AppDatabase.instance.db.query('licenses', limit: 1);
     return rows.isEmpty ? null : rows.first;
   }
 
@@ -188,7 +188,7 @@ class LicenseService {
       throw LicenseVerifyException('Lisensi milik owner lain.');
     }
     await AppDatabase.instance.db.insert(
-      'license',
+      'licenses',
       {
         'id': 1,
         'plan': claims.plan,

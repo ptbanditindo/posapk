@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/app_config.dart';
+import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/employee_auth_service.dart';
 import '../data/google_auth_service.dart';
@@ -95,7 +96,29 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   Future<void> _startFree() => _run(() async {
         try {
+          if (!await _confirmOwnerRebind() || !mounted) return;
           final ownerId = await LicenseService.instance.ensureOwner();
+          final recovery = await LicenseService.instance.recoveryCodeOnce();
+          if (recovery != null && mounted) {
+            await showDialog<void>(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => AlertDialog(
+                title: const Text('Kode pemulihan owner'),
+                content: Text(
+                  '$recovery\n\nSimpan kode ini di tempat aman. Kode hanya '
+                  'ditampilkan sekali dan dipakai untuk membuka akses pemilik '
+                  'jika sesi perangkat hilang.',
+                ),
+                actions: [
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Sudah saya simpan'),
+                  ),
+                ],
+              ),
+            );
+          }
           final profile = SessionProfile(
             mode: 'free',
             ownerId: ownerId,
@@ -108,6 +131,65 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           _showError(error);
         }
       });
+
+  /// Onboarding owner pada perangkat yang sudah memiliki identitas owner
+  /// wajib membuktikan kepemilikan lewat kode pemulihan, kecuali pemilik
+  /// baru saja keluar dari sesinya sendiri di proses yang sama.
+  Future<bool> _confirmOwnerRebind() async {
+    if (SessionService.allowOwnerRebind) {
+      SessionService.allowOwnerRebind = false;
+      return true;
+    }
+    final owner = await LicenseService.instance.owner();
+    if (owner == null) return true;
+    if (!mounted) return false;
+    final ownerId = '${owner['owner_id'] ?? ''}';
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Perangkat ini sudah memiliki pemilik'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Owner ID ${ownerId.isEmpty ? '-' : ownerId} dan datanya masih '
+              'tersimpan. Masukkan kode pemulihan owner untuk melanjutkan. '
+              'Karyawan dapat masuk lewat pilihan akun karyawan.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Kode pemulihan'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Verifikasi'),
+          ),
+        ],
+      ),
+    );
+    final code = controller.text.trim();
+    controller.dispose();
+    if (ok != true) return false;
+    if (code.isEmpty) {
+      _showError('Kode pemulihan owner wajib diisi.');
+      return false;
+    }
+    if (!await LicenseService.instance.verifyRecoveryCode(code)) {
+      _showError('Kode pemulihan owner tidak cocok.');
+      return false;
+    }
+    return true;
+  }
 
   Future<void> _startGoogle() => _run(() async {
         if (!GoogleAuthService.instance.configured) {
@@ -342,7 +424,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       }
       return;
     }
-    await PinService.instance.setup(pin);
+    await PinService.instance.setup(pin, profile: profile);
     await SessionService.instance.save(profile);
     await AppDatabase.instance.setSetting(
       'app.store_id',
@@ -842,7 +924,9 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
       final account = rows.first;
       final role = '${account['role_base'] ?? 'KASIR'}';
       final extras = _stringList(account['extra_permissions_json']);
-      final stores = _stringList(account['store_ids_json']);
+      final stores = await AccountService.instance.storeIdsFor(
+        '${account['sync_id'] ?? ''}',
+      );
       final settings = await StoreSettingsService.instance.ensure();
       final profile = SessionProfile(
         mode: 'employee',

@@ -148,8 +148,8 @@ class PajakReportService {
     return '${months[start.month - 1]} ${start.year}';
   }
 
-  Future<PajakRekap> rekap(String masa) async {
-    final db = AppDatabase.instance.db;
+  Future<PajakRekap> rekap(String masa, {DatabaseExecutor? executor}) async {
+    final db = executor ?? AppDatabase.instance.db;
     final from = startOfMasa(masa);
     final to = endOfMasa(masa);
     final startIso = isoStartOfDay(from);

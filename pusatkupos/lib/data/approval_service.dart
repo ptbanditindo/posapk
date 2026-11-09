@@ -55,8 +55,13 @@ class ApprovalService {
       if (verification == PinVerification.locked) {
         throw ApprovalException('Persetujuan pemilik terkunci. Coba lagi.');
       }
-      if (verification != PinVerification.ok &&
-          verification != PinVerification.weakLegacyPin) {
+      if (verification == PinVerification.weakLegacyPin) {
+        throw ApprovalException(
+          'PIN pemilik masih lemah. Ganti ke minimal 6 digit sebelum '
+          'menyetujui.',
+        );
+      }
+      if (verification != PinVerification.ok) {
         throw ApprovalException('PIN pemilik tidak valid.');
       }
       return const ApprovalResult(label: 'Pemilik', isOwner: true);

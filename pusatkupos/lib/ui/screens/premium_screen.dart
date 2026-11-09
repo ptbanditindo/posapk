@@ -152,7 +152,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         final syncId = '${account['sync_id'] ?? ''}';
         final username = '${account['username'] ?? ''}';
         if (syncId.isEmpty || username.isEmpty) continue;
-        final stores = _jsonList(account['store_ids_json']);
+        final stores = _jsonList(account['store_ids']);
         final role = '${account['role_base'] ?? 'KASIR'}';
         final extras = _jsonList(account['extra_permissions_json']);
         await api.saveAccount(
@@ -209,7 +209,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
       return;
     }
-    final stores = _jsonList(account['store_ids_json']);
+    final stores = _jsonList(account['store_ids']);
     final storeId =
         stores.isEmpty ? await SyncService.instance.storeId() : stores.first;
     setState(() => _busy = true);
@@ -458,6 +458,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         role: input.role,
         password: input.password,
         extraPermissions: input.permissions,
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, syncId) =>
             SyncService.instance.enqueueEmployee(syncId, txn: txn),
       );
@@ -493,9 +494,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
         role: input.role,
         aktif: input.aktif,
         extraPermissions: input.permissions,
-        storeIds: _jsonList(account['store_ids_json']).isEmpty
+        storeIds: _jsonList(account['store_ids']).isEmpty
             ? const ['utama']
-            : _jsonList(account['store_ids_json']),
+            : _jsonList(account['store_ids']),
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, syncId) =>
             SyncService.instance.enqueueEmployee(syncId, txn: txn),
       );
@@ -1289,6 +1291,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         await AccountService.instance.resetPassword(
           id,
           password: nextPassword,
+          actor: AppState.instance.requireOperator,
         );
         await _load();
         if (mounted) showSnack(context, 'Password direset.');
@@ -1303,7 +1306,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
     } else if (action == 'reset-pin') {
       try {
-        await AccountService.instance.resetPin(id);
+        await AccountService.instance.resetPin(
+          id,
+          actor: AppState.instance.requireOperator,
+        );
         await _load();
         if (mounted) {
           showSnack(

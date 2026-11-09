@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'backup_service.dart';
+import 'restore_lock.dart';
 
 /// Menjalankan backup harian selama aplikasi terbuka. Bila aplikasi sempat
 /// tertutup pada jam backup, pekerjaan disusulkan saat aplikasi dibuka lagi.
@@ -13,6 +14,21 @@ class BackupScheduler {
 
   Timer? _timer;
   bool _running = false;
+  Completer<void>? _tickDone;
+
+  bool get isRunning => _running;
+
+  /// Menunggu backup otomatis yang sedang berjalan selesai sebelum restore
+  /// menukar berkas database.
+  Future<void> whenIdle() async {
+    final done = _tickDone;
+    if (done == null) return;
+    try {
+      await done.future;
+    } catch (_) {
+      // Kegagalan backup sudah dicatat di status backup.
+    }
+  }
 
   void start() {
     if (kIsWeb) return;
@@ -27,8 +43,10 @@ class BackupScheduler {
   }
 
   Future<void> tick() async {
-    if (_running || kIsWeb) return;
+    if (_running || kIsWeb || RestoreLock.instance.isRestoring) return;
     _running = true;
+    final done = Completer<void>();
+    _tickDone = done;
     try {
       final settings = await BackupService.instance.loadSettings();
       if (!settings.autoEnabled) return;
@@ -53,6 +71,8 @@ class BackupScheduler {
       // Scheduler mencoba lagi pada menit berikutnya.
     } finally {
       _running = false;
+      if (identical(_tickDone, done)) _tickDone = null;
+      done.complete();
     }
   }
 

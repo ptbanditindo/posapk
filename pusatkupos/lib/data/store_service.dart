@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/sync_scheduler.dart';
+import '../sync/sync_service.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 import 'store_platform_stub.dart'
@@ -13,6 +17,8 @@ class StoreService {
   StoreService._();
 
   static final StoreService instance = StoreService._();
+
+  Future<void> _switchQueue = Future.value();
 
   Future<void> _ensureRegistry() async {
     if (StoreRegistry.instance.isOpen) return;
@@ -134,7 +140,26 @@ class StoreService {
     return record;
   }
 
+  /// Pergantian toko diserialkan: antrean baru menunggu antrean sebelumnya
+  /// selesai agar dua layar tidak menutup/membuka database bersamaan.
   Future<StoreRecord> switchStore(
+    String storeId, {
+    Set<String>? allowedStoreIds,
+  }) {
+    final previous = _switchQueue;
+    final done = Completer<void>();
+    _switchQueue = done.future;
+    return () async {
+      try {
+        await previous;
+        return await _switchLocked(storeId, allowedStoreIds: allowedStoreIds);
+      } finally {
+        done.complete();
+      }
+    }();
+  }
+
+  Future<StoreRecord> _switchLocked(
     String storeId, {
     Set<String>? allowedStoreIds,
   }) async {
@@ -156,9 +181,20 @@ class StoreService {
     if (!await platform.storeFileExists(record.databasePath)) {
       throw StateError('Berkas toko tidak ditemukan: ${record.nama}.');
     }
-    await AppDatabase.instance.switchStore(record);
-    await StoreRegistry.instance.setActive(storeId);
-    LicenseService.instance.clearCache();
+    final scheduler = SyncScheduler.instance;
+    final resumeScheduler = scheduler.isStarted;
+    if (resumeScheduler) scheduler.stop();
+    try {
+      // Putaran yang sedang berjalan dapat menulis ke database lama setelah
+      // berkas ditutup. Tunggu dahulu, baru ganti berkas.
+      await scheduler.whenIdle();
+      await SyncService.instance.whenIdle();
+      await AppDatabase.instance.switchStore(record);
+      await StoreRegistry.instance.setActive(storeId);
+      LicenseService.instance.clearCache();
+    } finally {
+      if (resumeScheduler) scheduler.start();
+    }
     return record;
   }
 

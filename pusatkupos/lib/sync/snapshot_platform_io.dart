@@ -22,7 +22,7 @@ Future<Uint8List> exportSnapshotBytes(
       for (final statement in sanitize) {
         await copy.execute(statement);
       }
-      await copy.delete('app_settings', where: settingsWhere);
+      await copy.delete('app_meta', where: settingsWhere);
     } finally {
       await copy.close();
     }
@@ -51,8 +51,16 @@ Future<Map<String, int>> importSnapshotBytes(
       for (final table in deleteOrder) {
         await txn.delete(table);
       }
+      final sourceTables = {
+        for (final row in await source.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ))
+          '${row['name']}',
+      };
       final counts = <String, int>{};
       for (final table in tables) {
+        // Snapshot lama mungkin belum memuat tabel yang baru ditambahkan.
+        if (!sourceTables.contains(table)) continue;
         final rows = await source.query(table);
         for (final row in rows) {
           await txn.insert(
@@ -63,12 +71,12 @@ Future<Map<String, int>> importSnapshotBytes(
         }
         counts[table] = rows.length;
       }
-      final settings = await source.query('app_settings');
+      final settings = await source.query('app_meta');
       for (final row in settings) {
         final key = row['key'] as String? ?? '';
         if (isLocalSetting(key)) continue;
         await txn.insert(
-          'app_settings',
+          'app_meta',
           row,
           conflictAlgorithm: ConflictAlgorithm.replace,
         );

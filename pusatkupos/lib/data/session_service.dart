@@ -10,6 +10,10 @@ const _pinSaltKey = 'session.pin_salt';
 const _pinHashKey = 'session.pin_hash';
 const _pinIterationsKey = 'session.pin_iterations';
 
+/// Identitas yang terikat pada PIN perangkat. Ditulis bersama PIN saat
+/// onboarding, sehingga sesi yang hilang tidak pernah dianggap owner.
+const _pinIdentityKey = 'session.pin_identity';
+
 class SessionProfile {
   const SessionProfile({
     required this.mode,
@@ -136,6 +140,11 @@ class SessionService {
 
   static final SessionService instance = SessionService._();
 
+  /// Hanya berlaku dalam proses yang sama. Diset saat pemilik keluar dari
+  /// sesinya sendiri, agar ia dapat mendaftarkan ulang tanpa kode pemulihan.
+  /// Proses baru selalu wajib memverifikasi identitas owner.
+  static bool allowOwnerRebind = false;
+
   SessionProfile? _cached;
 
   SessionProfile? get cached => _cached;
@@ -181,9 +190,35 @@ class SessionService {
     await SecureStore.instance.delete(_pinSaltKey);
     await SecureStore.instance.delete(_pinHashKey);
     await SecureStore.instance.delete(_pinIterationsKey);
+    await SecureStore.instance.delete(_pinIdentityKey);
     await SecureStore.instance.delete('session.device_token');
     await AppDatabase.instance.deleteSetting('app.mode');
     await AppDatabase.instance.deleteSetting('app.role');
+  }
+
+  /// Menyimpan peran/mode yang terikat pada PIN. Hanya dipanggil setelah
+  /// PIN dibuat oleh alur onboarding yang sudah terautentikasi.
+  Future<void> savePinIdentity(SessionProfile profile) async {
+    await SecureStore.instance.write(
+      _pinIdentityKey,
+      jsonEncode(profile.toJson()),
+    );
+  }
+
+  /// Profil pemilik PIN perangkat. Null bila PIN dibuat versi lama atau
+  /// sesi/PIN sudah dihapus.
+  Future<SessionProfile?> readPinIdentity() async {
+    final raw = await SecureStore.instance.read(_pinIdentityKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      return SessionProfile.fromJson(
+        decoded.map((key, value) => MapEntry('$key', value)),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> savePin(String hash, String salt, int iterations) async {
@@ -208,13 +243,14 @@ class SessionService {
     await SecureStore.instance.delete(_pinSaltKey);
     await SecureStore.instance.delete(_pinHashKey);
     await SecureStore.instance.delete(_pinIterationsKey);
+    await SecureStore.instance.delete(_pinIdentityKey);
   }
 
   Future<void> saveDeviceToken(String? token, String? deviceId) async {
     if (token == null || token.isEmpty) return;
     await SecureStore.instance.write('session.device_token', token);
     await SyncSecrets.instance.write('sync.relay_device_token', token);
-    // Hapus salinan lama di app_settings agar token tidak tersimpan polos.
+    // Hapus salinan lama di app_meta agar token tidak tersimpan polos.
     await AppDatabase.instance.deleteSetting('sync.relay_device_token');
     if (deviceId != null && deviceId.isNotEmpty) {
       await AppDatabase.instance.setSetting('sync.relay_device_id', deviceId);

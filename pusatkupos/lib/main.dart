@@ -1,20 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:intl/date_symbol_data_local.dart';
 
 import 'app.dart';
-import 'data/app_database.dart';
-import 'data/backup_scheduler.dart';
-import 'dev/dummy_seed.dart';
-import 'state/app_state.dart';
-import 'sync/sync_scheduler.dart';
+import 'core/startup.dart';
+import 'ui/startup_recovery.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initializeDateFormatting('id_ID');
-  await AppDatabase.instance.init();
-  await seedDummyDataIfEnabled();
-  await AppState.instance.load();
-  BackupScheduler.instance.start();
-  SyncScheduler.instance.start();
-  runApp(const PusatkuApp());
+  runZonedGuarded(
+    () async {
+      final error = await StartupService.instance.boot();
+      if (error == null) {
+        runApp(const PusatkuApp());
+      } else {
+        runApp(StartupRecoveryApp(error: error));
+      }
+    },
+    (error, stack) {
+      // Galat asinkron di luar startup tidak boleh mematikan aplikasi tanpa
+      // jejak; layar pemulihan tetap tersedia untuk kegagalan berikutnya.
+      runApp(StartupRecoveryApp(error: error));
+    },
+  );
 }

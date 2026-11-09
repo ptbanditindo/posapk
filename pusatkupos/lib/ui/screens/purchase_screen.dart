@@ -126,6 +126,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
               detail: detail,
               canPay: _canPay,
               canCreate: _canCreate,
+              canReverse: AppState.instance.isOwner && _canCreate,
               onPay: () {
                 Navigator.pop(context);
                 _payRow(detail);
@@ -133,6 +134,10 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
               onReturn: () {
                 Navigator.pop(context);
                 _returnRow(detail);
+              },
+              onReverseReturn: (retur) {
+                Navigator.pop(context);
+                _reverseReturn(retur);
               },
               onVoid: () {
                 Navigator.pop(context);
@@ -242,6 +247,12 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
         await PurchaseService.instance.purchaseDetail(purchase['id'] as int);
     if (!mounted || detail == null) return;
     final items = (detail['items'] as List<Map<String, Object?>>);
+    final payments = (detail['payments'] as List<Map<String, Object?>>);
+    var metodeRefund = 'CASH';
+    if (payments.isNotEmpty &&
+        '${payments.last['metode']}'.toUpperCase() == 'TRANSFER') {
+      metodeRefund = 'TRANSFER';
+    }
     final controllers = <int, TextEditingController>{};
     for (final item in items) {
       controllers[item['id'] as int] = TextEditingController();
@@ -249,57 +260,75 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
     final alasan = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Retur ${purchase['no_pembelian']}'),
-        content: SizedBox(
-          width: 420,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final item in items)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '${item['nama_snapshot']} · sisa '
-                            '${formatQuantity((item['jumlah_milli'] as num).toInt() - (item['qty_retur_milli'] as num).toInt(), 0)}',
-                          ),
-                        ),
-                        SizedBox(
-                          width: 90,
-                          child: TextField(
-                            controller: controllers[item['id'] as int],
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Qty',
-                              isDense: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: Text('Retur ${purchase['no_pembelian']}'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final item in items)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${item['nama_snapshot']} · sisa '
+                              '${formatQuantity((item['jumlah_milli'] as num).toInt() - (item['qty_retur_milli'] as num).toInt(), 0)}',
                             ),
                           ),
-                        ),
-                      ],
+                          SizedBox(
+                            width: 90,
+                            child: TextField(
+                              controller: controllers[item['id'] as int],
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Qty',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+                  TextField(
+                    controller: alasan,
+                    decoration:
+                        const InputDecoration(labelText: 'Alasan retur'),
                   ),
-                TextField(
-                  controller: alasan,
-                  decoration: const InputDecoration(labelText: 'Alasan retur'),
-                ),
-              ],
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    initialValue: metodeRefund,
+                    decoration:
+                        const InputDecoration(labelText: 'Metode refund'),
+                    items: const [
+                      DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
+                      DropdownMenuItem(
+                        value: 'TRANSFER',
+                        child: Text('Transfer'),
+                      ),
+                    ],
+                    onChanged: (value) =>
+                        setLocal(() => metodeRefund = value ?? 'CASH'),
+                  ),
+                ],
+              ),
             ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Retur'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Batal'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Retur'),
-          ),
-        ],
       ),
     );
     final lines = <PurchaseReturnLineInput>[];
@@ -327,6 +356,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
         purchaseId: purchase['id'] as int,
         lines: lines,
         alasan: reason,
+        metodeRefund: metodeRefund,
         actor: AppState.instance.requireOperator,
         enqueue: (txn, id) =>
             SyncService.instance.enqueuePurchaseReturn(id, txn: txn),
@@ -335,6 +365,69 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
       if (mounted) showSnack(context, 'Retur pembelian disimpan.');
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal retur: $error', error: true);
+    }
+  }
+
+  Future<void> _reverseReturn(Map<String, Object?> retur) async {
+    if (!AppState.instance.isOwner) {
+      showSnack(context, 'Reversal retur hanya untuk pemilik.', error: true);
+      return;
+    }
+    final reason = TextEditingController();
+    String? error;
+    final ok = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: Text('Batalkan retur ${retur['no_retur']}'),
+          content: TextField(
+            controller: reason,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Alasan reversal',
+              errorText: error,
+            ),
+            onChanged: (_) {
+              if (error != null) setLocal(() => error = null);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = reason.text.trim();
+                if (value.length < 3) {
+                  setLocal(() => error = 'Alasan minimal 3 karakter.');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Batalkan retur'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final text = reason.text;
+    reason.dispose();
+    if (ok == null) return;
+    try {
+      await PurchaseService.instance.reverseReturn(
+        returnId: retur['id'] as int,
+        alasan: text,
+        actor: AppState.instance.requireOperator,
+        enqueue: (txn, id) =>
+            SyncService.instance.enqueuePurchaseReturn(id, txn: txn),
+      );
+      await _load();
+      if (mounted) showSnack(context, 'Retur pembelian dibatalkan.');
+    } catch (error) {
+      if (mounted) {
+        showSnack(context, 'Gagal reversal: $error', error: true);
+      }
     }
   }
 
@@ -438,7 +531,9 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
             child: Column(
               children: [
                 _line('Total pembelian', formatRupiah(_totals['total_pembelian'] ?? 0)),
-                _line('Sisa utang', formatRupiah(_totals['total_utang'] ?? 0)),
+                _line('Utang pembelian', formatRupiah(_totals['total_utang'] ?? 0)),
+                _line('Utang awal', formatRupiah(_totals['total_utang_awal'] ?? 0)),
+                _line('Total utang', formatRupiah(_totals['total_utang_semua'] ?? 0)),
                 _line('Sudah dibayar', formatRupiah(_totals['total_dibayar'] ?? 0)),
               ],
             ),
@@ -576,16 +671,20 @@ class _PurchaseDetailBody extends StatelessWidget {
     required this.detail,
     required this.canPay,
     required this.canCreate,
+    required this.canReverse,
     required this.onPay,
     required this.onReturn,
+    required this.onReverseReturn,
     required this.onVoid,
   });
 
   final Map<String, Object?> detail;
   final bool canPay;
   final bool canCreate;
+  final bool canReverse;
   final VoidCallback onPay;
   final VoidCallback onReturn;
+  final void Function(Map<String, Object?> retur) onReverseReturn;
   final VoidCallback onVoid;
 
   @override
@@ -673,8 +772,15 @@ class _PurchaseDetailBody extends StatelessWidget {
               title: Text('${entry['no_retur']}'),
               subtitle: Text(
                 '${entry['alasan']} · ${formatRupiah((entry['total'] as num).toInt())}'
-                '${entry['status'] == 'VOID' ? ' · VOID' : ''}',
+                '${entry['status'] == 'VOID' ? ' · VOID' : ''}'
+                '${'${entry['metode_refund'] ?? 'CASH'}' == 'TRANSFER' ? ' · transfer' : ''}',
               ),
+              trailing: entry['status'] == 'AKTIF' && canReverse
+                  ? TextButton(
+                      onPressed: () => onReverseReturn(entry),
+                      child: const Text('Batalkan'),
+                    )
+                  : null,
             ),
         ],
         const SizedBox(height: 12),
@@ -696,7 +802,7 @@ class _PurchaseDetailBody extends StatelessWidget {
                 ),
               if (canCreate &&
                   (detail['total_dibayar'] as num).toInt() == 0 &&
-                  returns.isEmpty)
+                  returns.every((entry) => '${entry['status']}' == 'VOID'))
                 OutlinedButton.icon(
                   onPressed: onVoid,
                   icon: const Icon(Icons.cancel_outlined),

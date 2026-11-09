@@ -9,12 +9,18 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
+import '../core/app_config.dart';
+import '../core/app_log.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/sync_scheduler.dart';
 import 'app_database.dart';
+import 'backup_manifest.dart';
 import 'backup_platform_stub.dart'
     if (dart.library.io) 'backup_platform_io.dart'
     as platform;
+import 'backup_scheduler.dart';
+import 'restore_lock.dart';
 import 'secure_store.dart';
 import 'store_registry.dart';
 
@@ -33,7 +39,7 @@ const String _telegramTokenKey = 'backup.telegram.token';
 const String _autoPassphraseKey = 'backup.auto_passphrase';
 const Duration telegramRetryInterval = Duration(minutes: 10);
 const List<String> _requiredRestoreTables = [
-  'app_settings',
+  'app_meta',
   'employee_accounts',
   'employee_store_access',
   'document_counters',
@@ -297,23 +303,25 @@ class BackupService {
     return AesGcm.with256bits().decrypt(box, secretKey: SecretKey(key));
   }
 
-  /// Membaca salinan SQLite polos; pada perangkat SQLCipher salinan dibuat
-  /// lewat `sqlcipher_export` sehingga tidak terikat kunci perangkat.
-  Future<List<int>> _exportPlainDatabase() async {
+  /// Menulis salinan SQLite polos ke berkas sementara, lalu membaca isinya
+  /// beserta inventaris tabel. Pada perangkat SQLCipher salinan dibuat lewat
+  /// `sqlcipher_export`; pada SQLite biasa lewat `VACUUM INTO`, sehingga
+  /// keduanya konsisten dan tidak terikat kunci perangkat.
+  Future<({List<int> bytes, BackupInventory inventory})>
+  _exportPlainDatabase() async {
     final db = AppDatabase.instance;
-    if (!db.databaseEncrypted) {
-      await db.exportPortableCopy(db.databasePath);
-      return platform.readDatabase(db.databasePath);
-    }
     final temp = await platform.temporaryPath(
       'pusatkupos_export_${DateTime.now().microsecondsSinceEpoch}.db',
     );
     try {
       await platform.deleteFile(temp);
+      await platform.deleteDatabaseSidecars(temp);
       await db.exportPortableCopy(temp);
-      return await platform.readFile(temp);
+      final inventory = await db.inspectPlainDatabase(temp);
+      return (bytes: await platform.readFile(temp), inventory: inventory);
     } finally {
       await platform.deleteFile(temp);
+      await platform.deleteDatabaseSidecars(temp);
     }
   }
 
@@ -331,7 +339,8 @@ class BackupService {
       if (!await platform.fileExists(store.databasePath)) {
         throw StateError('Berkas toko ${store.nama} tidak ditemukan.');
       }
-      final plain = await _exportStorePlain(store);
+      final exported = await _exportStorePlain(store);
+      final plain = exported.bytes;
       if (plain.length > _maxRestoredDatabaseBytes) {
         throw StateError('Database toko ${store.nama} melebihi batas 512 MB.');
       }
@@ -357,16 +366,22 @@ class BackupService {
         'created_at': store.createdAt,
         'payload': payloadName,
         'sha256': checksum,
+        'user_version': exported.inventory.userVersion,
+        'tables': exported.inventory.toJson(),
         'cipher': encrypted.meta,
       });
     }
-    final manifest = jsonEncode({
-      'format': _backupFormat,
-      'app': 'PusatkuPOS',
-      'created_at': nowIso(),
-      'active_store_id': db.activeStoreId ?? stores.first.storeId,
-      'stores': manifestStores,
-    });
+    final manifest = jsonEncode(
+      buildBackupManifest(
+        format: _backupFormat,
+        schemaVersion: AppDatabase.schemaVersion,
+        contractVersion: AppDatabase.schemaContractVersion,
+        appVersion: appVersion,
+        createdAt: nowIso(),
+        activeStoreId: db.activeStoreId ?? stores.first.storeId,
+        stores: manifestStores,
+      ),
+    );
     final manifestBytes = utf8.encode(manifest);
     archive.addFile(
       ArchiveFile(
@@ -401,7 +416,9 @@ class BackupService {
     }
   }
 
-  Future<List<int>> _exportStorePlain(StoreRecord store) async {
+  Future<({List<int> bytes, BackupInventory inventory})> _exportStorePlain(
+    StoreRecord store,
+  ) async {
     final db = AppDatabase.instance;
     if (store.databasePath == db.databasePath) {
       return _exportPlainDatabase();
@@ -410,17 +427,22 @@ class BackupService {
       // Toko nonaktif bisa memiliki WAL yang belum di-checkpoint; buka
       // sebentar lalu checkpoint agar salinan tidak kehilangan transaksi.
       await db.checkpointDatabaseAt(store.databasePath);
-      return platform.readFile(store.databasePath);
+      final bytes = await platform.readFile(store.databasePath);
+      final inventory = await db.inspectPlainDatabase(store.databasePath);
+      return (bytes: bytes, inventory: inventory);
     }
     final temp = await platform.temporaryPath(
       'pusatkupos_export_${DateTime.now().microsecondsSinceEpoch}.db',
     );
     try {
       await platform.deleteFile(temp);
+      await platform.deleteDatabaseSidecars(temp);
       await db.exportPlainDatabaseAt(store.databasePath, temp);
-      return await platform.readFile(temp);
+      final inventory = await db.inspectPlainDatabase(temp);
+      return (bytes: await platform.readFile(temp), inventory: inventory);
     } finally {
       await platform.deleteFile(temp);
+      await platform.deleteDatabaseSidecars(temp);
     }
   }
 
@@ -436,9 +458,9 @@ class BackupService {
         message: 'Backup file tersedia di Android/desktop.',
       );
     }
+    AppLog.instance.event(LogCategory.backup, 'backup.create.start');
     final secret = passphrase?.trim() ?? '';
-    if (secret.isNotEmpty && secret.length < 8) {
-      return const BackupResult(
+    if (secret.isNotEmpty && secret.length < 8) {      return const BackupResult(
         ok: false,
         message: 'Passphrase backup minimal 8 karakter.',
       );
@@ -456,8 +478,10 @@ class BackupService {
         mimeType: 'application/zip',
       );
       if (uri == null) {
+        AppLog.instance.event(LogCategory.backup, 'backup.create.cancel');
         return const BackupResult(ok: false, message: 'Backup dibatalkan.');
       }
+      AppLog.instance.event(LogCategory.backup, 'backup.create.ok');
       return BackupResult(
         ok: true,
         message: portable
@@ -467,6 +491,8 @@ class BackupService {
                   'passphrase untuk memindahkan data.',
       );
     } catch (error) {
+      AppLog.instance.event(LogCategory.backup, 'backup.create.fail',
+          error: error);
       return BackupResult(ok: false, message: 'Backup gagal: $error');
     }
   }
@@ -479,6 +505,7 @@ class BackupService {
         message: 'Backup otomatis tersedia di Android/desktop.',
       );
     }
+    AppLog.instance.event(LogCategory.backup, 'backup.auto.start');
     final db = AppDatabase.instance;
     await db.setSetting('backup.last_attempt_at', nowIso());
     try {
@@ -493,6 +520,7 @@ class BackupService {
       await db.setSetting('backup.last_local_file', path);
       await db.setSetting('backup.last_status', 'ok');
       await db.deleteSetting('backup.last_error');
+      AppLog.instance.event(LogCategory.backup, 'backup.auto.ok');
       await _pruneAutoBackups(folder);
 
       final settings = await loadSettings();
@@ -519,6 +547,8 @@ class BackupService {
         message: 'Backup otomatis tersimpan dan dikirim ke Telegram.',
       );
     } catch (error) {
+      AppLog.instance.event(LogCategory.backup, 'backup.auto.fail',
+          error: error);
       final message = 'Backup otomatis gagal: $error';
       await db.setSetting('backup.last_status', 'error');
       await db.setSetting('backup.last_error', '$error');
@@ -782,6 +812,34 @@ class BackupService {
         message: 'Restore file tersedia di Android/desktop.',
       );
     }
+    if (!RestoreLock.instance.begin()) {
+      return const BackupResult(
+        ok: false,
+        message: 'Restore lain sedang berjalan. Tunggu hingga selesai.',
+      );
+    }
+    final syncScheduler = SyncScheduler.instance;
+    final backupScheduler = BackupScheduler.instance;
+    syncScheduler.stop();
+    backupScheduler.stop();
+    try {
+      // Jangan menukar berkas selama sync/backup masih menulis.
+      await syncScheduler.whenIdle();
+      await backupScheduler.whenIdle();
+      return await _restoreBackupNow(path: path, passphrase: passphrase);
+    } finally {
+      if (!kIsWeb) {
+        syncScheduler.start();
+        backupScheduler.start();
+      }
+      RestoreLock.instance.end();
+    }
+  }
+
+  Future<BackupResult> _restoreBackupNow({
+    String? path,
+    String? passphrase,
+  }) async {
     final pickedPath = path ?? await pickBackupArchive();
     if (pickedPath == null || pickedPath.isEmpty) {
       return const BackupResult(ok: false, message: 'Restore dibatalkan.');
@@ -814,6 +872,14 @@ class BackupService {
           ok: false,
           message: 'Versi backup tidak didukung.',
         );
+      }
+      final manifestError = validateBackupManifest(
+        manifest,
+        schemaVersion: AppDatabase.schemaVersion,
+        contractVersion: AppDatabase.schemaContractVersion,
+      );
+      if (manifestError != null) {
+        return BackupResult(ok: false, message: manifestError);
       }
       if (format == _backupFormat) {
         return await _restoreMultiStore(archive, manifest, passphrase);
@@ -907,15 +973,32 @@ class BackupService {
         await platform.deleteDatabaseSidecars(plainPath);
         await platform.deleteFile(newPath);
         await platform.deleteDatabaseSidecars(newPath);
+        await platform.writeDatabase(plainPath, payload);
+        final inventory = await db.inspectPlainDatabase(
+          plainPath,
+          requiredTables: _requiredRestoreTables,
+        );
+        final version = _restoreUserVersion(inventory.userVersion, manifest);
+        if (version > AppDatabase.schemaVersion) {
+          throw StateError(
+            'Skema backup v$version lebih baru dari aplikasi '
+            '(v${AppDatabase.schemaVersion}).',
+          );
+        }
+        // Migrasi salinan sebelum promosi: kegagalan tidak menyentuh data aktif.
+        await db.migratePlainCopy(plainPath, fromVersion: version);
         if (db.databaseEncrypted) {
-          await platform.writeDatabase(plainPath, payload);
-          await db.createEncryptedCopy(plainPath, newPath);
+          await db.createEncryptedCopy(
+            plainPath,
+            newPath,
+            userVersion: AppDatabase.schemaVersion,
+          );
           await db.validateEncryptedCopy(
             newPath,
             requiredTables: _requiredRestoreTables,
           );
         } else {
-          await platform.writeDatabase(newPath, payload);
+          await platform.writeDatabase(newPath, await platform.readFile(plainPath));
           await db.validatePlainCopy(
             newPath,
             requiredTables: _requiredRestoreTables,
@@ -949,6 +1032,16 @@ class BackupService {
             : '${integrity.first.values.first}';
         if (result.toLowerCase() != 'ok') {
           throw StateError('Integritas database hasil restore gagal: $result');
+        }
+        final versionRows = await db.db.rawQuery('PRAGMA user_version');
+        final version = versionRows.isEmpty
+            ? -1
+            : ((versionRows.first.values.first as num?)?.toInt() ?? -1);
+        if (version != AppDatabase.schemaVersion) {
+          throw StateError(
+            'Migrasi skema setelah restore tidak selesai '
+            '(v$version, seharusnya v${AppDatabase.schemaVersion}).',
+          );
         }
         await platform.commitReplacedDatabase(targetPath);
       } catch (error) {
@@ -1154,15 +1247,39 @@ class BackupService {
           await platform.deleteDatabaseSidecars(plainPath);
           await platform.deleteFile(newPath);
           await platform.deleteDatabaseSidecars(newPath);
+          await platform.writeDatabase(plainPath, payload);
+          final expected = BackupInventory.fromJson(entry['tables']);
+          final inventory = await db.inspectPlainDatabase(
+            plainPath,
+            requiredTables: _requiredRestoreTables,
+            expected: expected,
+          );
+          final rawVersion =
+              (entry['user_version'] as num?)?.toInt() ?? inventory.userVersion;
+          final version = _restoreUserVersion(rawVersion, manifest);
+          if (version > AppDatabase.schemaVersion) {
+            throw StateError(
+              'Skema toko $label v$version lebih baru dari aplikasi '
+              '(v${AppDatabase.schemaVersion}).',
+            );
+          }
+          // Migrasi staging sebelum promosi; data aktif belum tersentuh.
+          await db.migratePlainCopy(plainPath, fromVersion: version);
           if (db.databaseEncrypted) {
-            await platform.writeDatabase(plainPath, payload);
-            await db.createEncryptedCopy(plainPath, newPath);
+            await db.createEncryptedCopy(
+              plainPath,
+              newPath,
+              userVersion: AppDatabase.schemaVersion,
+            );
             await db.validateEncryptedCopy(
               newPath,
               requiredTables: _requiredRestoreTables,
             );
           } else {
-            await platform.writeDatabase(newPath, payload);
+            await platform.writeDatabase(
+              newPath,
+              await platform.readFile(plainPath),
+            );
             await db.validatePlainCopy(
               newPath,
               requiredTables: _requiredRestoreTables,
@@ -1287,9 +1404,19 @@ class BackupService {
       );
     }
 
+    final failedStores = <String>[];
     for (final record in records) {
       try {
         await db.switchStore(record);
+        final versionRows = await db.db.rawQuery('PRAGMA user_version');
+        final version = versionRows.isEmpty
+            ? -1
+            : ((versionRows.first.values.first as num?)?.toInt() ?? -1);
+        if (version != AppDatabase.schemaVersion) {
+          throw StateError(
+            'skema v$version, seharusnya v${AppDatabase.schemaVersion}',
+          );
+        }
         final existingFloor =
             int.tryParse(await db.getSetting('device.seq_floor') ?? '') ?? 0;
         final newMaxSeq = await _maxOutboxSeq();
@@ -1297,14 +1424,22 @@ class BackupService {
         await db.setSetting('device.seq_floor', '$floor');
         await db.setSetting('device.kode_lokal', newDeviceCode());
         await db.setSetting('sync.restore_requires_bootstrap', '1');
-      } catch (_) {
-        // Satu toko gagal disiapkan tidak membatalkan restore toko lain.
+      } catch (error) {
+        failedStores.add('${record.nama}: $error');
       }
     }
     try {
       await db.switchStore(activeRecord);
     } catch (_) {
       // Toko aktif sudah dibuka pada iterasi sebelumnya.
+    }
+    if (failedStores.isNotEmpty) {
+      return BackupResult(
+        ok: false,
+        message:
+            'Berkas toko dipulihkan tetapi migrasi/setup gagal: '
+            '${failedStores.join('; ')}',
+      );
     }
     return BackupResult(
       ok: true,
@@ -1318,6 +1453,15 @@ class BackupService {
   bool _looksLikeSqlite(List<int> bytes) {
     if (bytes.length < 16) return false;
     return String.fromCharCodes(bytes.take(16)) == 'SQLite format 3\u0000';
+  }
+
+  /// Versi skema efektif arsip. Backup lama tanpa `user_version` memakai
+  /// `schema_version` manifest; bila keduanya tidak ada, mulai dari v1 agar
+  /// seluruh migrasi idempoten tetap dijalankan.
+  int _restoreUserVersion(int raw, Map<String, dynamic> manifest) {
+    if (raw > 0) return raw;
+    final manifestVersion = (manifest['schema_version'] as num?)?.toInt() ?? 0;
+    return manifestVersion > 0 ? manifestVersion : 1;
   }
 
   Future<int> _maxOutboxSeq() async {

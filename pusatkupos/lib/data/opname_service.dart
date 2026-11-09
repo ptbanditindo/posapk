@@ -95,6 +95,16 @@ class OpnameService {
         return;
       }
       final hlc = await AppDatabase.instance.nextSyncHlc(txn);
+      final basisRows = await txn.query(
+        'stock_items',
+        columns: ['jumlah_milli'],
+        where: 'id = ?',
+        whereArgs: [itemId],
+        limit: 1,
+      );
+      final basisMilli = basisRows.isEmpty
+          ? 0
+          : (basisRows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
       final holdId = await txn.insert('opname_holds', {
         'sync_id': newSyncId(),
         'store_id': AppDatabase.instance.activeStoreId ?? 'utama',
@@ -103,6 +113,7 @@ class OpnameService {
         'stock_sync_id': await _stockSyncId(txn, itemId),
         'nama_item': namaItem,
         'jumlah_fisik_milli': jumlahFisikMilli,
+        'basis_milli': basisMilli,
         'alasan': (alasan ?? '').trim().isEmpty
             ? 'Opname stok'
             : alasan!.trim(),
@@ -183,6 +194,7 @@ class OpnameService {
       final itemId = hold['stock_item_id'] as int;
       final namaItem = '${hold['nama_item'] ?? ''}';
       final fisik = (hold['jumlah_fisik_milli'] as num?)?.toInt() ?? 0;
+      final basisMilli = (hold['basis_milli'] as num?)?.toInt();
       final missingNote = missing.isEmpty
           ? ''
           : ' Perangkat belum sinkron: '
@@ -194,6 +206,7 @@ class OpnameService {
             itemId: itemId,
             namaItem: namaItem,
             jumlahFisikMilli: fisik,
+            basisMilli: basisMilli,
             alasan:
                 '${hold['alasan'] ?? 'Opname stok'} '
                 '(semua perangkat sudah sinkron)',
@@ -213,6 +226,7 @@ class OpnameService {
             itemId: itemId,
             namaItem: namaItem,
             jumlahFisikMilli: fisik,
+            basisMilli: basisMilli,
             alasan:
                 '${hold['alasan'] ?? 'Opname stok'} '
                 '(opname sementara setelah 7 hari).$missingNote',
@@ -234,22 +248,9 @@ class OpnameService {
       }
       if (status == statusProvisional && missing.isEmpty) {
         await db.transaction((txn) async {
-          // Data perangkat yang tertinggal sudah masuk; selisih terhadap
-          // hitungan fisik dikoreksi sekali lagi agar saldo kembali sesuai
-          // hasil opname.
-          await AppDatabase.instance.applyOpnameTx(
-            txn,
-            itemId: itemId,
-            namaItem: namaItem,
-            jumlahFisikMilli: fisik,
-            alasan:
-                '${hold['alasan'] ?? 'Opname stok'} '
-                '(rekonsiliasi setelah semua perangkat sinkron)',
-            sumberEntity: 'opname_rekonsiliasi',
-            actor: actor,
-            enqueue: enqueue,
-            enqueueMovement: enqueueMovement,
-          );
+          // Opname sementara sudah diterapkan sebagai delta. Data perangkat
+          // yang tertinggal kini masuk sebagai movement sendiri; menerapkan
+          // ulang delta yang sama akan menghitung selisih dua kali.
           await _finishHold(txn, hold, statusApplied, provisional: 0);
         });
         changed++;
@@ -302,7 +303,7 @@ class OpnameService {
 
   Future<String> _localDeviceId(DatabaseExecutor db) async {
     final rows = await db.query(
-      'app_settings',
+      'app_meta',
       columns: ['key', 'value'],
       where: "key IN ('sync.relay_device_id', 'device.current_id')",
     );

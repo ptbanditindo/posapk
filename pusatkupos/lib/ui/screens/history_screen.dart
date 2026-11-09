@@ -267,6 +267,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     recordId: id,
                     items: request.items,
                     alasan: request.alasan,
+                    metodeRefund: request.metodeRefund,
                     actor: AppState.instance.requireOperator,
                     requestId: request.requestId,
                     enqueue: (txn, _) =>
@@ -285,6 +286,44 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 } catch (error) {
                   if (context.mounted) {
                     showSnack(context, 'Gagal retur: $error', error: true);
+                  }
+                }
+              },
+        onReverseReturn:
+            !AppState.instance.isOwner || !AppState.instance.can('retur')
+            ? null
+            : (retur) async {
+                final reason = await _askReverseReason(context, retur.noRetur);
+                if (reason == null || !context.mounted) return;
+                try {
+                  await SaleReturnService.instance.reverseReturn(
+                    returnId: retur.id,
+                    alasan: reason,
+                    actor: AppState.instance.requireOperator,
+                    enqueueNote: (txn, recordId) => SyncService.instance
+                        .enqueueNoteReturn(recordId, txn: txn),
+                    enqueueCommission: (txn, commissionId) => SyncService
+                        .instance
+                        .enqueueCommission(commissionId, txn: txn),
+                  );
+                  AppState.instance.touch();
+                  FollowupService.instance.scheduleSync();
+                  if (context.mounted) Navigator.pop(context);
+                  if (mounted) _load();
+                  if (mounted) _openDetail(id);
+                  if (mounted) {
+                    showSnack(
+                      this.context,
+                      'Retur ${retur.noRetur} dibatalkan.',
+                    );
+                  }
+                } catch (error) {
+                  if (context.mounted) {
+                    showSnack(
+                      context,
+                      'Gagal reversal retur: $error',
+                      error: true,
+                    );
                   }
                 }
               },
@@ -713,6 +752,50 @@ class _HistoryScreenState extends State<HistoryScreen> {
     controller.dispose();
     return result;
   }
+
+  Future<String?> _askReverseReason(BuildContext context, String noRetur) async {
+    final controller = TextEditingController();
+    String? error;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Batalkan retur $noRetur'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Alasan reversal',
+              hintText: 'Contoh: salah pilih barang',
+              errorText: error,
+            ),
+            onChanged: (_) {
+              if (error != null) setDialogState(() => error = null);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.length < 3) {
+                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Batalkan retur'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
 }
 
 class _RecordDetailSheet extends StatefulWidget {
@@ -720,6 +803,7 @@ class _RecordDetailSheet extends StatefulWidget {
     required this.detail,
     this.onVoid,
     this.onReturn,
+    this.onReverseReturn,
     this.onSettle,
     this.onCorrect,
     this.onClaim,
@@ -730,6 +814,7 @@ class _RecordDetailSheet extends StatefulWidget {
   final RecordDetail detail;
   final Future<void> Function()? onVoid;
   final Future<void> Function()? onReturn;
+  final Future<void> Function(SaleReturnRow retur)? onReverseReturn;
   final Future<void> Function()? onSettle;
   final Future<void> Function()? onCorrect;
   final Future<void> Function()? onClaim;
@@ -1019,7 +1104,8 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                       for (final retur in detail.returns) ...[
                         _row(
                           context,
-                          '${retur.noRetur} · ${dateId.format(retur.waktu)}',
+                          '${retur.noRetur}${retur.isVoid ? ' · VOID' : ''}'
+                          ' · ${dateId.format(retur.waktu)}',
                           '-${formatRupiah(retur.totalCents)}',
                           bold: true,
                         ),
@@ -1031,6 +1117,20 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                           ),
                         if (retur.alasan.trim().isNotEmpty)
                           _line(context, '  Alasan', retur.alasan),
+                        if (!retur.isVoid &&
+                            widget.onReverseReturn != null)
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton(
+                              onPressed: _running == null
+                                  ? () => _run(
+                                      'reversal-${retur.id}',
+                                      () => widget.onReverseReturn!(retur),
+                                    )
+                                  : null,
+                              child: const Text('Batalkan retur'),
+                            ),
+                          ),
                         const Divider(),
                       ],
                     ],
@@ -1275,11 +1375,17 @@ class _CorrectionInput {
 }
 
 class _ReturnRequest {
-  const _ReturnRequest(this.items, this.alasan, this.requestId);
+  const _ReturnRequest(
+    this.items,
+    this.alasan,
+    this.requestId,
+    this.metodeRefund,
+  );
 
   final List<ReturnLineInput> items;
   final String alasan;
   final String requestId;
+  final String metodeRefund;
 }
 
 class _ReturnLineState {
@@ -1319,13 +1425,17 @@ class _ReturnDialogState extends State<_ReturnDialog> {
   // Satu kunci untuk seluruh isi dialog: menekan Simpan dua kali tidak
   // menghasilkan dua retur.
   final _requestId = newSyncId();
+  late String _metodeRefund;
   String? _error;
 
   @override
   void initState() {
     super.initState();
+    _metodeRefund =
+        widget.detail.record.metodeBayar == 'TRANSFER' ? 'TRANSFER' : 'CASH';
     final returned = <String, int>{};
     for (final retur in widget.detail.returns) {
+      if (retur.isVoid) continue;
       for (final item in retur.items) {
         final key = '${item.lineType}:${item.lineSyncId}';
         returned[key] = (returned[key] ?? 0) + item.milli;
@@ -1413,7 +1523,10 @@ class _ReturnDialogState extends State<_ReturnDialog> {
       setState(() => _error = 'Alasan retur minimal 3 karakter.');
       return;
     }
-    Navigator.pop(context, _ReturnRequest(items, alasan, _requestId));
+    Navigator.pop(
+      context,
+      _ReturnRequest(items, alasan, _requestId, _metodeRefund),
+    );
   }
 
   @override
@@ -1481,6 +1594,21 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                 decoration: const InputDecoration(
                   labelText: 'Alasan retur',
                   isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _metodeRefund,
+                decoration: const InputDecoration(
+                  labelText: 'Metode refund',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
+                  DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
+                ],
+                onChanged: (value) => setState(
+                  () => _metodeRefund = value ?? 'CASH',
                 ),
               ),
               if (_error != null) ...[

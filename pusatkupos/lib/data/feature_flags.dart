@@ -82,6 +82,40 @@ StoreFeature? featureDefinition(String key) {
   return null;
 }
 
+/// Satu pintu katalog fitur: key, default, dependensi, dan status wajib.
+class FeatureCatalog {
+  FeatureCatalog._();
+
+  static const List<StoreFeature> items = storeFeatureCatalog;
+
+  static StoreFeature? definition(String key) => featureDefinition(key);
+
+  static bool isRequired(String key) => definition(key)?.optional == false;
+
+  static List<StoreFeature> childrenOf(String key) => [
+        for (final item in storeFeatureCatalog)
+          if (item.dependsOn == key) item,
+      ];
+}
+
+/// Gerbang tunggal untuk service lokal dan penerapan delta remote.
+class FeatureGate {
+  FeatureGate._();
+
+  static bool enabled(String key) =>
+      FeatureFlagsService.instance.isEnabled(key);
+
+  static void require(String key) =>
+      FeatureFlagsService.instance.requireEnabled(key);
+
+  static Future<bool> acceptsRemote(
+    DatabaseExecutor txn,
+    String key,
+    String createdAt,
+  ) =>
+      FeatureFlagsService.instance.acceptsRemoteAt(txn, key, createdAt);
+}
+
 /// Flag fitur per toko yang dibaca dari cache agar menu dapat dibangun tanpa
 /// menunggu query. [load] dipanggil setiap kali toko aktif berubah.
 class FeatureFlagsService {
@@ -101,10 +135,11 @@ class FeatureFlagsService {
       supplierHubEnabled && isEnabled(featurePurchaseDebt);
 
   bool isEnabled(String key) {
-    final definition = featureDefinition(key);
-    final fallback = definition?.defaultEnabled ?? true;
-    if (_storeId != _activeStoreId) return fallback;
-    return _cache[key] ?? fallback;
+    // Fail-closed: sebelum cache dimuat untuk toko aktif, fitur opsional
+    // dianggap mati agar tidak ada penulisan selama status belum diketahui.
+    if (featureDefinition(key) == null) return false;
+    if (_storeId != _activeStoreId) return false;
+    return _cache[key] ?? false;
   }
 
   Future<void> load({DatabaseExecutor? executor}) async {
@@ -116,16 +151,14 @@ class FeatureFlagsService {
       where: 'store_id = ? AND deleted_at IS NULL',
       whereArgs: [storeId],
     );
-    _cache
-      ..clear()
-      ..addEntries(
-        rows.map(
-          (row) => MapEntry(
-            '${row['feature_key']}',
-            (row['enabled'] as num?)?.toInt() == 1,
-          ),
-        ),
-      );
+    _cache.clear();
+    for (final item in storeFeatureCatalog) {
+      _cache[item.key] = item.defaultEnabled;
+    }
+    for (final row in rows) {
+      _cache['${row['feature_key']}'] =
+          (row['enabled'] as num?)?.toInt() == 1;
+    }
     _storeId = storeId;
   }
 
@@ -180,6 +213,7 @@ class FeatureFlagsService {
     required String key,
     required bool enabled,
     required Operator actor,
+    String? reason,
     Future<void> Function(Transaction txn, String syncId)? enqueue,
   }) async {
     if (!actor.isOwner) {
@@ -216,7 +250,7 @@ class FeatureFlagsService {
       final syncId =
           rows.isEmpty ? newSyncId() : '${rows.first['sync_id'] ?? newSyncId()}';
       final deviceRows = await txn.query(
-        'app_settings',
+        'app_meta',
         columns: ['key', 'value'],
         where: "key IN ('sync.relay_device_id', 'device.current_id')",
       );
@@ -250,8 +284,8 @@ class FeatureFlagsService {
         await txn.update(
           'store_features',
           values,
-          where: 'id = ?',
-          whereArgs: [rows.first['id']],
+          where: 'store_id = ? AND feature_key = ?',
+          whereArgs: [storeId, key],
         );
       }
       await txn.insert('business_audits', {
@@ -266,13 +300,39 @@ class FeatureFlagsService {
         'entity_id': key,
         'before_json': jsonEncode({'enabled': current}),
         'after_json': jsonEncode({'enabled': enabled}),
-        'alasan': null,
+        'alasan': reason,
         'created_at': now,
         'updated_at': now,
+      });
+      await txn.insert('feature_audits', {
+        'store_id': storeId,
+        'feature_key': key,
+        'before_enabled': current ? 1 : 0,
+        'after_enabled': enabled ? 1 : 0,
+        'actor': actor.label,
+        'actor_employee_sync_id': actor.employeeSyncId,
+        'reason': reason,
+        'created_at': now,
       });
       if (enqueue != null) await enqueue(txn, syncId);
     });
     _cache[key] = enabled;
+  }
+
+  /// Riwayat perubahan fitur untuk layar pengaturan. Pembacaan tidak
+  /// dipengaruhi status ON/OFF agar histori tetap terlihat.
+  Future<List<Map<String, Object?>>> history({
+    String? key,
+    int limit = 20,
+  }) async {
+    final storeId = _activeStoreId;
+    return AppDatabase.instance.db.query(
+      'feature_audits',
+      where: key == null ? 'store_id = ?' : 'store_id = ? AND feature_key = ?',
+      whereArgs: key == null ? [storeId] : [storeId, key],
+      orderBy: 'created_at DESC, id DESC',
+      limit: limit,
+    );
   }
 
   Future<void> applyRemote(
@@ -323,8 +383,8 @@ class FeatureFlagsService {
       await txn.update(
         'store_features',
         values,
-        where: 'id = ?',
-        whereArgs: [rows.first['id']],
+        where: 'store_id = ? AND feature_key = ?',
+        whereArgs: [storeId, key],
       );
     }
     // Pilihan sub-fitur tetap disimpan walau induk dimatikan; efeknya dihitung

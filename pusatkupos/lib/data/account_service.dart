@@ -6,6 +6,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import 'access_control.dart';
@@ -27,11 +28,53 @@ class AccountService {
 
   static final AccountService instance = AccountService._();
 
+  /// Akun karyawan hanya boleh dikelola pemilik. Aktor wajib berasal dari
+  /// sesi terverifikasi, bukan string bebas dari pemanggil.
+  static void _requireOwner(Operator actor) {
+    if (!actor.isOwner) {
+      throw StateError('Hanya pemilik yang dapat mengelola akun karyawan.');
+    }
+    if (!Permissions.can(actor, permissionManageAccounts)) {
+      throw StateError('Izin kelola akun tidak tersedia.');
+    }
+  }
+
   Future<List<Map<String, Object?>>> listAccounts() async {
-    return AppDatabase.instance.db.query(
+    final rows = await AppDatabase.instance.db.query(
       'employee_accounts',
       orderBy: 'nama COLLATE NOCASE',
     );
+    final access = await AppDatabase.instance.db.query(
+      'employee_store_access',
+      columns: ['employee_sync_id', 'store_id'],
+      where: 'aktif = 1 AND deleted_at IS NULL',
+    );
+    final byEmployee = <String, List<String>>{};
+    for (final row in access) {
+      byEmployee
+          .putIfAbsent('${row['employee_sync_id']}', () => [])
+          .add('${row['store_id']}');
+    }
+    return [
+      for (final row in rows)
+        {
+          ...row,
+          'store_ids': byEmployee['${row['sync_id']}'] ?? const <String>[],
+        },
+    ];
+  }
+
+  /// Daftar toko tempat karyawan masih aktif. Sumber tunggal:
+  /// `employee_store_access`.
+  Future<List<String>> storeIdsFor(String employeeSyncId) async {
+    if (employeeSyncId.isEmpty) return const [];
+    final rows = await AppDatabase.instance.db.query(
+      'employee_store_access',
+      columns: ['store_id'],
+      where: 'employee_sync_id = ? AND aktif = 1 AND deleted_at IS NULL',
+      whereArgs: [employeeSyncId],
+    );
+    return [for (final row in rows) '${row['store_id']}'];
   }
 
   Future<Set<String>> effectivePermissions(Map<String, Object?> account) async {
@@ -122,9 +165,10 @@ class AccountService {
     required String password,
     List<String> extraPermissions = const [],
     List<String> storeIds = const ['utama'],
-    String actor = 'owner',
+    required Operator actor,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
+    _requireOwner(actor);
     if (!await LicenseService.instance.isPremium()) {
       throw StateError(
         'Lisensi server yang valid diperlukan untuk membuat akun karyawan.',
@@ -161,7 +205,6 @@ class AccountService {
       'nama': nama.trim().isEmpty ? clean : nama.trim(),
       'role_base': role,
       'extra_permissions_json': jsonEncode(extraPermissions),
-      'store_ids_json': jsonEncode(storeIds),
       'password_hash': hash,
       'password_salt': salt,
       'password_iterations': _iterations,
@@ -182,7 +225,7 @@ class AccountService {
       storeIds: storeIds,
     );
     await recordAudit(
-      actor: actor,
+      actor: actor.label,
       targetAccountId: id,
       action: 'buat akun',
       detail: {'username': clean, 'role': role},
@@ -219,7 +262,6 @@ class AccountService {
       'nama': (account['nama'] as String? ?? username).trim(),
       'role_base': account['role_base'] as String? ?? 'KASIR',
       'extra_permissions_json': jsonEncode(extras),
-      'store_ids_json': jsonEncode(account['store_ids'] ?? []),
       'password_hash': account['password_hash'] as String? ?? '',
       'password_salt': account['password_salt'] as String? ?? '',
       'password_iterations':
@@ -301,7 +343,6 @@ class AccountService {
         'nama': account['nama'],
         'role_base': role,
         'extra_permissions_json': jsonEncode(extras),
-        'store_ids_json': jsonEncode(account['store_ids'] ?? []),
         'aktif': aktif ? 1 : 0,
         'permission_version': incoming,
         'permissions_explicit':
@@ -330,9 +371,10 @@ class AccountService {
     required bool aktif,
     List<String> extraPermissions = const [],
     List<String> storeIds = const ['utama'],
-    String actor = 'owner',
+    required Operator actor,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
+    _requireOwner(actor);
     final before = await _accountById(id);
     if (before == null) throw StateError('Akun tidak ditemukan.');
     await _requireKnownRole(role);
@@ -347,7 +389,6 @@ class AccountService {
         'role_base': role,
         'aktif': aktif ? 1 : 0,
         'extra_permissions_json': jsonEncode(extraPermissions),
-        'store_ids_json': jsonEncode(storeIds),
         'permission_version': nextVersion,
         'permissions_explicit': 1,
         'sync_hlc_wall': hlc.wall,
@@ -368,14 +409,14 @@ class AccountService {
       version: nextVersion,
     );
     await recordAudit(
-      actor: actor,
+      actor: actor.label,
       targetAccountId: id,
       action: 'ubah akun',
       detail: {
         'sebelum': {
           'role': before['role_base'],
           'aktif': before['aktif'],
-          'toko': _jsonList(before['store_ids_json']),
+          'toko': await storeIdsFor(before['sync_id'] as String? ?? ''),
         },
         'sesudah': {'role': role, 'aktif': aktif, 'toko': storeIds},
       },
@@ -389,8 +430,9 @@ class AccountService {
   Future<void> resetPassword(
     int id, {
     required String password,
-    String actor = 'owner',
+    required Operator actor,
   }) async {
+    _requireOwner(actor);
     final salt = _newSalt();
     final hash = await _derive(password, salt, _iterations);
     await AppDatabase.instance.db.update(
@@ -406,13 +448,14 @@ class AccountService {
       whereArgs: [id],
     );
     await recordAudit(
-      actor: actor,
+      actor: actor.label,
       targetAccountId: id,
       action: 'reset password',
     );
   }
 
-  Future<void> resetPin(int id, {String actor = 'owner'}) async {
+  Future<void> resetPin(int id, {required Operator actor}) async {
+    _requireOwner(actor);
     await AppDatabase.instance.db.update(
       'employee_accounts',
       {
@@ -423,7 +466,11 @@ class AccountService {
       where: 'id = ?',
       whereArgs: [id],
     );
-    await recordAudit(actor: actor, targetAccountId: id, action: 'reset PIN');
+    await recordAudit(
+      actor: actor.label,
+      targetAccountId: id,
+      action: 'reset PIN',
+    );
   }
 
   Future<void> changePassword(
@@ -638,6 +685,7 @@ class AccountService {
       account['role_base'] as String? ?? 'MEKANIK',
       extras: extras,
     );
+    final storeIds = await storeIdsFor(account['sync_id'] as String? ?? '');
     return Operator(
       kind: 'employee',
       role: canonicalRole(account['role_base'] as String? ?? 'MEKANIK'),
@@ -648,9 +696,7 @@ class AccountService {
       permissions: permissions,
       extraPermissions: extras,
       deviceId: deviceId,
-      storeIds: _jsonList(account['store_ids_json']).isEmpty
-          ? const ['utama']
-          : _jsonList(account['store_ids_json']),
+      storeIds: storeIds.isEmpty ? const ['utama'] : storeIds,
       mustChangePassword: account['must_change_password'] == 1,
     );
   }

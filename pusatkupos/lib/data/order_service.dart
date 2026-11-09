@@ -9,6 +9,7 @@ import '../core/ids.dart';
 import '../core/money.dart';
 import 'app_database.dart';
 import 'approval_service.dart';
+import 'feature_flags.dart';
 import 'models.dart';
 import 'pajak.dart';
 import 'price_rules.dart';
@@ -24,6 +25,7 @@ class EstimateItemInput {
     this.stockItemId,
     this.jasaId,
     this.intervalBulan = 0,
+    this.hargaTerdaftarCents,
     int? qtyMilli,
   })  : jumlah = jumlah,
         qtyMilli = qtyMilli ?? jumlah * 1000;
@@ -37,6 +39,10 @@ class EstimateItemInput {
   final int? stockItemId;
   final int? jasaId;
   final int intervalBulan;
+
+  /// Tarif acuan saat jasa tidak lagi ada di katalog (mis. revisi estimasi
+  /// lama). Nol berarti jasa bebas tanpa tarif acuan.
+  final int? hargaTerdaftarCents;
 }
 
 class EstimateRecord {
@@ -47,6 +53,14 @@ class EstimateRecord {
     required this.versi,
     required this.totalCents,
     required this.status,
+    this.jenisTransaksi = transactionServisLangsung,
+    this.diskonCents = 0,
+    this.dppCents = 0,
+    this.ppnCents = 0,
+    this.totalDitagihCents = 0,
+    this.pajakMode = pajakModeTanpa,
+    this.pajakPersenBp = 0,
+    this.pajakPenanggung = pajakPenanggungPembeli,
     this.workOrderSyncId,
     this.customerSyncId,
     this.unitSyncId,
@@ -55,6 +69,7 @@ class EstimateRecord {
     this.convertedNotaSyncId,
     this.totalEstimasiTerakhir,
     this.dibuatOleh,
+    this.disetujuiOleh,
   });
 
   final int id;
@@ -63,6 +78,14 @@ class EstimateRecord {
   final int versi;
   final int totalCents;
   final String status;
+  final String jenisTransaksi;
+  final int diskonCents;
+  final int dppCents;
+  final int ppnCents;
+  final int totalDitagihCents;
+  final String pajakMode;
+  final int pajakPersenBp;
+  final String pajakPenanggung;
   final String? workOrderSyncId;
   final String? customerSyncId;
   final String? unitSyncId;
@@ -71,6 +94,7 @@ class EstimateRecord {
   final String? convertedNotaSyncId;
   final int? totalEstimasiTerakhir;
   final String? dibuatOleh;
+  final String? disetujuiOleh;
 
   bool get kedaluwarsa {
     final expiry = DateTime.tryParse(masaBerlaku ?? '');
@@ -90,6 +114,16 @@ class EstimateRecord {
     versi: (row['versi'] as num?)?.toInt() ?? 1,
     totalCents: (row['total'] as num?)?.toInt() ?? 0,
     status: row['status'] as String? ?? 'aktif',
+    jenisTransaksi:
+        row['jenis_transaksi'] as String? ?? transactionServisLangsung,
+    diskonCents: (row['diskon_cents'] as num?)?.toInt() ?? 0,
+    dppCents: (row['dpp_cents'] as num?)?.toInt() ?? 0,
+    ppnCents: (row['ppn_cents'] as num?)?.toInt() ?? 0,
+    totalDitagihCents: (row['total_ditagih_cents'] as num?)?.toInt() ?? 0,
+    pajakMode: row['pajak_mode'] as String? ?? pajakModeTanpa,
+    pajakPersenBp: (row['pajak_persen_bp'] as num?)?.toInt() ?? 0,
+    pajakPenanggung:
+        row['pajak_penanggung'] as String? ?? pajakPenanggungPembeli,
     workOrderSyncId: row['work_order_sync_id'] as String?,
     customerSyncId: row['customer_sync_id'] as String?,
     unitSyncId: row['unit_sync_id'] as String?,
@@ -98,6 +132,7 @@ class EstimateRecord {
     convertedNotaSyncId: row['converted_nota_sync_id'] as String?,
     totalEstimasiTerakhir: (row['total_estimasi_terakhir'] as num?)?.toInt(),
     dibuatOleh: row['dibuat_oleh'] as String?,
+    disetujuiOleh: row['disetujui_oleh'] as String?,
   );
 }
 
@@ -201,6 +236,7 @@ class OrderService {
     String? revisiDariSyncId,
     String? alasanRevisi,
     required List<EstimateItemInput> items,
+    String jenisTransaksi = transactionServisLangsung,
     int diskonCents = 0,
     String? alasanDiskon,
     int masaBerlakuHari = 7,
@@ -210,6 +246,7 @@ class OrderService {
     Map<String, Object?>? modeSaatDibuat,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
+    FeatureGate.require(featureEstimasi);
     final settings = await StoreSettingsService.instance.ensure();
     final role = actor.role;
     if (!settings.typeEnabled(transactionEstimasiSaja)) {
@@ -225,16 +262,52 @@ class OrderService {
     if (items.isEmpty) {
       throw ArgumentError('Estimasi membutuhkan minimal satu baris.');
     }
+    if (jenisTransaksi == transactionEstimasiSaja) {
+      throw ArgumentError(
+        'Estimasi harus menargetkan jenis transaksi nota, bukan estimasi.',
+      );
+    }
+    if (!transactionTypes.contains(jenisTransaksi)) {
+      throw ArgumentError('Jenis transaksi "$jenisTransaksi" tidak dikenal.');
+    }
+    if (!settings.typeEnabled(jenisTransaksi)) {
+      throw StateError(
+        'Jenis transaksi "$jenisTransaksi" sedang dimatikan pemilik.',
+      );
+    }
+    final isOwner = actor.isOwner;
+    final hasReason = (alasanDiskon ?? '').trim().isNotEmpty;
     final lines = <PriceLine>[];
+    final jasaSyncIds = <String?>[];
+    final hargaTerdaftars = <int>[];
+    final hargaBebasFlags = <int>[];
     for (final item in items) {
       if (item.qtyMilli <= 0) {
         throw ArgumentError('Jumlah ${item.deskripsi} harus lebih dari nol.');
       }
+      if (item.jenis == 'part' && item.stockItemId == null) {
+        throw StateError(
+          'Barang ${item.deskripsi} harus dipilih dari daftar stok.',
+        );
+      }
+      if (jenisTransaksi == transactionJualSparepart && item.jenis != 'part') {
+        throw StateError('Penjualan sparepart hanya boleh memuat barang.');
+      }
+      if (item.hargaCents == 0 && (!isOwner || !hasReason)) {
+        throw PriceRuleViolation(
+          'harga_nol',
+          'Harga ${item.deskripsi} tidak boleh nol tanpa persetujuan '
+              'pemilik dan alasan.',
+        );
+      }
       var modal = item.modalCents < 0 ? 0 : item.modalCents;
+      var hargaTerdaftar = item.hargaTerdaftarCents ?? 0;
+      String? jasaSync;
+      var hargaBebas = false;
       if (item.jenis == 'jasa' && item.jasaId != null) {
         final rows = await AppDatabase.instance.db.query(
           'harga_jasa',
-          columns: ['harga_jual', 'harga_modal', 'deleted_at'],
+          columns: ['sync_id', 'harga_jual', 'harga_modal', 'deleted_at'],
           where: 'id = ?',
           whereArgs: [item.jasaId],
           limit: 1,
@@ -252,6 +325,8 @@ class OrderService {
           );
         }
         modal = (rows.first['harga_modal'] as num?)?.toInt() ?? 0;
+        hargaTerdaftar = hargaJual;
+        jasaSync = rows.first['sync_id'] as String?;
       } else if (item.stockItemId != null) {
         final rows = await AppDatabase.instance.db.query(
           'stock_items',
@@ -271,7 +346,16 @@ class OrderService {
           );
         }
         modal = stock.hargaModalCents;
+        hargaTerdaftar = stock.hargaJualCents;
+      } else if (item.jenis == 'jasa') {
+        // Jasa bebas adalah keahlian, bukan pembelian: tidak wajib memiliki
+        // modal. Tarif acuan hanya diisi bila pemanggil menyediakannya.
+        hargaBebas = true;
+        if (hargaTerdaftar < 0) hargaTerdaftar = 0;
       }
+      jasaSyncIds.add(jasaSync);
+      hargaTerdaftars.add(hargaTerdaftar);
+      hargaBebasFlags.add(hargaBebas ? 1 : 0);
       lines.add(
         PriceLine(
           jenis: item.jenis,
@@ -286,7 +370,6 @@ class OrderService {
         ),
       );
     }
-    final isOwner = actor.isOwner;
     String? approver = isOwner ? actor.label : null;
     final allocation = PriceRules.allocate(
       lines,
@@ -406,10 +489,19 @@ class OrderService {
         brutoCents: allocation.total,
         config: settings.pajakConfig,
       );
+      final pajakBaris = PajakSnapshot.alokasiBaris(
+        snapshot: pajak,
+        bases: [
+          for (final line in allocation.lines)
+            line.subtotal - line.diskonAlokasi,
+        ],
+      );
       final modeSnapshot = Map<String, Object?>.from(
         modeSaatDibuat ??
             settings.modeSnapshot(jenisTransaksi: transactionEstimasiSaja),
-      )..['pajak_estimasi'] = pajak.toJson();
+      )
+        ..['jenis_transaksi'] = jenisTransaksi
+        ..['pajak_estimasi'] = pajak.toJson();
       await txn.insert('estimates', {
         'sync_id': syncId,
         'nomor_estimasi': nomor,
@@ -422,6 +514,14 @@ class OrderService {
         'masa_berlaku': tanggal
             .add(Duration(days: masaBerlakuHari < 1 ? 1 : masaBerlakuHari))
             .toIso8601String(),
+        'jenis_transaksi': jenisTransaksi,
+        'diskon_cents': allocation.diskon,
+        'dpp_cents': pajak.dppCents,
+        'ppn_cents': pajak.pajakCents,
+        'total_ditagih_cents': pajak.totalCents,
+        'pajak_mode': pajak.mode,
+        'pajak_persen_bp': pajak.persenBp,
+        'pajak_penanggung': pajak.penanggung,
         'total': pajak.totalCents,
         'status': 'aktif',
         'disetujui_oleh': approver,
@@ -435,6 +535,7 @@ class OrderService {
       for (var index = 0; index < items.length; index++) {
         final item = items[index];
         final line = allocation.lines[index];
+        final share = pajakBaris[index];
         await txn.insert('estimate_items', {
           'sync_id': newSyncId(),
           'estimate_sync_id': syncId,
@@ -448,10 +549,18 @@ class OrderService {
                   whereArgs: [item.stockItemId],
                   limit: 1,
                 )).map((row) => row['sync_id'] as String?).firstOrNull,
+          'jasa_sync_id': jasaSyncIds[index],
           'deskripsi': item.deskripsi,
           'jumlah': item.qtyMilli ~/ 1000,
           'jumlah_milli': item.qtyMilli,
-          'harga_jual_terdaftar': item.hargaCents,
+          'harga_jual_terdaftar': hargaTerdaftars[index],
+          'harga_input': item.hargaCents,
+          'harga_bebas': hargaBebasFlags[index],
+          'dpp_cents': share.dppCents,
+          'ppn_cents': share.pajakCents,
+          'total_ditagih_cents': share.totalCents,
+          'pajak_mode': pajak.mode,
+          'pajak_penanggung': pajak.penanggung,
           'harga_batas_saat_transaksi': line.hargaModal,
           'harga_final': line.hargaFinal,
           'harga_modal': line.hargaModal,
@@ -493,6 +602,7 @@ class OrderService {
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
         enqueueCommission,
   }) async {
+    FeatureGate.require(featureEstimasi);
     final rows = await AppDatabase.instance.db.query(
       'estimates',
       where: 'sync_id = ?',
@@ -517,8 +627,13 @@ class OrderService {
           (item['jumlah_milli'] as num?)?.toInt() ?? jumlah * 1000;
       final hargaFinal = (item['harga_final'] as num?)?.toInt() ?? 0;
       final hargaTerdaftar =
-          (item['harga_jual_terdaftar'] as num?)?.toInt() ?? hargaFinal;
+          (item['harga_jual_terdaftar'] as num?)?.toInt() ?? 0;
+      final hargaInput =
+          (item['harga_input'] as num?)?.toInt() ?? hargaTerdaftar;
+      final hargaBebas =
+          ((item['harga_bebas'] as num?)?.toInt() ?? 0) == 1;
       final modal = (item['harga_modal'] as num?)?.toInt() ?? 0;
+      final interval = (item['interval_servis_bulan'] as num?)?.toInt() ?? 0;
       if (item['jenis'] == 'part') {
         final stockSync = item['stock_sync_id'] as String? ?? '';
         final stock = await AppDatabase.instance.db.query(
@@ -537,35 +652,79 @@ class OrderService {
             nama: stockItem.nama,
             jumlah: qtyMilli ~/ 1000,
             qtyMilli: qtyMilli,
-            hargaCents: hargaTerdaftar,
+            hargaCents: hargaInput <= 0 ? hargaFinal : hargaInput,
             modalCents: stockItem.hargaModalCents,
-            intervalBulan:
-                (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
+            hargaTerdaftarCents: hargaTerdaftar,
+            intervalBulan: interval,
           ),
         );
       } else {
+        final jasaSync = (item['jasa_sync_id'] as String?)?.trim() ?? '';
+        int? jasaId;
+        var reference = hargaTerdaftar;
+        var modalJasa = modal;
+        var bebas = hargaBebas;
+        if (jasaSync.isNotEmpty) {
+          final catalog = await AppDatabase.instance.db.query(
+            'harga_jasa',
+            where: 'sync_id = ?',
+            whereArgs: [jasaSync],
+            limit: 1,
+          );
+          if (catalog.isNotEmpty) {
+            jasaId = catalog.first['id'] as int?;
+            final current =
+                (catalog.first['harga_jual'] as num?)?.toInt() ?? 0;
+            modalJasa = (catalog.first['harga_modal'] as num?)?.toInt() ?? 0;
+            if (reference <= 0) reference = current;
+            // Estimasi adalah penawaran yang sudah disetujui pelanggan.
+            // Bila tarif master berubah, harga penawaran dipertahankan dan
+            // baris ditandai bebas agar tidak ditolak validasi tarif.
+            if (hargaInput != current) bebas = true;
+          } else {
+            bebas = true;
+          }
+        } else {
+          bebas = true;
+        }
         jobs.add(
           JobDraft(
             deskripsi: item['deskripsi'] as String? ?? '',
             jumlah: jumlah,
-            hargaCents: hargaTerdaftar,
-            modalCents: modal,
-            intervalBulan:
-                (item['interval_servis_bulan'] as num?)?.toInt() ?? 0,
+            hargaCents: hargaInput <= 0 ? hargaFinal : hargaInput,
+            jasaId: jasaId,
+            modalCents: modalJasa,
+            intervalBulan: interval,
+            hargaTerdaftarCents: reference,
+            hargaBebas: bebas,
           ),
         );
       }
     }
-    final hargaTotal = jobs.fold<int>(0, (sum, job) => sum + job.subtotalCents);
-    final partTotal = parts.fold<int>(
-      0,
-      (sum, part) => sum + part.subtotalCents,
-    );
-    final diskon = (hargaTotal + partTotal) - estimate.totalCents;
-    if (diskon < 0) {
+    final diskon = estimate.diskonCents;
+    final dasar = jobs.fold<int>(0, (sum, job) => sum + job.subtotalCents) +
+        parts.fold<int>(0, (sum, part) => sum + part.subtotalCents);
+    if (diskon > dasar) {
       throw StateError(
-        'Total estimasi lebih tinggi dari harga item terdaftar. '
-        'Periksa ulang estimasi sebelum konversi.',
+        'Diskon estimasi melebihi harga item. Periksa ulang estimasi.',
+      );
+    }
+    PajakSnapshot? pajakSnapshot;
+    if (estimate.totalDitagihCents > 0 ||
+        estimate.dppCents > 0 ||
+        estimate.ppnCents > 0) {
+      pajakSnapshot = PajakSnapshot(
+        active: estimate.pajakMode != pajakModeTanpa,
+        mode: estimate.pajakMode,
+        persenBp: estimate.pajakPersenBp,
+        penanggung: estimate.pajakPenanggung,
+        dppCents: estimate.dppCents,
+        pajakCents: estimate.ppnCents,
+        totalCents: estimate.totalDitagihCents,
+        diserapCents:
+            estimate.pajakPenanggung == pajakPenanggungBengkel
+                ? estimate.ppnCents
+                : 0,
       );
     }
     int? customerId;
@@ -597,7 +756,7 @@ class OrderService {
     return AppDatabase.instance.createTransaction(
       unitId: unitId,
       customerId: customerId,
-      jenisTransaksi: transactionOrderKerja,
+      jenisTransaksi: estimate.jenisTransaksi,
       keluhan: 'Konversi estimasi ${estimate.nomorEstimasi}',
       jobs: jobs,
       parts: parts,
@@ -611,6 +770,8 @@ class OrderService {
       workOrderSyncId: estimate.workOrderSyncId,
       estimateSyncId: estimateSyncId,
       totalEstimasiTerakhir: estimate.totalCents,
+      pajakSnapshot: pajakSnapshot,
+      approvedByOverride: estimate.disetujuiOleh,
       alasanDiskon: 'Konversi estimasi ${estimate.nomorEstimasi}',
       enqueue: enqueueNote,
       enqueueEstimate: enqueueEstimate,
@@ -630,6 +791,7 @@ class OrderService {
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueStatus,
   }) async {
+    FeatureGate.require(featureOrderKerja);
     final settings = await StoreSettingsService.instance.ensure();
     final role = actor.role;
     if (!settings.typeEnabled(transactionOrderKerja)) {
@@ -768,6 +930,7 @@ class OrderService {
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueStatus,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueueOrder,
   }) async {
+    FeatureGate.require(featureOrderKerja);
     final rows = await AppDatabase.instance.db.query(
       'work_orders',
       where: 'sync_id = ?',
@@ -928,6 +1091,7 @@ class OrderService {
     required Operator actor,
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
+    FeatureGate.require(featureEstimasi);
     final settings = await StoreSettingsService.instance.ensure();
     if (!actor.isOwner) {
       Permissions.require(actor, 'buat_estimasi');

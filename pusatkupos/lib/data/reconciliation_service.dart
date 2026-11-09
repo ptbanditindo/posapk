@@ -188,7 +188,7 @@ ORDER BY r.sync_id, p.sync_id
 
   Future<String> _relayDeviceId(DatabaseExecutor db) async {
     final rows = await db.query(
-      'app_settings',
+      'app_meta',
       columns: ['value'],
       where: 'key = ?',
       whereArgs: ['sync.relay_device_id'],
@@ -199,7 +199,7 @@ ORDER BY r.sync_id, p.sync_id
 
   Future<String?> _setting(DatabaseExecutor db, String key) async {
     final rows = await db.query(
-      'app_settings',
+      'app_meta',
       columns: ['value'],
       where: 'key = ?',
       whereArgs: [key],
@@ -214,7 +214,7 @@ ORDER BY r.sync_id, p.sync_id
     String value,
   ) async {
     await db.insert(
-      'app_settings',
+      'app_meta',
       {'key': key, 'value': value},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

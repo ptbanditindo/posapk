@@ -249,4 +249,73 @@ class PajakSnapshot {
     final sisa = math.max(0, pajakNotaCents - pajakSudahReturCents);
     return returTerakhir ? sisa : 0;
   }
+
+  /// Membagi DPP dan PPN nota ke baris secara proporsional terhadap nilai
+  /// dasar tiap baris. Sisa pembulatan masuk ke baris terakhir yang bernilai
+  /// sehingga jumlah per baris selalu sama dengan snapshot nota.
+  static List<PajakBaris> alokasiBaris({
+    required PajakSnapshot snapshot,
+    required List<int> bases,
+  }) {
+    if (bases.isEmpty) return const [];
+    final normalized = [
+      for (final base in bases) base < 0 ? 0 : base,
+    ];
+    final totalBase = normalized.fold<int>(0, (sum, base) => sum + base);
+    if (totalBase == 0) {
+      return List<PajakBaris>.generate(
+        bases.length,
+        (_) => const PajakBaris(dppCents: 0, pajakCents: 0, totalCents: 0),
+      );
+    }
+    var totalDpp = snapshot.dppCents;
+    var totalPajak = snapshot.pajakCents;
+    if (totalDpp == 0 && totalPajak == 0) {
+      totalDpp = totalBase;
+    }
+    List<int> split(int total) {
+      final result = List<int>.filled(normalized.length, 0);
+      var remaining = total;
+      for (var index = 0; index < normalized.length; index++) {
+        if (total <= 0) break;
+        final share = total * normalized[index] ~/ totalBase;
+        final applied = share < 0 ? 0 : (share > remaining ? remaining : share);
+        result[index] = applied;
+        remaining -= applied;
+      }
+      for (var index = normalized.length - 1;
+          index >= 0 && remaining > 0;
+          index--) {
+        if (normalized[index] <= 0) continue;
+        result[index] += remaining;
+        remaining = 0;
+      }
+      return result;
+    }
+
+    final dpp = split(totalDpp);
+    final pajak = split(totalPajak);
+    final pembeli = snapshot.penanggung == pajakPenanggungPembeli;
+    return List<PajakBaris>.generate(normalized.length, (index) {
+      final dppCents = dpp[index];
+      final pajakCents = pajak[index];
+      return PajakBaris(
+        dppCents: dppCents,
+        pajakCents: pajakCents,
+        totalCents: pembeli ? dppCents + pajakCents : dppCents,
+      );
+    });
+  }
+}
+
+class PajakBaris {
+  const PajakBaris({
+    required this.dppCents,
+    required this.pajakCents,
+    required this.totalCents,
+  });
+
+  final int dppCents;
+  final int pajakCents;
+  final int totalCents;
 }

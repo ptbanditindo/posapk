@@ -96,6 +96,7 @@ class _StockScreenState extends State<StockScreen> {
       await SupplierService.instance.syncItemSuppliers(
         id,
         input.supplierIds,
+        actor: AppState.instance.requireOperator,
         enqueue: (txn, supplierId) =>
             SyncService.instance.enqueueSupplier(supplierId, txn: txn),
       );

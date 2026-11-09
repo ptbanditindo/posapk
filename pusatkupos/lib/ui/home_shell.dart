@@ -117,10 +117,11 @@ class _HomeShellState extends State<HomeShell>
   }
 
   Future<void> _loadStores() async {
+    final operator = _operator;
+    if (operator == null) return;
     try {
       final stores = await StoreService.instance.listStores();
       if (!mounted) return;
-      final operator = _operator;
       setState(() {
         _stores = operator.isOwner
             ? stores
@@ -139,6 +140,7 @@ class _HomeShellState extends State<HomeShell>
   Future<void> _checkDebtReminders() async {
     if (!FeatureFlagsService.instance.purchaseDebtEnabled) return;
     final operator = _operator;
+    if (operator == null) return;
     if (!operator.isOwner && !operator.can(permissionViewPurchase)) return;
     try {
       final reminders = await PurchaseService.instance.dueReminders();
@@ -197,6 +199,7 @@ class _HomeShellState extends State<HomeShell>
 
   Future<void> _openStoreSwitcher() async {
     final operator = _operator;
+    if (operator == null) return;
     if (_stores.length <= 1) return;
     final activeId = AppDatabase.instance.activeStoreId ?? 'utama';
     final selected = await showDialog<StoreRecord>(
@@ -209,6 +212,7 @@ class _HomeShellState extends State<HomeShell>
     if (selected == null || !mounted) return;
     if (selected.storeId == activeId) return;
     final allowed = operator.isOwner ? null : operator.storeIds.toSet();
+    AppState.instance.beginStoreSwitch();
     try {
       await StoreService.instance.switchStore(
         selected.storeId,
@@ -221,6 +225,8 @@ class _HomeShellState extends State<HomeShell>
     } catch (error) {
       if (!mounted) return;
       showSnack(context, '$error', error: true);
+    } finally {
+      AppState.instance.endStoreSwitch();
     }
   }
 
@@ -272,7 +278,7 @@ class _HomeShellState extends State<HomeShell>
     'lihat_premium',
   ];
 
-  Operator get _operator => AppState.instance.operator ?? Operator.owner;
+  Operator? get _operator => AppState.instance.operator;
 
   /// Menu opsional disembunyikan mengikuti saklar fitur per toko. Fitur wajib
   /// tetap tampil walau data historis berasal dari masa fitur aktif.
@@ -288,6 +294,7 @@ class _HomeShellState extends State<HomeShell>
 
   List<int> get _visible {
     final operator = _operator;
+    if (operator == null) return const [];
     if (operator.isOwner) {
       return [
         for (var index = 0; index < _allLabels.length; index++)
@@ -373,12 +380,58 @@ class _HomeShellState extends State<HomeShell>
     );
   }
 
+  Widget _buildLocked() {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Sesi tidak aktif')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.lock_outline,
+                size: 48,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Sesi operator tidak tersedia.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Buka aplikasi kembali dan masukkan PIN. Tidak ada menu yang '
+                'dibuka tanpa identitas yang terverifikasi.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () {
+                  AppState.instance.setOperator(null);
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(builder: (_) => const EntryGate()),
+                    (_) => false,
+                  );
+                },
+                icon: const Icon(Icons.login),
+                label: const Text('Buka kunci'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = AppState.instance;
     return AnimatedBuilder(
       animation: appState,
       builder: (context, _) {
+        if (appState.operator == null) return _buildLocked();
         final visible = _visible;
         if (visible.isEmpty) {
           return _buildNoAccess();
@@ -406,7 +459,7 @@ class _HomeShellState extends State<HomeShell>
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 Text(
-                  '${appState.operator?.label ?? 'Pemilik'} · '
+                  '${appState.operator?.label ?? 'Sesi tidak aktif'} · '
                   '${appState.storeAddress.isEmpty ? appState.storeName : appState.storeAddress}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -524,7 +577,7 @@ class _HomeShellState extends State<HomeShell>
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                         Text(
-                          '${appState.operator?.label ?? 'Pemilik'} · '
+                          '${appState.operator?.label ?? 'Sesi tidak aktif'} · '
                           '${appState.storeAddress.isEmpty ? 'PusatkuPOS' : appState.storeAddress}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

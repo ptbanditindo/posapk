@@ -151,6 +151,14 @@ class _PosScreenState extends State<PosScreen> {
         settings.roleAllows(actor.role, 'diskon');
   }
 
+  bool get _canCredit {
+    final actor = _actor;
+    final settings = _settings;
+    if (actor == null || settings == null) return false;
+    return AppState.instance.can('beri_kredit') &&
+        settings.roleAllows(actor.role, 'beri_kredit');
+  }
+
   bool get _canSave {
     if (AppState.instance.isOwner) return true;
     return AppState.instance.can(
@@ -454,6 +462,25 @@ class _PosScreenState extends State<PosScreen> {
       );
       return;
     }
+    final sisa = (_total - _bayarCents).clamp(0, _total).toInt();
+    if (sisa > 0) {
+      if (!AppState.instance.isOwner && !_canCredit) {
+        showSnack(
+          context,
+          'Peran ini tidak berhak memberi kredit.',
+          error: true,
+        );
+        return;
+      }
+      if (_jatuhTempo == null) {
+        showSnack(
+          context,
+          'Jatuh tempo wajib diisi untuk nota dengan sisa bayar.',
+          error: true,
+        );
+        return;
+      }
+    }
     if (_sparepartOnly && _jobs.isNotEmpty) {
       showSnack(
         context,
@@ -494,15 +521,28 @@ class _PosScreenState extends State<PosScreen> {
         .where((row) => _mechanicIds.contains(row['id']))
         .toList();
     setState(() => _saving = true);
+    int? id;
     try {
-      final id = await _createWithApproval(
+      id = await _createWithApproval(
         actor: actor,
         mechanics: mechanics,
         garansiBulan: garansiBulan,
         garansiBarangNilai: garansiBarangNilai,
       );
-      if (id == null) return;
-      final detail = await AppDatabase.instance.recordDetail(id);
+    } catch (error) {
+      if (mounted) {
+        showSnack(context, 'Gagal menyimpan: $error', error: true);
+      }
+      if (mounted) setState(() => _saving = false);
+      return;
+    }
+    if (id == null) {
+      if (mounted) setState(() => _saving = false);
+      return;
+    }
+    // Nota sudah tersimpan. Kegagalan setelah titik ini tidak boleh
+    // dilaporkan sebagai gagal simpan.
+    try {
       AppState.instance.touch();
       FollowupService.instance.scheduleSync();
       await _load();
@@ -523,10 +563,25 @@ class _PosScreenState extends State<PosScreen> {
         _unitDitinggal = false;
         _jatuhTempo = null;
       });
+    } catch (error) {
+      if (mounted) {
+        showSnack(
+          context,
+          'Nota tersimpan, tetapi daftar gagal dimuat ulang: $error',
+          error: true,
+        );
+      }
+    }
+    try {
+      final detail = await AppDatabase.instance.recordDetail(id);
       if (detail != null) await _showReceipt(detail);
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal menyimpan: $error', error: true);
+        showSnack(
+          context,
+          'Nota tersimpan, tetapi struk gagal dibuka: $error',
+          error: true,
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -543,6 +598,7 @@ class _PosScreenState extends State<PosScreen> {
             modalCents: job.modalCents,
             jasaId: job.jasaId,
             intervalBulan: job.intervalBulan,
+            hargaTerdaftarCents: job.hargaTerdaftarCents,
           ),
         for (final part in _parts)
           EstimateItemInput(
@@ -554,6 +610,7 @@ class _PosScreenState extends State<PosScreen> {
             modalCents: part.modalCents,
             stockItemId: part.stockItemId,
             intervalBulan: part.intervalBulan,
+            hargaTerdaftarCents: part.hargaTerdaftarCents,
           ),
       ];
 
@@ -569,6 +626,9 @@ class _PosScreenState extends State<PosScreen> {
           customerId: _customerId,
           unitId: _unitId,
           items: _estimateItems(),
+          jenisTransaksi: _jenis == transactionEstimasiSaja
+              ? transactionServisLangsung
+              : _jenis,
           diskonCents: _diskonCents,
           alasanDiskon: _diskonCents > 0 ? 'Diskon estimasi' : null,
           ownerPin: ownerPin,
@@ -714,7 +774,9 @@ class _PosScreenState extends State<PosScreen> {
     final settings = _settings;
     String? ownerPin;
     String? approverSecret;
-    var asked = false;
+    // Diskon diverifikasi sebelum transaksi, limit kredit setelah total
+    // dihitung; izinkan dua permintaan PIN dalam satu simpan.
+    var approvalPrompts = 0;
     while (true) {
       try {
         return await AppDatabase.instance.createTransaction(
@@ -757,10 +819,12 @@ class _PosScreenState extends State<PosScreen> {
               SyncService.instance.enqueueCommission(commissionId, txn: txn),
         );
       } on StateError catch (error) {
-        if (asked || !error.message.contains('persetujuan')) rethrow;
+        if (approvalPrompts >= 2 || !error.message.contains('persetujuan')) {
+          rethrow;
+        }
         final secret = await _askApproval(settings);
         if (secret == null) return null;
-        asked = true;
+        approvalPrompts++;
         if (settings?.approverMode == approverEmployee) {
           approverSecret = secret;
         } else {
@@ -1303,7 +1367,7 @@ class _PosScreenState extends State<PosScreen> {
                   onTap: _pickJatuhTempo,
                   child: InputDecorator(
                     decoration: const InputDecoration(
-                      labelText: 'Jatuh tempo',
+                      labelText: 'Jatuh tempo (wajib)',
                       suffixIcon: Icon(Icons.event_outlined),
                     ),
                     child: Text(
@@ -1313,6 +1377,16 @@ class _PosScreenState extends State<PosScreen> {
                     ),
                   ),
                 ),
+                if (!AppState.instance.isOwner && !_canCredit)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Peran ini tidak berhak memberi kredit.',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
               ],
             ],
           ),
@@ -1665,6 +1739,7 @@ class _JobDialogState extends State<_JobDialog> {
                 jasaId: _catalogId,
                 modalCents: selected?.hargaModalCents ?? 0,
                 intervalBulan: selected?.intervalBulan ?? 0,
+                hargaTerdaftarCents: selected?.hargaCents ?? 0,
               ),
             );
           },

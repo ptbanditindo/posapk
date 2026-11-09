@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'app_database.dart';
 import 'receipt_template.dart';
 
-/// Pengaturan struk v2. Satu JSON di `app_settings` menggantikan 25 kunci
+/// Pengaturan struk v2. Satu JSON di `app_meta` menggantikan 25 kunci
 /// `receipt.<field>` lama. Data lama tetap dibaca sebagai migrasi satu arah.
 class ReceiptSettings {
   ReceiptSettings._();

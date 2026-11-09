@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../auth/permissions.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/access_control.dart';
@@ -117,7 +118,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
   }
 
   Future<void> _paySalary() async {
-    if (!_canManage) {
+    if (!AppState.instance.isOwner &&
+        !AppState.instance.can(permissionPaySalary)) {
       showSnack(context, 'Peran ini tidak boleh membayar gaji.', error: true);
       return;
     }
@@ -146,6 +148,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     try {
       await EmployeeService.instance.paySalary(
         selected,
+        actor: AppState.instance.requireOperator,
         bonusCents: bonus,
         enqueue: (txn, syncId) =>
             SyncService.instance.enqueueSalary(syncId, txn: txn),

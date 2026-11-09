@@ -14,6 +14,7 @@ import '../core/wa_link.dart';
 import '../sync/relay_client.dart';
 import '../sync/sync_service.dart';
 import 'app_database.dart';
+import 'feature_flags.dart';
 import 'license_service.dart';
 import 'store_settings.dart';
 
@@ -350,7 +351,7 @@ class FollowupService {
 
   Future<FollowupSettings> loadSettings() async {
     final rows = await AppDatabase.instance.db.query(
-      'app_settings',
+      'app_meta',
       columns: ['key', 'value'],
       where: "key LIKE 'ops.%'",
     );
@@ -392,6 +393,7 @@ class FollowupService {
   }
 
   Future<void> saveSettings(FollowupSettings settings) async {
+    FeatureGate.require(featureFollowup);
     if (_parseClock(settings.jamMulai) == null ||
         _parseClock(settings.jamSelesai) == null) {
       throw ArgumentError('Jam follow up tidak valid.');
@@ -421,7 +423,7 @@ class FollowupService {
     await db.transaction((txn) async {
       for (final entry in values.entries) {
         await txn.insert(
-          'app_settings',
+          'app_meta',
           {'key': entry.key, 'value': entry.value},
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
@@ -430,6 +432,7 @@ class FollowupService {
   }
 
   Future<void> syncItems({DateTime? now}) async {
+    if (!FeatureGate.enabled(featureFollowup)) return;
     final moment = now ?? DateTime.now();
     final settings = await loadSettings();
     if (!settings.aktif) return;
@@ -696,6 +699,7 @@ class FollowupService {
     String? catatan,
     DateTime? now,
   }) async {
+    FeatureGate.require(featureFollowup);
     final moment = now ?? DateTime.now();
     final settings = await loadSettings();
     if (!settings.aktif) {
@@ -750,7 +754,7 @@ class FollowupService {
     await db.transaction((txn) async {
       if (!quota.premium) {
         final currentRows = await txn.query(
-          'app_settings',
+          'app_meta',
           columns: ['value'],
           where: 'key = ?',
           whereArgs: [_quotaKey],
@@ -766,7 +770,7 @@ class FollowupService {
         }
         used = current + 1;
         await txn.insert(
-          'app_settings',
+          'app_meta',
           {'key': _quotaKey, 'value': '$used'},
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
@@ -851,6 +855,7 @@ class FollowupService {
     int? tundaHari,
     DateTime? now,
   }) async {
+    FeatureGate.require(featureFollowup);
     final settings = await loadSettings();
     if (!actor.isOwner) {
       Permissions.require(actor, 'followup');

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/money.dart';
 import '../../data/app_database.dart';
 import '../../data/feature_flags.dart';
 import '../../data/models.dart';
@@ -49,7 +50,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
     final input = await showDialog<CustomerInput>(
       context: context,
-      builder: (_) => const _CustomerDialog(),
+      builder: (_) => _CustomerDialog(
+        canSetLimit: AppState.instance.isOwner,
+      ),
     );
     if (input == null) return;
     try {
@@ -59,6 +62,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         alamat: input.alamat,
         waConsent: input.waConsent,
         doNotContact: input.doNotContact,
+        limitKreditCents: input.limitKreditCents,
         enqueue: (txn, id) =>
             SyncService.instance.enqueueCustomer(id, txn: txn),
       );
@@ -95,7 +99,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
     if (row == null || !mounted) return;
     final input = await showDialog<_CustomerEdit>(
       context: context,
-      builder: (_) => _CustomerEditDialog(customer: customer, row: row),
+      builder: (_) => _CustomerEditDialog(
+        customer: customer,
+        row: row,
+        canSetLimit: AppState.instance.isOwner,
+      ),
     );
     if (input == null) return;
     try {
@@ -106,6 +114,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
         alamat: input.alamat,
         waConsent: input.waConsent,
         doNotContact: input.doNotContact,
+        limitKreditCents:
+            AppState.instance.isOwner ? input.limitKreditCents : null,
         enqueue: (txn, id) =>
             SyncService.instance.enqueueCustomer(id, txn: txn),
       );
@@ -342,6 +352,7 @@ class CustomerInput {
     this.alamat, {
     this.waConsent = true,
     this.doNotContact = false,
+    this.limitKreditCents = 0,
   });
 
   final String nama;
@@ -349,10 +360,13 @@ class CustomerInput {
   final String? alamat;
   final bool waConsent;
   final bool doNotContact;
+  final int limitKreditCents;
 }
 
 class _CustomerDialog extends StatefulWidget {
-  const _CustomerDialog();
+  const _CustomerDialog({this.canSetLimit = false});
+
+  final bool canSetLimit;
 
   @override
   State<_CustomerDialog> createState() => _CustomerDialogState();
@@ -362,6 +376,7 @@ class _CustomerDialogState extends State<_CustomerDialog> {
   final _nama = TextEditingController();
   final _hp = TextEditingController();
   final _alamat = TextEditingController();
+  final _limit = TextEditingController();
   bool _waConsent = true;
   bool _doNotContact = false;
   String? _error;
@@ -371,6 +386,7 @@ class _CustomerDialogState extends State<_CustomerDialog> {
     _nama.dispose();
     _hp.dispose();
     _alamat.dispose();
+    _limit.dispose();
     super.dispose();
   }
 
@@ -383,6 +399,12 @@ class _CustomerDialogState extends State<_CustomerDialog> {
       setState(() => _error = 'Nomor HP wajib diisi.');
       return;
     }
+    final limitText = _limit.text.trim();
+    final limit = limitText.isEmpty ? 0 : tryParseRupiahToCents(limitText);
+    if (limit == null || limit < 0) {
+      setState(() => _error = 'Limit kredit tidak valid.');
+      return;
+    }
     Navigator.pop(
       context,
       CustomerInput(
@@ -391,6 +413,7 @@ class _CustomerDialogState extends State<_CustomerDialog> {
         _alamat.text.trim().isEmpty ? null : _alamat.text.trim(),
         waConsent: _waConsent,
         doNotContact: _doNotContact,
+        limitKreditCents: widget.canSetLimit ? limit : 0,
       ),
     );
   }
@@ -419,6 +442,17 @@ class _CustomerDialogState extends State<_CustomerDialog> {
               controller: _alamat,
               decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
             ),
+            if (widget.canSetLimit) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: _limit,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Limit kredit (Rp)',
+                  helperText: 'Kosongkan atau 0 untuk tanpa limit',
+                ),
+              ),
+            ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Setuju dihubungi via WhatsApp'),
@@ -742,6 +776,7 @@ class _CustomerEdit {
     required this.alamat,
     required this.waConsent,
     required this.doNotContact,
+    required this.limitKreditCents,
   });
 
   final String nama;
@@ -749,13 +784,19 @@ class _CustomerEdit {
   final String? alamat;
   final bool waConsent;
   final bool doNotContact;
+  final int limitKreditCents;
 }
 
 class _CustomerEditDialog extends StatefulWidget {
-  const _CustomerEditDialog({required this.customer, required this.row});
+  const _CustomerEditDialog({
+    required this.customer,
+    required this.row,
+    this.canSetLimit = false,
+  });
 
   final Customer customer;
   final Map<String, Object?> row;
+  final bool canSetLimit;
 
   @override
   State<_CustomerEditDialog> createState() => _CustomerEditDialogState();
@@ -765,6 +806,7 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
   late final TextEditingController _nama;
   late final TextEditingController _hp;
   late final TextEditingController _alamat;
+  late final TextEditingController _limit;
   late bool _waConsent;
   late bool _doNotContact;
   String? _error;
@@ -775,6 +817,10 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
     _nama = TextEditingController(text: widget.customer.nama);
     _hp = TextEditingController(text: widget.customer.nomorHp);
     _alamat = TextEditingController(text: widget.customer.alamat ?? '');
+    final limit = (widget.row['limit_kredit_cents'] as num?)?.toInt() ?? 0;
+    _limit = TextEditingController(
+      text: limit > 0 ? formatRupiahPlain(limit) : '',
+    );
     _waConsent = widget.row['wa_consent'] != 0;
     _doNotContact = widget.row['do_not_contact'] == 1;
   }
@@ -784,6 +830,7 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
     _nama.dispose();
     _hp.dispose();
     _alamat.dispose();
+    _limit.dispose();
     super.dispose();
   }
 
@@ -811,6 +858,17 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
               controller: _alamat,
               decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
             ),
+            if (widget.canSetLimit) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: _limit,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Limit kredit (Rp)',
+                  helperText: 'Kosongkan atau 0 untuk tanpa limit',
+                ),
+              ),
+            ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Setuju dihubungi via WhatsApp'),
@@ -844,6 +902,13 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
               setState(() => _error = 'Nama dan nomor HP wajib diisi.');
               return;
             }
+            final limitText = _limit.text.trim();
+            final limit =
+                limitText.isEmpty ? 0 : tryParseRupiahToCents(limitText);
+            if (limit == null || limit < 0) {
+              setState(() => _error = 'Limit kredit tidak valid.');
+              return;
+            }
             Navigator.pop(
               context,
               _CustomerEdit(
@@ -853,6 +918,7 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
                     _alamat.text.trim().isEmpty ? null : _alamat.text.trim(),
                 waConsent: _waConsent,
                 doNotContact: _doNotContact,
+                limitKreditCents: limit,
               ),
             );
           },

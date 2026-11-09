@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_log.dart';
 import 'app_database.dart';
 import 'login_guard.dart';
 import 'session_service.dart';
@@ -36,6 +37,19 @@ class PinService {
   /// [executor] dipakai saat verifikasi berjalan di dalam transaksi agar
   /// pembacaan lockout memakai koneksi transaksi yang sama.
   Future<PinVerification> verifyDetailed(
+    String pin, {
+    DatabaseExecutor? executor,
+  }) async {
+    final result = await _verifyDetailed(pin, executor: executor);
+    AppLog.instance.event(
+      LogCategory.auth,
+      'pin.verify',
+      data: {'result': result.name},
+    );
+    return result;
+  }
+
+  Future<PinVerification> _verifyDetailed(
     String pin, {
     DatabaseExecutor? executor,
   }) async {
@@ -91,7 +105,7 @@ class PinService {
   Future<String?> _setting(String key, DatabaseExecutor? executor) async {
     if (executor == null) return AppDatabase.instance.getSetting(key);
     final rows = await executor.query(
-      'app_settings',
+      'app_meta',
       columns: ['value'],
       where: 'key = ?',
       whereArgs: [key],
@@ -100,7 +114,7 @@ class PinService {
     return rows.isEmpty ? null : rows.first['value'] as String?;
   }
 
-  Future<void> setup(String pin) async {
+  Future<void> setup(String pin, {SessionProfile? profile}) async {
     final clean = pin.trim();
     if (!RegExp(r'^\d+$').hasMatch(clean)) {
       throw ArgumentError('PIN hanya boleh berisi angka.');
@@ -109,6 +123,9 @@ class PinService {
       throw ArgumentError('PIN baru minimal $ownerPinMinLength digit.');
     }
     await _store(clean);
+    if (profile != null) {
+      await SessionService.instance.savePinIdentity(profile);
+    }
     await LoginGuard.clear(ownerGuardScope);
   }
 
@@ -144,7 +161,7 @@ class PinService {
       await AppDatabase.instance.setSetting(key, value);
       return;
     }
-    await executor.insert('app_settings', {
+    await executor.insert('app_meta', {
       'key': key,
       'value': value,
     }, conflictAlgorithm: ConflictAlgorithm.replace);

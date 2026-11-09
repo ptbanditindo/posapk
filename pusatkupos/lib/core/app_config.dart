@@ -6,6 +6,13 @@ const String serviceBaseUrl = String.fromEnvironment(
   defaultValue: '',
 );
 
+/// Versi aplikasi untuk diagnostik. Dapat ditimpa saat build dengan
+/// `--dart-define=APP_VERSION=...`; nilai bawaan mengikuti pubspec.
+const String appVersion = String.fromEnvironment(
+  'APP_VERSION',
+  defaultValue: '1.0.0+1',
+);
+
 bool get serviceConfigured => serviceBaseUrl.trim().isNotEmpty;
 
 String get normalizedServiceUrl {
