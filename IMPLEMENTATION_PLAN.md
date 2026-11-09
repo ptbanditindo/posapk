@@ -73,6 +73,36 @@ penjualan diblokir; jika sync belum selesai, kasir tetap dapat menjual selama
 stok lokal cukup. Banner 24 jam adalah peringatan agar data segera dikirim,
 bukan tombol berhenti operasi.
 
+### 1.2 Batas Gratis dan Premium
+
+Operasi offline sepenuhnya gratis. Premium membayar layanan server, bukan akses
+ke data lokal atau fitur kasir dasar.
+
+| Kemampuan | Gratis | Premium |
+|---|---|---|
+| Jual, servis, order, retur, void, cetak | ya | ya |
+| Stok masuk/keluar/opname dan izin per peran | ya | ya |
+| Riwayat lokal dan laporan | ya | ya |
+| Akun lokal: kasir, gudang, supervisor, mekanik, viewer | ya | ya |
+| Backup/restore lokal | ya | ya |
+| Satu toko | ya | ya |
+| Sync multi-perangkat | tidak | ya |
+| Arsip VPS, pencarian server, recovery cloud | tidak | ya |
+| Multi-toko | tidak | ya |
+| Follow up otomatis | kuota terbatas | tanpa batas |
+
+Aturan:
+
+1. Tidak ada cek lisensi di jalur lokal: buka aplikasi, jual, stok, opname,
+   cetak, riwayat, dan backup tetap jalan tanpa server.
+2. Lisensi hanya diperiksa oleh sync, arsip, pencarian server, pairing
+   perangkat, dan multi-toko.
+3. Jika premium berakhir, data lokal tetap dapat dibuka dan dipakai. Sync dan
+   arsip berhenti; tidak ada logout paksa atau penghapusan data.
+4. Akun gratis tanpa arsip tidak boleh dipurge otomatis. Riwayat lokal tetap
+   ada sampai pengguna mengekspor atau memilih hapus sendiri.
+5. Data pengguna gratis harus dapat diekspor tanpa membayar.
+
 ---
 
 ## 2. Keputusan Final
@@ -103,6 +133,7 @@ service/UI, bukan arah arsitektur.
 | D18 | Schema ditulis ulang sebagai baseline, tanpa rantai migrasi | Pemilik | Database dev lama di-backup lalu dibuat ulang sebelum rilis |
 | D19 | Deteksi konektivitas memakai event jaringan (`connectivity_plus`) + health check relay; fallback periodik ringan 15 menit | Default kerja | Event jaringan saja tidak dianggap online sampai health check relay berhasil |
 | D20 | Tidak ada polling 60 detik; commit dibatch dengan debounce 3 detik dan sync hanya saat foreground | Default kerja | Offline minimal 24 jam tetap aman; baterai dan relay tidak dibebani sync terus-menerus |
+| D21 | Seluruh operasi offline gratis; premium hanya untuk layanan server (sync, arsip, pencarian server, multi-perangkat, multi-toko) | Pemilik | Tidak ada cek lisensi di jalur lokal; akun karyawan dan peran lokal harus gratis |
 
 Default D12, D14, D15, D16, D19, dan D20 boleh diubah setelah dokumen ini
 disetujui. Perubahan tersebut tidak membatalkan D1–D11 dan tidak memerlukan
@@ -311,6 +342,9 @@ Aturan:
    dibaca.
 9. "Selamanya" hanya sah jika ada snapshot penyedia + salinan offsite dan uji
    restore. Satu VPS penyimpanan tanpa backup bukan arsip permanen.
+10. Akun gratis tanpa arsip tidak pernah dipurge otomatis. Tanpa receipt
+    arsip, riwayat lokal dipertahankan; pengguna dapat mengekspor atau menghapus
+    sendiri dengan konfirmasi.
 
 ### 3.7 Kunci dan Recovery
 
@@ -591,7 +625,7 @@ pulih otomatis saat jaringan kembali—tanpa menuntut sync terus-menerus.
 | F7-2 | Skema arsip (#9) | Tabel `archive_documents`, `archive_index_tokens`, `archive_receipts`, `archive_envelopes` | Skema immutable; tidak ada kolom plaintext | F7-1 |
 | F7-3 | API arsip (#10) | Upload/receipt/search/get; token relay; tanpa delete | Upload idempoten; token tidak bisa menghapus | F7-2 |
 | F7-4 | ArchiveClient (#11) | Base URL arsip, token, retry, simpan receipt | Upload tidak memblokir jual/sync | F7-3 |
-| F7-5 | Purge bertahap (#40) | `purge_service.dart`: umur + receipt + ack + outbox kosong; audit | Purge hanya setelah arsip terverifikasi | F7-4 |
+| F7-5 | Purge bertahap (#40) | `purge_service.dart`: umur + receipt + ack + outbox kosong; audit; tanpa arsip tidak ada purge | Purge hanya setelah arsip terverifikasi; akun gratis tanpa arsip tidak kehilangan riwayat | F7-4 |
 | F7-6 | Uji e2e arsip (#12) | Dua layanan terpisah; backlog, duplikat, search, arsip mati, purge tertahan | Semua skenario lulus | F7-5 |
 | F7-7 | Durabilitas arsip (#48) | Snapshot penyedia + offsite + uji restore; RPO/RTO | Kerusakan satu VPS tidak menghapus arsip | F7-2 |
 | F7-8 | Pencarian arsip & riwayat (#54 baru) | Tombol "Cari di server", paginasi, dekripsi lokal, tampilan struk | Nota 2 tahun ditemukan saat online | F7-4 |
@@ -609,6 +643,7 @@ pulih otomatis saat jaringan kembali—tanpa menuntut sync terus-menerus.
 | F8-6 | PIN & DB desktop (baru) | Hapus hash PIN dari `app_meta`; SQLCipher/BitLocker + ACL | DB desktop tidak plaintext | F1 |
 | F8-7 | Viewer & role (baru) | `runViewerWrite` dikunci; `role_base=owner` divalidasi; katalog berizin | Viewer tidak bisa menulis; role tidak escalates | F1 |
 | F8-8 | Uji recovery (baru) | Google hilang, perangkat hilang, akun diambil alih, rotasi | Semua jalur recovery terbukti | F8-1 |
+| F8-9 | Akun lokal gratis (baru) | `account_service.dart`: hapus gate premium untuk akun karyawan dan peran lokal; gate premium hanya untuk sync/arsip/pairing/multi-toko | Toko gratis dapat memakai kasir, gudang, supervisor, dan mekanik tanpa lisensi server | F4-7 |
 
 ### F9 — Error & Recovery
 
@@ -758,7 +793,7 @@ terlewat.
 | Transaksi/harga | `lib/data/app_database.dart`, `lib/data/price_rules.dart`, `lib/data/models.dart`, `lib/ui/screens/pos_screen.dart` |
 | Pajak/laporan | `lib/data/pajak.dart`, `lib/data/nota_adjustment_service.dart`, layar laporan |
 | Stok | `lib/data/stock_ledger.dart`, `lib/data/opname_service.dart`, `lib/data/sale_return_service.dart`, `lib/ui/screens/stock_screen.dart` |
-| Izin/peran | `lib/auth/permissions.dart`, `lib/auth/operator.dart`, `lib/data/access_control.dart`, `lib/data/store_settings.dart` |
+| Izin/peran | `lib/auth/permissions.dart`, `lib/auth/operator.dart`, `lib/data/access_control.dart`, `lib/data/account_service.dart`, `lib/data/store_settings.dart` |
 | Sync | `lib/sync/sync_service.dart`, `lib/sync/sync_scheduler.dart`, `lib/sync/sync_conflict_rules.dart`, `lib/sync/relay_client.dart`, `lib/sync/crypto.dart` |
 | Offline/backup | `lib/ui/entry_gate.dart`, `lib/data/backup_service.dart`, `lib/ui/home_shell.dart` |
 | E2EE/identitas | `lib/data/google_auth_service.dart`, `lib/data/session_service.dart`, `lib/data/secure_store.dart` |
@@ -801,6 +836,8 @@ terlewat.
 | Opname basi karena izin stok masuk/keluar dipegang peran lain | Opname absolut + HLC + konflik; jangan mengandalkan asumsi satu penulis (F4-1) |
 | Payload arsip tidak lengkap | Kontrak payload + uji komisi/penyesuaian (F7-1) |
 | Storage tumbuh selamanya | Kuota, monitoring, rencana ekspansi (F7-9) |
+| Akun gratis tanpa arsip kehilangan riwayat | Purge hanya dengan receipt; tanpa arsip tidak pernah purge (F7-5) |
+| Offline gratis menurunkan konversi premium | Premium dijual lewat sync, arsip, multi-perangkat, dan multi-toko; data lokal tidak dikunci (D21) |
 | Reset schema menghapus DB dev | Backup wajib sebelum upgrade; hanya selama belum ada pengguna produksi |
 | Kunci hilang | Google + admin offline key + uji recovery (F8-1/F8-8) |
 | Laporan lama tidak dapat direkonsiliasi setelah purge | Arsip + pencarian + dekripsi lokal (F7-8) |
@@ -824,3 +861,5 @@ Satu putaran implementasi dinyatakan selesai jika:
 6. Riwayat 1 tahun lokal + pencarian 2 tahun via arsip bekerja.
 7. Semua default di §2 tercatat; jika ada yang diubah, dokumen ini diperbarui
    sebelum kode berubah.
+8. Batas §1.2 terbukti: operasi offline gratis tanpa cek lisensi; premium hanya
+   untuk sync, arsip, pencarian server, multi-perangkat, dan multi-toko.
