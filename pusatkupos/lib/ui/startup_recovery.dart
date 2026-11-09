@@ -5,11 +5,14 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/startup.dart';
+import '../core/startup_diagnosis.dart';
 import '../data/app_database.dart';
 import '../data/backup_platform_stub.dart'
     if (dart.library.io) '../data/backup_platform_io.dart'
     as backup_platform;
 import '../data/backup_service.dart';
+import '../data/pin_service.dart';
+import '../data/session_service.dart';
 import '../state/app_state.dart';
 import 'theme.dart';
 
@@ -85,6 +88,12 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
     final needsPass = await BackupService.instance.needsPassphrase(path);
     final passphrase = await _askPassphrase(needsPass);
     if (passphrase == null || !mounted) return;
+    // Autentikasi owner sebelum menyentuh database (D22). PIN di secure store
+    // dapat diperiksa tanpa membuka database; PIN gaya lama baru dapat dicek
+    // setelah database dibuka.
+    final securePin = await SessionService.instance.readPin() != null;
+    if (securePin && !await _verifyOwnerPin()) return;
+    if (!mounted) return;
     setState(() => _busy = true);
     // Restore membutuhkan database yang dapat dibuka untuk membaca pengaturan
     // lama. Database rusak dikarantina lebih dulu, bukan dihapus.
@@ -96,6 +105,14 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
         _busy = false;
       });
       return;
+    }
+    if (!securePin && await PinService.instance.isConfigured()) {
+      final verified = await _verifyOwnerPin();
+      if (!mounted) return;
+      if (!verified) {
+        setState(() => _busy = false);
+        return;
+      }
     }
     final result = await BackupService.instance.restoreBackup(
       path: path,
@@ -157,6 +174,76 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
     return value;
   }
 
+  /// Restore lokal wajib melewati autentikasi pemilik. Pemulihan tanpa PIN
+  /// hanya berlaku bila perangkat memang belum pernah memiliki PIN.
+  Future<bool> _verifyOwnerPin() async {
+    if (!mounted) return false;
+    final controller = TextEditingController();
+    String? error;
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('Konfirmasi pemilik'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Pulihkan backup mengganti seluruh data lokal. Masukkan PIN '
+                'pemilik untuk melanjutkan.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'PIN pemilik',
+                  errorText: error,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.isEmpty) {
+                  setLocal(() => error = 'Masukkan PIN pemilik.');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+              child: const Text('Lanjut'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    if (pin == null) return false;
+    final result = await PinService.instance.verifyDetailed(pin);
+    if (result == PinVerification.ok ||
+        result == PinVerification.weakLegacyPin) {
+      return true;
+    }
+    if (!mounted) return false;
+    final message = switch (result) {
+      PinVerification.locked => 'Terlalu banyak percobaan. Coba lagi nanti.',
+      PinVerification.wrong => 'PIN pemilik salah.',
+      _ => 'PIN pemilik tidak dapat diverifikasi.',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+    return false;
+  }
+
   Future<void> _exportRawDatabase() async {
     try {
       final db = AppDatabase.instance;
@@ -195,6 +282,7 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
 
   @override
   Widget build(BuildContext context) {
+    final diagnosis = diagnoseStartupError(_error);
     return MaterialApp(
       title: 'PusatkuPOS',
       debugShowCheckedModeBanner: false,
@@ -235,6 +323,39 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 16),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: scheme.errorContainer,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Diagnosis awal',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(
+                                        color: scheme.onErrorContainer,
+                                      ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  diagnosis.cause,
+                                  style: TextStyle(color: scheme.onErrorContainer),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  diagnosis.action,
+                                  style: TextStyle(color: scheme.onErrorContainer),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(12),

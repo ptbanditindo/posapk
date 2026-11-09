@@ -1,33 +1,37 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/widgets.dart';
 
 import '../core/app_config.dart';
 import '../data/license_service.dart';
+import '../data/period_closing_service.dart';
+import '../data/purge_service.dart';
 import '../data/reconciliation_service.dart';
 import '../data/restore_lock.dart';
+import 'archive_service.dart';
+import 'compensation_service.dart';
 import 'sync_service.dart';
 
 /// Sinkronisasi otomatis selama aplikasi berjalan.
 ///
-/// Tanpa paket konektivitas tambahan, penggantinya adalah pemeriksaan berkala
-/// yang juga berfungsi sebagai percobaan ulang saat koneksi kembali, ditambah
-/// percobaan langsung ketika aplikasi kembali ke depan atau ditutup.
-/// `SyncService.syncNow` memegang kunci tunggal, jadi pemanggilan bersamaan
-/// aman.
+/// Perubahan lokal memicu `requestSync` dengan debounce 3 detik sehingga
+/// beberapa perubahan berdekatan terkirim sebagai satu putaran. Sebagai
+/// jaring pengaman, saat aplikasi di depan tetap ada percobaan ringan setiap
+/// 15 menit dan setiap kembali ke depan. Tidak ada timer yang berjalan saat
+/// aplikasi di belakang.
 class SyncScheduler with WidgetsBindingObserver {
   SyncScheduler._();
 
   static final SyncScheduler instance = SyncScheduler._();
 
-  static const defaultIntervalMinutes = 15;
-  static const minIntervalMinutes = 10;
-  static const maxIntervalMinutes = 20;
+  static const fallbackInterval = Duration(minutes: 15);
+  static const debounceDelay = Duration(seconds: 3);
 
-  Timer? _timer;
+  Timer? _fallbackTimer;
+  Timer? _debounceTimer;
   bool _started = false;
   bool _running = false;
+  bool _foreground = true;
   Completer<void>? _tickDone;
 
   bool get isStarted => _started;
@@ -43,20 +47,13 @@ class SyncScheduler with WidgetsBindingObserver {
       // Alasan gagal sudah dicatat di `sync.last_error`.
     }
   }
-  DateTime? _lastAttempt;
-  Duration _interval = const Duration(minutes: defaultIntervalMinutes);
 
   void start() {
     if (_started) return;
     _started = true;
+    _foreground = true;
     WidgetsBinding.instance.addObserver(this);
-    configuredInterval().then((value) {
-      if (!_started) return;
-      _interval = value;
-      _scheduleNext();
-    }).catchError((Object _) {
-      if (_started) _scheduleNext();
-    });
+    _scheduleFallback();
     tick();
   }
 
@@ -64,39 +61,35 @@ class SyncScheduler with WidgetsBindingObserver {
     if (!_started) return;
     _started = false;
     WidgetsBinding.instance.removeObserver(this);
-    _timer?.cancel();
-    _timer = null;
+    _fallbackTimer?.cancel();
+    _fallbackTimer = null;
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
   }
 
-  /// Selang 10-20 menit yang ditentukan pemilik, ditambah jitter ±1-2 menit.
-  Future<Duration> configuredInterval() async {
-    final raw = await SyncService.instance.setting('sync.interval_minutes');
-    final minutes =
-        (int.tryParse(raw ?? '') ?? defaultIntervalMinutes).clamp(
-      minIntervalMinutes,
-      maxIntervalMinutes,
-    );
-    return Duration(minutes: minutes);
+  /// Dipanggil setelah perubahan lokal masuk outbox. Beberapa panggilan
+  /// berdekatan digabung menjadi satu putaran sinkronisasi.
+  void requestSync() {
+    if (!_started || !_foreground) return;
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(debounceDelay, () {
+      _debounceTimer = null;
+      if (!_started || !_foreground) return;
+      tick(force: true);
+    });
   }
 
-  void _scheduleNext() {
-    _timer?.cancel();
-    final random = Random();
-    final jitterSeconds = (random.nextBool() ? 1 : -1) *
-        (60 + random.nextInt(61));
-    final jitter = Duration(seconds: jitterSeconds);
-    _timer = Timer(_interval + jitter, () async {
+  void _scheduleFallback() {
+    _fallbackTimer?.cancel();
+    _fallbackTimer = null;
+    if (!_started || !_foreground) return;
+    _fallbackTimer = Timer(fallbackInterval, () async {
+      _fallbackTimer = null;
+      if (!_started || !_foreground) return;
       try {
         await tick(force: true);
       } finally {
-        if (_started) {
-          try {
-            _interval = await configuredInterval();
-          } catch (_) {
-            // Pakai interval terakhir bila pengaturan belum dapat dibaca.
-          }
-          _scheduleNext();
-        }
+        if (_started && _foreground) _scheduleFallback();
       }
     });
   }
@@ -104,24 +97,28 @@ class SyncScheduler with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _foreground = true;
+      _scheduleFallback();
       tick(force: true);
-    } else if (state == AppLifecycleState.paused ||
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
-      // Satu sinkronisasi terakhir saat aplikasi ditutup atau shift berakhir.
-      tick(force: true);
+      // Tanpa sinkronisasi latar belakang: hentikan semua timer.
+      _foreground = false;
+      _fallbackTimer?.cancel();
+      _fallbackTimer = null;
+      _debounceTimer?.cancel();
+      _debounceTimer = null;
     }
   }
 
   Future<void> tick({bool force = false}) async {
+    if (!_foreground && !force) return;
     if (_running || RestoreLock.instance.isRestoring) return;
-    final now = DateTime.now();
-    if (!force &&
-        _lastAttempt != null &&
-        now.difference(_lastAttempt!) < _interval) {
-      return;
-    }
     _running = true;
-    _lastAttempt = now;
     final done = Completer<void>();
     _tickDone = done;
     try {
@@ -137,11 +134,17 @@ class SyncScheduler with WidgetsBindingObserver {
           token.isEmpty) {
         return;
       }
+      await CompensationService.instance.processPending();
       await ReconciliationService.instance.publishRecent(
         enqueue: (txn, syncId) =>
             SyncService.instance.enqueueDayDigest(syncId, txn: txn),
       );
       await SyncService.instance.syncNow();
+      // Arsip berjalan setelah sync dan tidak menahan penjualan; kegagalan
+      // arsip hanya tercatat per dokumen.
+      await ArchiveService.instance.processPending();
+      await PeriodClosingService.instance.maybeAutoClose();
+      await PurgeService.instance.run();
     } catch (_) {
       // Pesan tersimpan di `sync.last_error`; periode berikutnya mencoba lagi.
     } finally {

@@ -139,6 +139,49 @@ Future<List<int>> _deriveKey(List<int> shared) async {
   return key.extractBytes();
 }
 
+/// Kunci escrow per toko. Master recovery key admin tidak pernah menyimpan
+/// kunci toko secara langsung; setiap toko diturunkan dengan `store_id`
+/// sehingga satu pembukaan escrow tidak otomatis membuka toko lain.
+Future<List<int>> deriveEscrowStoreKey(
+  List<int> masterKey,
+  String storeId,
+) async {
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+  final key = await hkdf.deriveKey(
+    secretKey: SecretKey(masterKey),
+    nonce: const <int>[],
+    info: utf8.encode('pusatkupos-escrow-store-v1:$storeId'),
+  );
+  return key.extractBytes();
+}
+
+/// Kunci indeks pencarian arsip. Diturunkan dari store key dengan label
+/// terpisah sehingga relay tidak dapat memakai token untuk hal lain.
+Future<List<int>> deriveSearchKey(List<int> storeKey) async {
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+  final key = await hkdf.deriveKey(
+    secretKey: SecretKey(storeKey),
+    nonce: const <int>[],
+    info: utf8.encode('pusatkupos-search-v1'),
+  );
+  return key.extractBytes();
+}
+
+/// Normalisasi nilai pencarian: huruf/angka saja, huruf besar. Nomor nota
+/// `INV/2026/0001` dan `inv-2026-0001` menghasilkan token yang sama.
+String normalizeSearchValue(String raw) =>
+    raw.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+/// Token HMAC blind index. `kind` memisahkan ruang token nota, nama, dan
+/// nopol sehingga nilai yang kebetulan sama tidak saling cocok.
+String searchToken(List<int> searchKey, String kind, String value) {
+  final normalized = normalizeSearchValue(value);
+  if (normalized.isEmpty) return '';
+  final mac = crypto.Hmac(crypto.sha256, searchKey)
+      .convert(utf8.encode('$kind:$normalized'));
+  return b64e(mac.bytes);
+}
+
 Future<(String, String)> encryptPayload(
   List<int> key,
   List<int> plaintext,

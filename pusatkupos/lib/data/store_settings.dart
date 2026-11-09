@@ -111,6 +111,7 @@ class StoreSettings {
     this.pajakMode = pajakModeEksklusif,
     this.pajakPersenBp = pajakPersenBpDefault,
     this.pajakPenanggung = pajakPenanggungPembeli,
+    this.zonaWaktu = zonaWaktuDefault,
     this.syncHlcWall = 0,
     this.syncHlcCounter = 0,
   });
@@ -144,6 +145,7 @@ class StoreSettings {
   final String pajakMode;
   final int pajakPersenBp;
   final String pajakPenanggung;
+  final String zonaWaktu;
 
   final int syncHlcWall;
   final int syncHlcCounter;
@@ -263,6 +265,7 @@ class StoreSettings {
         'pajak_mode': pajakMode,
         'pajak_persen_bp': pajakPersenBp,
         'pajak_penanggung': pajakPenanggung,
+        'zona_waktu': zonaWaktu,
         'updated_at': nowIso(),
       };
 
@@ -287,6 +290,7 @@ class StoreSettings {
             (row['pajak_persen_bp'] as num?)?.toInt() ?? pajakPersenBpDefault,
         pajakPenanggung:
             row['pajak_penanggung'] as String? ?? pajakPenanggungPembeli,
+        zonaWaktu: row['zona_waktu'] as String? ?? zonaWaktuDefault,
         syncHlcWall: (row['sync_hlc_wall'] as num?)?.toInt() ?? 0,
         syncHlcCounter: (row['sync_hlc_counter'] as num?)?.toInt() ?? 0,
       );
@@ -387,7 +391,9 @@ class StoreSettingsService {
     final target = executor ?? AppDatabase.instance.db;
     final rows = await target.query('store_settings', limit: 1);
     if (rows.isEmpty) return null;
-    return StoreSettings.fromRow(rows.first);
+    final settings = StoreSettings.fromRow(rows.first);
+    setZonaWaktuToko(settings.zonaWaktu);
+    return settings;
   }
 
   Future<StoreSettings> ensure({DatabaseExecutor? executor}) async {
@@ -419,6 +425,7 @@ class StoreSettingsService {
         'pajak_mode': settings.pajakMode,
         'pajak_persen_bp': settings.pajakPersenBp,
         'pajak_penanggung': settings.pajakPenanggung,
+        'zona_waktu': settings.zonaWaktu,
         'created_at': now,
         'updated_at': now,
       },
@@ -471,6 +478,7 @@ class StoreSettingsService {
           'pajak_mode': settings.pajakMode,
           'pajak_persen_bp': settings.pajakPersenBp,
           'pajak_penanggung': settings.pajakPenanggung,
+          'zona_waktu': settings.zonaWaktu,
           'sync_hlc_wall': hlc.wall,
           'sync_hlc_counter': hlc.counter,
           'updated_at': nowIso(),
@@ -583,6 +591,7 @@ class StoreSettingsService {
       'pajak_mode': incomingPajak.mode,
       'pajak_persen_bp': incomingPajak.persenBp,
       'pajak_penanggung': incomingPajak.penanggung,
+      'zona_waktu': payload['zona_waktu'] ?? zonaWaktuDefault,
       'sync_hlc_wall': wall,
       'sync_hlc_counter': counter,
       'updated_at': payload['updated_at'] ?? nowIso(),
@@ -601,6 +610,9 @@ class StoreSettingsService {
         where: 'store_id = ?',
         whereArgs: [storeId],
       );
+    }
+    if (storeId == AppDatabase.instance.activeStoreId) {
+      setZonaWaktuToko('${values['zona_waktu']}');
     }
   }
 }

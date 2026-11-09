@@ -30,8 +30,8 @@ class PinService {
   Future<bool> isConfigured() async {
     final session = await SessionService.instance.readPin();
     if (session != null) return true;
-    final hash = await AppDatabase.instance.getSetting('auth.pin_hash');
-    return hash != null && hash.isNotEmpty;
+    await _migrateLegacy();
+    return await SessionService.instance.readPin() != null;
   }
 
   /// [executor] dipakai saat verifikasi berjalan di dalam transaksi agar
@@ -61,57 +61,26 @@ class PinService {
     }
     final session = await SessionService.instance.readPin();
     if (session != null) {
-      final valid =
-          await _derive(
-            pin,
-            session.salt,
-            session.iterations <= 0 ? pinIterations : session.iterations,
-          ) ==
-          session.hash;
+      final valid = session.iterations <= 0
+          ? _legacyHash(session.salt, pin) == session.hash
+          : await _derive(pin, session.salt, session.iterations) ==
+              session.hash;
       if (!valid) {
         await LoginGuard.fail(ownerGuardScope, executor: executor);
         return PinVerification.wrong;
       }
       await LoginGuard.clear(ownerGuardScope, executor: executor);
+      if (session.iterations <= 0 || session.iterations < pinIterations) {
+        await _store(pin);
+      }
       return pin.trim().length < ownerPinMinLength
           ? PinVerification.weakLegacyPin
           : PinVerification.ok;
     }
-    final salt = await _setting('auth.pin_salt', executor);
-    final hash = await _setting('auth.pin_hash', executor);
-    if (salt == null || salt.isEmpty || hash == null || hash.isEmpty) {
-      return PinVerification.wrong;
-    }
-    final storedIterations = int.tryParse(
-      await _setting('auth.pin_iterations', executor) ?? '',
-    );
-    final legacy = storedIterations == null;
-    final valid = legacy
-        ? _legacyHash(salt, pin) == hash
-        : await _derive(pin, salt, storedIterations) == hash;
-    if (!valid) {
-      await LoginGuard.fail(ownerGuardScope, executor: executor);
-      return PinVerification.wrong;
-    }
-    await LoginGuard.clear(ownerGuardScope, executor: executor);
-    if (legacy || storedIterations < pinIterations) {
-      await _store(pin, executor: executor);
-    }
-    return pin.trim().length < ownerPinMinLength
-        ? PinVerification.weakLegacyPin
-        : PinVerification.ok;
-  }
-
-  Future<String?> _setting(String key, DatabaseExecutor? executor) async {
-    if (executor == null) return AppDatabase.instance.getSetting(key);
-    final rows = await executor.query(
-      'app_meta',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: [key],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first['value'] as String?;
+    await _migrateLegacy();
+    final migrated = await SessionService.instance.readPin();
+    if (migrated == null) return PinVerification.wrong;
+    return _verifyDetailed(pin, executor: executor);
   }
 
   Future<void> setup(String pin, {SessionProfile? profile}) async {
@@ -137,34 +106,37 @@ class PinService {
 
   Future<void> clear() async {
     await SessionService.instance.clearPin();
+    await _deleteLegacySettings();
+  }
+
+  Future<void> _store(String pin) async {
+    final salt = _newSalt();
+    final hash = await _derive(pin, salt, pinIterations);
+    await SessionService.instance.savePin(hash, salt, pinIterations);
+    await _deleteLegacySettings();
+  }
+
+  /// Versi lama menyimpan hash PIN di `app_meta`, yang ikut backup dan
+  /// terbaca pada database desktop tanpa enkripsi. Pindahkan ke secure
+  /// storage lalu hapus salinannya.
+  Future<void> _migrateLegacy() async {
+    final db = AppDatabase.instance;
+    final salt = await db.getSetting('auth.pin_salt');
+    final hash = await db.getSetting('auth.pin_hash');
+    if (salt == null || salt.isEmpty || hash == null || hash.isEmpty) return;
+    final iterations = int.tryParse(
+          await db.getSetting('auth.pin_iterations') ?? '',
+        ) ??
+        0;
+    await SessionService.instance.savePin(hash, salt, iterations);
+    await _deleteLegacySettings();
+  }
+
+  Future<void> _deleteLegacySettings() async {
     final db = AppDatabase.instance;
     await db.deleteSetting('auth.pin_salt');
     await db.deleteSetting('auth.pin_hash');
     await db.deleteSetting('auth.pin_iterations');
-  }
-
-  Future<void> _store(String pin, {DatabaseExecutor? executor}) async {
-    final salt = _newSalt();
-    final hash = await _derive(pin, salt, pinIterations);
-    await SessionService.instance.savePin(hash, salt, pinIterations);
-    await _writeSetting('auth.pin_salt', salt, executor);
-    await _writeSetting('auth.pin_hash', hash, executor);
-    await _writeSetting('auth.pin_iterations', '$pinIterations', executor);
-  }
-
-  Future<void> _writeSetting(
-    String key,
-    String value,
-    DatabaseExecutor? executor,
-  ) async {
-    if (executor == null) {
-      await AppDatabase.instance.setSetting(key, value);
-      return;
-    }
-    await executor.insert('app_meta', {
-      'key': key,
-      'value': value,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   String _newSalt() {

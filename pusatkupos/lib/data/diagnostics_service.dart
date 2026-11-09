@@ -87,6 +87,10 @@ class DiagnosticsService {
     } catch (_) {
       // Backup otomatis tidak tersedia di platform ini.
     }
+    final duplicates = await _duplicates(db);
+    final stockDifferences = await _stockDifferences(db);
+    final cashDifferences = await _cashDifferences(db);
+    final negativeStock = await _negativeStock(db);
     return {
       'dibuat_pada': nowIso(),
       'versi_aplikasi': appVersion,
@@ -136,8 +140,145 @@ class DiagnosticsService {
             },
           )
           .toList(),
+      'integritas': {
+        'duplikat': duplicates,
+        'stok_selisih': stockDifferences,
+        'kas_selisih': cashDifferences,
+        'stok_negatif': negativeStock,
+      },
       'log_terakhir': _recentLogs(),
     };
+  }
+
+  /// Laporan duplikat sebelum unique index (F1-2). Pada skema baru kolom
+  /// kuncinya sudah unik; laporan ini menangkap sisa data lama.
+  Future<List<Map<String, Object?>>> _duplicates(DatabaseExecutor db) async {
+    const queries = <String, String>{
+      'service_records.no_nota':
+          "SELECT no_nota AS kunci, COUNT(*) AS jumlah, GROUP_CONCAT(id) AS ids "
+              'FROM service_records WHERE deleted_at IS NULL '
+              "AND no_nota <> '' GROUP BY no_nota HAVING COUNT(*) > 1",
+      'service_payments.request_id':
+          "SELECT request_id AS kunci, COUNT(*) AS jumlah, "
+              'GROUP_CONCAT(id) AS ids FROM service_payments '
+              "WHERE request_id <> '' GROUP BY request_id HAVING COUNT(*) > 1",
+      'sync_outbox.idempotency_key':
+          'SELECT idempotency_key AS kunci, COUNT(*) AS jumlah, '
+              'GROUP_CONCAT(id) AS ids FROM sync_outbox '
+              'GROUP BY idempotency_key HAVING COUNT(*) > 1',
+      'stock_movements.sumber':
+          "SELECT store_id || '|' || sumber_entity || '|' || sumber_sync_id "
+              "|| '|' || jenis AS kunci, COUNT(*) AS jumlah, "
+              'GROUP_CONCAT(id) AS ids FROM stock_movements '
+              "WHERE sumber_sync_id <> '' AND deleted_at IS NULL "
+              'GROUP BY store_id, sumber_entity, sumber_sync_id, jenis '
+              'HAVING COUNT(*) > 1',
+      'cash_ledger.sumber':
+          "SELECT store_id || '|' || sumber_entity || '|' || sumber_sync_id "
+              'AS kunci, COUNT(*) AS jumlah, GROUP_CONCAT(id) AS ids '
+              'FROM cash_ledger WHERE sumber_sync_id <> \'\' '
+              'AND deleted_at IS NULL '
+              'GROUP BY store_id, sumber_entity, sumber_sync_id '
+              'HAVING COUNT(*) > 1',
+    };
+    final report = <Map<String, Object?>>[];
+    for (final entry in queries.entries) {
+      final rows = await db.rawQuery(entry.value);
+      for (final row in rows) {
+        report.add({
+          'tabel': entry.key,
+          'kunci': '${row['kunci'] ?? ''}',
+          'jumlah': (row['jumlah'] as num?)?.toInt() ?? 0,
+          'ids': '${row['ids'] ?? ''}',
+        });
+      }
+    }
+    return report;
+  }
+
+  /// Saldo stok harus sama dengan jumlah movement yang terlihat (F1-3).
+  Future<List<Map<String, Object?>>> _stockDifferences(
+    DatabaseExecutor db,
+  ) async {
+    final rows = await db.rawQuery('''
+      SELECT s.id, s.sync_id, s.nama,
+             s.jumlah_milli AS saldo,
+             COALESCE(SUM(m.jumlah_milli), 0) AS ledger,
+             s.jumlah_milli - COALESCE(SUM(m.jumlah_milli), 0) AS selisih
+      FROM stock_items s
+      LEFT JOIN stock_movements m
+        ON m.stock_item_id = s.id AND m.deleted_at IS NULL
+      WHERE s.deleted_at IS NULL
+      GROUP BY s.id
+      HAVING selisih <> 0
+      ORDER BY ABS(selisih) DESC
+      LIMIT 50
+    ''');
+    return rows
+        .map(
+          (row) => {
+            'stock_sync_id': row['sync_id'],
+            'nama': row['nama'],
+            'saldo_milli': row['saldo'],
+            'ledger_milli': row['ledger'],
+            'selisih_milli': row['selisih'],
+          },
+        )
+        .toList();
+  }
+
+  /// Kas pembayaran dan ledger kas harus sama nominalnya (F1-3).
+  Future<List<Map<String, Object?>>> _cashDifferences(
+    DatabaseExecutor db,
+  ) async {
+    final rows = await db.rawQuery('''
+      SELECT p.sync_id, p.jenis, p.nominal AS sumber,
+             COALESCE(l.nominal, 0) AS ledger,
+             p.nominal - COALESCE(l.nominal, 0) AS selisih
+      FROM service_payments p
+      LEFT JOIN cash_ledger l
+        ON l.sumber_sync_id = p.sync_id
+       AND l.sumber_entity = 'service_payment'
+       AND l.deleted_at IS NULL
+      WHERE p.deleted_at IS NULL
+        AND (l.id IS NULL OR l.nominal <> p.nominal)
+      ORDER BY ABS(selisih) DESC
+      LIMIT 50
+    ''');
+    return rows
+        .map(
+          (row) => {
+            'payment_sync_id': row['sync_id'],
+            'jenis': row['jenis'],
+            'sumber': row['sumber'],
+            'ledger': row['ledger'],
+            'selisih': row['selisih'],
+          },
+        )
+        .toList();
+  }
+
+  /// Stok negatif tetap terlihat setelah sync (F1-4), tetapi penjualan lokal
+  /// tidak boleh membuatnya.
+  Future<List<Map<String, Object?>>> _negativeStock(
+    DatabaseExecutor db,
+  ) async {
+    final rows = await db.rawQuery('''
+      SELECT sync_id, nama, jumlah_milli
+      FROM stock_items
+      WHERE deleted_at IS NULL AND jumlah_milli < 0
+      ORDER BY jumlah_milli ASC
+      LIMIT 50
+    ''');
+    return rows
+        .map(
+          (row) => {
+            'stock_sync_id': row['sync_id'],
+            'nama': row['nama'],
+            'jumlah_milli': row['jumlah_milli'],
+          },
+        )
+        .toList();
   }
 
   /// Log terakhir sudah diredaksi oleh [AppLog]; tetap dibatasi agar ekspor

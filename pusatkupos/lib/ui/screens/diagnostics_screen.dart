@@ -122,6 +122,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   child: _conflictList(),
                 ),
                 const SizedBox(height: 12),
+                SectionCard(
+                  title: 'Integritas data',
+                  subtitle:
+                      'Laporan saja; pemeriksaan ini tidak mengubah data.',
+                  child: _integrityList(),
+                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
@@ -186,6 +193,72 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
               subtitle: Text('${row['status']}'),
               trailing: Text('${row['jumlah']}'),
             ),
+      ],
+    );
+  }
+
+  Widget _integrityList() {
+    final data = _data?['integritas'];
+    if (data is! Map) return const Text('-');
+    List rows(String key) {
+      final value = data[key];
+      return value is List ? value : const [];
+    }
+
+    final duplicates = rows('duplikat');
+    final stock = rows('stok_selisih');
+    final cash = rows('kas_selisih');
+    final negative = rows('stok_negatif');
+    if (duplicates.isEmpty &&
+        stock.isEmpty &&
+        cash.isEmpty &&
+        negative.isEmpty) {
+      return const Text('Tidak ada selisih atau duplikat terdeteksi.');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (duplicates.isNotEmpty) ...[
+          Text('Duplikat: ${duplicates.length}'),
+          for (final row in duplicates)
+            if (row is Map)
+              Text(
+                '· ${row['tabel']} (${row['kunci']}): ${row['jumlah']}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          const SizedBox(height: 8),
+        ],
+        if (stock.isNotEmpty) ...[
+          Text('Selisih saldo stok: ${stock.length}'),
+          for (final row in stock)
+            if (row is Map)
+              Text(
+                '· ${row['nama']}: saldo ${row['saldo_milli']} vs '
+                'ledger ${row['ledger_milli']}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          const SizedBox(height: 8),
+        ],
+        if (cash.isNotEmpty) ...[
+          Text('Selisih kas: ${cash.length}'),
+          for (final row in cash)
+            if (row is Map)
+              Text(
+                '· ${row['jenis']} ${row['payment_sync_id']}: '
+                'sumber ${row['sumber']} vs ledger ${row['ledger']}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          const SizedBox(height: 8),
+        ],
+        if (negative.isNotEmpty) ...[
+          Text('Stok negatif: ${negative.length}'),
+          for (final row in negative)
+            if (row is Map)
+              Text(
+                '· ${row['nama']}: ${row['jumlah_milli']} milli',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+        ],
       ],
     );
   }

@@ -71,14 +71,37 @@ class OpnameService {
     required int jumlahFisikMilli,
     String? alasan,
     required Operator actor,
+    String? requestId,
     Future<void> Function(DatabaseExecutor txn, int id)? enqueue,
     Future<void> Function(DatabaseExecutor txn, int movementId)?
     enqueueMovement,
   }) async {
     Permissions.require(actor, permissionOpname);
     final db = AppDatabase.instance.db;
+    final requestSyncId = (requestId ?? '').trim().isEmpty
+        ? newSyncId()
+        : requestId!.trim();
     late OpnameGateResult result;
     await db.transaction((txn) async {
+      final existing = await txn.query(
+        'opname_holds',
+        where: 'sync_id = ?',
+        whereArgs: [requestSyncId],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        final row = existing.first;
+        final status = '${row['status']}';
+        final open = status == statusPending || status == statusProvisional;
+        result = OpnameGateResult(
+          held: open,
+          holdId: row['id'] as int,
+          missing: open
+              ? _decodeMissing(row['missing_devices_json'])
+              : const [],
+        );
+        return;
+      }
       final missing = await _missingDevices(txn);
       if (missing.isEmpty) {
         await AppDatabase.instance.applyOpnameTx(
@@ -88,6 +111,7 @@ class OpnameService {
           jumlahFisikMilli: jumlahFisikMilli,
           alasan: alasan,
           actor: actor,
+          movementSyncId: requestSyncId,
           enqueue: enqueue,
           enqueueMovement: enqueueMovement,
         );
@@ -106,7 +130,7 @@ class OpnameService {
           ? 0
           : (basisRows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
       final holdId = await txn.insert('opname_holds', {
-        'sync_id': newSyncId(),
+        'sync_id': requestSyncId,
         'store_id': AppDatabase.instance.activeStoreId ?? 'utama',
         'device_id': await _localDeviceId(txn),
         'stock_item_id': itemId,
@@ -120,6 +144,7 @@ class OpnameService {
         'status': statusPending,
         'missing_devices_json': jsonEncode(missing),
         'provisional': 0,
+        'movement_sync_id': requestSyncId,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
         'created_at': nowIso(),
@@ -184,79 +209,116 @@ class OpnameService {
     if (holds.isEmpty) return 0;
     var changed = 0;
     for (final hold in holds) {
-      final missing = await _missingDevices(db);
-      final createdAt =
-          DateTime.tryParse('${hold['created_at'] ?? ''}')?.toLocal();
-      final age = createdAt == null
-          ? const Duration(days: 365)
-          : DateTime.now().difference(createdAt);
-      final status = '${hold['status']}';
-      final itemId = hold['stock_item_id'] as int;
-      final namaItem = '${hold['nama_item'] ?? ''}';
-      final fisik = (hold['jumlah_fisik_milli'] as num?)?.toInt() ?? 0;
-      final basisMilli = (hold['basis_milli'] as num?)?.toInt();
-      final missingNote = missing.isEmpty
-          ? ''
-          : ' Perangkat belum sinkron: '
-                '${missing.map((row) => '${row['nama']}').join(', ')}.';
-      if (status == statusPending && missing.isEmpty) {
-        await db.transaction((txn) async {
-          await AppDatabase.instance.applyOpnameTx(
-            txn,
-            itemId: itemId,
-            namaItem: namaItem,
-            jumlahFisikMilli: fisik,
-            basisMilli: basisMilli,
-            alasan:
-                '${hold['alasan'] ?? 'Opname stok'} '
-                '(semua perangkat sudah sinkron)',
-            actor: actor,
-            enqueue: enqueue,
-            enqueueMovement: enqueueMovement,
+      try {
+        final handled = await db.transaction((txn) async {
+          // Status dibaca ulang di dalam transaksi agar dua pemanggilan
+          // processPending tidak menerapkan hold yang sama dua kali.
+          final fresh = await txn.query(
+            'opname_holds',
+            where: 'id = ?',
+            whereArgs: [hold['id']],
+            limit: 1,
           );
-          await _finishHold(txn, hold, statusApplied, provisional: 0);
+          if (fresh.isEmpty || fresh.first['deleted_at'] != null) return false;
+          final row = fresh.first;
+          final status = '${row['status']}';
+          if (status != statusPending && status != statusProvisional) {
+            return false;
+          }
+          final missing = await _missingDevices(txn);
+          final createdAt =
+              DateTime.tryParse('${row['created_at'] ?? ''}')?.toLocal();
+          final age = createdAt == null
+              ? const Duration(days: 365)
+              : DateTime.now().difference(createdAt);
+          final itemId = row['stock_item_id'] as int;
+          final namaItem = '${row['nama_item'] ?? ''}';
+          final fisik = (row['jumlah_fisik_milli'] as num?)?.toInt() ?? 0;
+          final basisMilli = (row['basis_milli'] as num?)?.toInt();
+          final movementSyncId = _movementId(row);
+          final missingNote = missing.isEmpty
+              ? ''
+              : ' Perangkat belum sinkron: '
+                    '${missing.map((item) => '${item['nama']}').join(', ')}.';
+          if (status == statusPending && missing.isEmpty) {
+            await AppDatabase.instance.applyOpnameTx(
+              txn,
+              itemId: itemId,
+              namaItem: namaItem,
+              jumlahFisikMilli: fisik,
+              basisMilli: basisMilli,
+              alasan:
+                  '${row['alasan'] ?? 'Opname stok'} '
+                  '(semua perangkat sudah sinkron)',
+              actor: actor,
+              movementSyncId: movementSyncId,
+              enqueue: enqueue,
+              enqueueMovement: enqueueMovement,
+            );
+            await _finishHold(
+              txn,
+              row,
+              statusApplied,
+              provisional: 0,
+              movementSyncId: movementSyncId,
+            );
+            return true;
+          }
+          if (status == statusPending && age >= provisionalAfter) {
+            await AppDatabase.instance.applyOpnameTx(
+              txn,
+              itemId: itemId,
+              namaItem: namaItem,
+              jumlahFisikMilli: fisik,
+              basisMilli: basisMilli,
+              alasan:
+                  '${row['alasan'] ?? 'Opname stok'} '
+                  '(opname sementara setelah 7 hari).$missingNote',
+              sumberEntity: 'opname_sementara',
+              actor: actor,
+              movementSyncId: movementSyncId,
+              enqueue: enqueue,
+              enqueueMovement: enqueueMovement,
+            );
+            await _finishHold(
+              txn,
+              row,
+              statusProvisional,
+              provisional: 1,
+              missing: missing,
+              movementSyncId: movementSyncId,
+            );
+            return true;
+          }
+          if (status == statusProvisional && missing.isEmpty) {
+            // Opname sementara sudah diterapkan sebagai delta. Data perangkat
+            // yang tertinggal kini masuk sebagai movement sendiri; menerapkan
+            // ulang delta yang sama akan menghitung selisih dua kali.
+            await _finishHold(
+              txn,
+              row,
+              statusApplied,
+              provisional: 0,
+              movementSyncId: movementSyncId,
+            );
+            return true;
+          }
+          return false;
         });
-        changed++;
-        continue;
-      }
-      if (status == statusPending && age >= provisionalAfter) {
-        await db.transaction((txn) async {
-          await AppDatabase.instance.applyOpnameTx(
-            txn,
-            itemId: itemId,
-            namaItem: namaItem,
-            jumlahFisikMilli: fisik,
-            basisMilli: basisMilli,
-            alasan:
-                '${hold['alasan'] ?? 'Opname stok'} '
-                '(opname sementara setelah 7 hari).$missingNote',
-            sumberEntity: 'opname_sementara',
-            actor: actor,
-            enqueue: enqueue,
-            enqueueMovement: enqueueMovement,
-          );
-          await _finishHold(
-            txn,
-            hold,
-            statusProvisional,
-            provisional: 1,
-            missing: missing,
-          );
-        });
-        changed++;
-        continue;
-      }
-      if (status == statusProvisional && missing.isEmpty) {
-        await db.transaction((txn) async {
-          // Opname sementara sudah diterapkan sebagai delta. Data perangkat
-          // yang tertinggal kini masuk sebagai movement sendiri; menerapkan
-          // ulang delta yang sama akan menghitung selisih dua kali.
-          await _finishHold(txn, hold, statusApplied, provisional: 0);
-        });
-        changed++;
+        if (handled) changed++;
+      } catch (_) {
+        // Hold yang gagal tetap TERTUNDA dan dicoba lagi; hold lain tidak
+        // ikut terblokir.
       }
     }
     return changed;
+  }
+
+  String _movementId(Map<String, Object?> hold) {
+    final stored = '${hold['movement_sync_id'] ?? ''}'.trim();
+    if (stored.isNotEmpty) return stored;
+    final request = '${hold['sync_id'] ?? ''}'.trim();
+    return request.isEmpty ? newSyncId() : request;
   }
 
   Future<void> _finishHold(
@@ -265,6 +327,7 @@ class OpnameService {
     String status, {
     required int provisional,
     List<Map<String, Object?>> missing = const [],
+    String? movementSyncId,
   }) async {
     await txn.update(
       'opname_holds',
@@ -272,12 +335,27 @@ class OpnameService {
         'status': status,
         'provisional': provisional,
         'missing_devices_json': jsonEncode(missing),
+        'movement_sync_id': movementSyncId ?? hold['movement_sync_id'],
         'applied_at': nowIso(),
         'updated_at': nowIso(),
       },
       where: 'id = ?',
       whereArgs: [hold['id']],
     );
+  }
+
+  List<String> _decodeMissing(Object? raw) {
+    try {
+      final decoded = raw is String ? jsonDecode(raw) : raw;
+      if (decoded is List) {
+        return [
+          for (final item in decoded)
+            if (item is Map && '${item['nama'] ?? ''}'.isNotEmpty)
+              '${item['nama']}',
+        ];
+      }
+    } catch (_) {}
+    return const [];
   }
 
   Future<List<Map<String, Object?>>> _missingDevices(

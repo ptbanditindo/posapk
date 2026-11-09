@@ -29,6 +29,10 @@ class OwnerSummaryService {
     }
     final status = await LicenseService.instance.status();
     final devices = await DeviceService.instance.listDevices();
+    final financial = await AppDatabase.instance.reportSummary(
+      DateTime(2000),
+      DateTime(2100),
+    );
     final storeName =
         await AppDatabase.instance.getSetting('bengkel.nama') ?? 'PusatkuPOS';
     List<Map<String, String>> stores;
@@ -56,6 +60,26 @@ class OwnerSummaryService {
       // Token lisensi penuh tidak ikut diekspor. Perangkat ringkasan
       // mendapatkannya lewat aktivasi Google/relay, bukan berkas ini.
       'license_token_present': '${status['token'] ?? ''}'.isNotEmpty,
+      'store_id': AppDatabase.instance.activeStoreId ?? 'utama',
+      'financial': {
+        'basis': 'semua_data',
+        'transaksi': financial.transaksi,
+        'omzet_bruto_cents': financial.totalCents,
+        'dibayar_cents': financial.dibayarCents,
+        'piutang_cents': financial.piutangCents,
+        'retur_ditagih_cents': financial.returDitagihCents,
+        'omzet_neto_cents': financial.totalNetCents,
+        'dpp_cents': financial.totalDppCents,
+        'ppn_cents': financial.pajakCents,
+        'ppn_diserap_cents': financial.pajakDiserapCents,
+        'hpp_part_cents': financial.totalModalPartCents,
+        'hpp_jasa_cents': financial.totalModalJasaCents,
+        'laba_kotor_cents': financial.labaKotorCents,
+        'laba_kotor_neto_cents': financial.labaKotorNetCents,
+        'komisi_cents': financial.komisiCents,
+        'gaji_cents': financial.gajiCents,
+        'kas_per_metode_cents': financial.cashByMethod,
+      },
       'stores': stores,
       'devices': devices
           .map(

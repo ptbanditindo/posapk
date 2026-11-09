@@ -10,6 +10,7 @@ import '../sync/crypto.dart';
 import '../sync/relay_client.dart';
 import '../sync/sync_secrets.dart';
 import 'account_service.dart';
+import 'access_control.dart';
 import 'app_database.dart';
 import 'license_service.dart';
 import 'secure_store.dart';
@@ -238,8 +239,9 @@ class EmployeeAuthService {
           .setSetting('sync.relay_device_id', relayDeviceId);
     }
     await SessionService.instance.saveDeviceToken(token, relayDeviceId);
+    await AppDatabase.instance.deleteSetting('sync.device_revoked_at');
 
-    final role = '${account['role_base'] ?? 'KASIR'}';
+    final role = employeeRole('${account['role_base'] ?? 'KASIR'}');
     final grants = account['permission_grants'];
     final extras = _list(
       account['permissions_explicit'] == true && grants is List

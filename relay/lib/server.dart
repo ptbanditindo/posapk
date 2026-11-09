@@ -69,6 +69,10 @@ class RelayServer {
     _router.get('/relay/sync/rounds/<id>', _syncRound);
     _router.post('/relay/sync/rounds/<id>/ack', _ackSyncRound);
     _router.post('/relay/snapshots', _createSnapshot);
+    _router.post('/archive/documents', _archivePutDocument);
+    _router.get('/archive/documents', _archiveGetDocument);
+    _router.get('/archive/search', _archiveSearch);
+    _router.get('/archive/export', _archiveExport);
     _router.post('/relay/invites/claim', _claimInvite);
     _router.get('/relay/permissions/me', _permissionsMe);
     _router.get('/relay/manage/accounts', _manageAccounts);
@@ -108,19 +112,40 @@ class RelayServer {
       };
 
   Middleware get _cors => (inner) {
-        const headers = {
-          'Access-Control-Allow-Origin': '*',
+        const baseHeaders = {
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers':
-              'content-type, x-device-token, x-relay-enroll-token, authorization',
+              'content-type, x-device-token, x-relay-enroll-token, '
+                  'x-protocol-version, authorization',
           'Access-Control-Max-Age': '600',
+          'Vary': 'Origin',
         };
+        final allowed = config.allowedOrigins.toSet();
         return (request) async {
+          final origin = request.headers['origin'] ?? '';
+          final originAllowed = origin.isNotEmpty && allowed.contains(origin);
           if (request.method == 'OPTIONS') {
-            return Response.ok('', headers: headers);
+            if (!originAllowed) {
+              return Response.forbidden(
+                jsonEncode({
+                  'detail': 'Origin tidak diizinkan.',
+                  'code': 'origin_denied',
+                }),
+                headers: {'content-type': 'application/json'},
+              );
+            }
+            return Response.ok(
+              '',
+              headers: {...baseHeaders, 'Access-Control-Allow-Origin': origin},
+            );
           }
           final response = await inner(request);
-          return response.change(headers: headers);
+          // Tanpa origin yang terdaftar, respons tetap dilayani untuk aplikasi
+          // native tetapi browser tidak diberi izin lintas origin.
+          if (!originAllowed) return response;
+          return response.change(
+            headers: {...baseHeaders, 'Access-Control-Allow-Origin': origin},
+          );
         };
       };
 
@@ -134,6 +159,13 @@ class RelayServer {
               'Body permintaan terlalu besar.',
               code: 'body_too_large',
             );
+          } on _DeviceRevoked {
+            return _error(
+              403,
+              'Perangkat ini sudah dicabut pemilik. Ekspor data lokal lalu '
+              'pasangkan ulang perangkat.',
+              code: 'device_revoked',
+            );
           } on FormatException catch (error) {
             return _error(
               400,
@@ -142,7 +174,13 @@ class RelayServer {
             );
           } catch (error, stack) {
             print('relay error: $error\n$stack');
-            return _json(500, {'detail': '$error'});
+            // Rincian internal hanya masuk log server; klien menerima pesan
+            // umum agar tidak membocorkan struktur database/stack.
+            return _error(
+              500,
+              'Terjadi kesalahan pada server.',
+              code: 'internal_error',
+            );
           }
         };
       };
@@ -155,6 +193,22 @@ class RelayServer {
 
   Response _error(int status, String detail, {String code = ''}) =>
       _json(status, {'detail': detail, 'code': code});
+
+  /// Klien yang lebih tua dari `min_supported` dihentikan dengan 426 agar
+  /// pengguna memperbarui aplikasi; operasi lokal tetap berjalan.
+  Response? _protocolRejection(Request request) {
+    final raw = request.headers['x-protocol-version'] ?? '';
+    final version = int.tryParse(raw.trim());
+    if (version != null && version < config.minSupportedProtocol) {
+      return _json(426, {
+        'detail': 'Versi aplikasi ini tidak lagi didukung. Perbarui aplikasi '
+            'untuk melanjutkan sinkronisasi.',
+        'code': 'protocol_unsupported',
+        'min_supported': config.minSupportedProtocol,
+      });
+    }
+    return null;
+  }
 
   static const int _defaultMaxBodyBytes = 16 * 1024 * 1024;
   static const int _bodyOverheadBytes = 8 * 1024 * 1024;
@@ -203,6 +257,30 @@ class RelayServer {
 
   String _hash(String token) => crypto.sha256.convert(utf8.encode(token)).toString();
 
+  /// Audit siklus perangkat disimpan di relay agar tetap tersedia ketika
+  /// perangkat asal sudah hilang atau dicabut.
+  Future<void> _logDeviceEvent(
+    String ownerId,
+    String deviceId, {
+    required String action,
+    String actorDeviceId = '',
+    Map<String, Object?> detail = const {},
+  }) async {
+    await db.execute(
+      '''
+INSERT INTO device_events (owner_id, device_id, actor_device_id, action, detail)
+VALUES (@owner, @device, @actor, @action, CAST(@detail AS jsonb))
+''',
+      {
+        'owner': ownerId,
+        'device': deviceId,
+        'actor': actorDeviceId,
+        'action': action,
+        'detail': jsonEncode(detail),
+      },
+    );
+  }
+
   String? _iso(Object? value) =>
       value is DateTime ? value.toUtc().toIso8601String() : value?.toString();
 
@@ -243,11 +321,12 @@ class RelayServer {
 SELECT d.*, o.owner_public_key AS owner_public_key_registered,
        o.license_plan, o.license_period_end, o.license_store_limit
 FROM devices d JOIN owners o ON o.owner_id = d.owner_id
-WHERE d.token_hash = @hash AND d.revoked_at IS NULL
+WHERE d.token_hash = @hash
 ''',
       {'hash': _hash(token)},
     );
     if (row == null) return null;
+    if (row['revoked_at'] != null) throw const _DeviceRevoked();
     final kind = '${row['kind'] ?? ''}';
     final accountId = '${row['employee_account_id'] ?? ''}';
     if (kind == 'employee') {
@@ -264,7 +343,7 @@ WHERE d.token_hash = @hash AND d.revoked_at IS NULL
           'UPDATE devices SET revoked_at = now() WHERE id = @id',
           {'id': row['id']},
         );
-        return null;
+        throw const _DeviceRevoked();
       }
     }
     await db.execute(
@@ -556,6 +635,12 @@ VALUES (@id, @owner, @nama, @kind, @account, @public, @encrypt, @ownerPublic,
         {'token': auth['token']},
       );
     }
+    await _logDeviceEvent(
+      ownerId,
+      deviceId,
+      action: 'enroll',
+      detail: {'kind': kind, 'stores': storeIds},
+    );
     return _json(200, {
       'device': {
         'id': deviceId,
@@ -607,8 +692,12 @@ VALUES (@token, @owner, @expires)
     final target = '${body['device_id'] ?? ''}';
     final wrapped = '${body['wrapped_key'] ?? ''}';
     final signature = '${body['signature'] ?? ''}';
+    final keyVersion = (body['key_version'] as num?)?.toInt() ?? 1;
     if (store.isEmpty || target.isEmpty || wrapped.isEmpty || signature.isEmpty) {
       return _error(400, 'Data key-wrap tidak lengkap.');
+    }
+    if (keyVersion < 1) {
+      return _error(400, 'Versi kunci toko tidak valid.');
     }
     final targetRow = await db.one(
       'SELECT id, owner_id, store_ids FROM devices WHERE id = @id',
@@ -633,23 +722,52 @@ VALUES (@token, @owner, @expires)
     if (ownerPublic.isEmpty) {
       return _error(409, 'Kunci owner belum terdaftar.');
     }
-    final valid = await license.verifyPayload(
+    var valid = await license.verifyPayload(
       publicKey: ownerPublic,
       payload: canonicalJson({
         'store_id': store,
         'device_id': target,
         'wrapped_key': wrapped,
+        'key_version': keyVersion,
       }),
       signature: signature,
     );
+    if (!valid && keyVersion == 1) {
+      // Hanya amplop versi 1 yang ditandatangani tanpa key_version.
+      valid = await license.verifyPayload(
+        publicKey: ownerPublic,
+        payload: canonicalJson({
+          'store_id': store,
+          'device_id': target,
+          'wrapped_key': wrapped,
+        }),
+        signature: signature,
+      );
+    }
     if (!valid) return _error(400, 'Tanda tangan key-wrap tidak valid.');
+    final existing = await db.one(
+      'SELECT key_version FROM store_keys WHERE owner_id = @owner '
+      'AND store_id = @store AND device_id = @device',
+      {'owner': device['owner_id'], 'store': store, 'device': target},
+    );
+    final storedVersion = (existing?['key_version'] as num?)?.toInt() ?? 0;
+    if (existing != null && keyVersion < storedVersion) {
+      return _error(
+        409,
+        'Versi kunci toko ($keyVersion) lebih lama dari yang tersimpan '
+        'di server ($storedVersion).',
+        code: 'stale_key',
+      );
+    }
     await db.execute(
       '''
-INSERT INTO store_keys (owner_id, store_id, device_id, wrapped_key, signature)
-VALUES (@owner, @store, @device, @wrapped, @signature)
+INSERT INTO store_keys (owner_id, store_id, device_id, wrapped_key, signature,
+  key_version)
+VALUES (@owner, @store, @device, @wrapped, @signature, @version)
 ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
   wrapped_key = EXCLUDED.wrapped_key,
   signature = EXCLUDED.signature,
+  key_version = EXCLUDED.key_version,
   created_at = now()
 ''',
       {
@@ -658,12 +776,22 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
         'device': target,
         'wrapped': wrapped,
         'signature': signature,
+        'version': keyVersion,
       },
+    );
+    await _logDeviceEvent(
+      '${device['owner_id']}',
+      target,
+      action: 'key_wrap',
+      actorDeviceId: '${device['id']}',
+      detail: {'store_id': store, 'key_version': keyVersion},
     );
     return _json(200, {'ok': true});
   }
 
   Future<Response> _submitEnvelope(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     if (!_licenseActive(device)) return _licenseExpired(device);
@@ -686,11 +814,17 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     } on _BusyRejection catch (error) {
       return _busy(error);
     } on _EnvelopeRejection catch (error) {
-      return _error(error.status, error.detail, code: error.code);
+      return _json(error.status, {
+        'detail': error.detail,
+        'code': error.code,
+        ...error.extra,
+      });
     }
   }
 
   Future<Response> _submitEnvelopeBatch(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     if (!_licenseActive(device)) return _licenseExpired(device);
@@ -738,7 +872,11 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     } on _BusyRejection catch (error) {
       return _busy(error);
     } on _EnvelopeRejection catch (error) {
-      return _error(error.status, error.detail, code: error.code);
+      return _json(error.status, {
+        'detail': error.detail,
+        'code': error.code,
+        ...error.extra,
+      });
     } finally {
       if (_writeQueue > 0) _writeQueue--;
     }
@@ -767,6 +905,17 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
     final action = '${body['action'] ?? ''}';
     final entityId = '${body['entity_id'] ?? ''}';
     final keyId = '${body['key_id'] ?? ''}';
+    final keyVersion = (body['key_version'] as num?)?.toInt() ?? 1;
+    final envelopeProtocol = (body['protocol_version'] as num?)?.toInt() ?? 1;
+    if (envelopeProtocol < config.minSupportedProtocol) {
+      throw _EnvelopeRejection(
+        426,
+        'Versi aplikasi ini tidak lagi didukung. Perbarui aplikasi untuk '
+        'melanjutkan sinkronisasi.',
+        code: 'protocol_unsupported',
+        extra: {'min_supported': config.minSupportedProtocol},
+      );
+    }
     final fields = {
       'v': 1,
       'store_id': store,
@@ -782,6 +931,9 @@ ON CONFLICT (owner_id, store_id, device_id) DO UPDATE SET
       'entity': entity,
       'action': action,
       'entity_id': entityId,
+      if (((body['protocol_version'] as num?)?.toInt() ?? 0) > 0)
+        'protocol_version': (body['protocol_version'] as num).toInt(),
+      if (envelopeProtocol >= 2) 'key_version': keyVersion,
     };
     final signature = '${body['signature'] ?? ''}';
     final hintsSignature = '${body['hints_signature'] ?? ''}';
@@ -897,10 +1049,10 @@ WHERE owner_id = @owner
 INSERT INTO envelopes (id, owner_id, store_id, sender_device_id,
   recipient_device_id, seq, hlc_wall, hlc_counter, idempotency_key,
   ciphertext, nonce, signature, entity, action, entity_id, hints_signature,
-  key_id)
+  key_id, key_version)
 VALUES (@id, @owner, @store, @sender, @recipient, @seq, @wall, @counter, @key,
   @ciphertext, @nonce, @signature, @entity, @action, @entityId, @hints,
-  @keyId)
+  @keyId, @keyVersion)
 ON CONFLICT DO NOTHING
 ''',
       {
@@ -921,6 +1073,34 @@ ON CONFLICT DO NOTHING
         'entityId': entityId,
         'hints': hintsSignature,
         'keyId': keyId,
+        'keyVersion': keyVersion,
+      },
+    );
+    // Stream arsip: salinan amplop ciphertext disimpan permanen untuk ekspor
+    // dan pemulihan, terpisah dari antrean relay yang dipangkas.
+    await tx.execute(
+      '''
+INSERT INTO archive_envelopes (owner_id, store_id, sender_device_id, seq,
+  idempotency_key, entity, action, entity_id, hlc_wall, hlc_counter,
+  ciphertext, nonce, signature)
+VALUES (@owner, @store, @sender, @seq, @key, @entity, @action, @entityId,
+  @wall, @counter, @ciphertext, @nonce, @signature)
+ON CONFLICT DO NOTHING
+''',
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'sender': sender,
+        'seq': fields['seq'],
+        'key': fields['idempotency_key'],
+        'entity': entity,
+        'action': action,
+        'entityId': entityId,
+        'wall': fields['hlc_wall'],
+        'counter': fields['hlc_counter'],
+        'ciphertext': fields['ciphertext'],
+        'nonce': fields['nonce'],
+        'signature': signature,
       },
     );
     final saved = await tx.one(
@@ -1019,18 +1199,22 @@ FROM envelopes WHERE owner_id = @owner AND store_id = @store
     return {
       'used_bytes': used,
       'limit_bytes': limit,
-      'warning': used >= limit,
+      'warning': limit > 0 && used >= limit * config.storageWarnRatio,
     };
   }
 
   /// Perangkat yang ikut menentukan batas pemangkasan: semua perangkat owner
   /// ditambah satu perangkat karyawan terbaru per akun. Perangkat karyawan
   /// lama yang tidak pernah ack tidak lagi menahan amplop selamanya.
+  /// Perangkat yang tidak mengirim heartbeat dalam `deviceActiveDays` hari
+  /// dianggap tidak aktif sehingga kantong amplopnya tidak menahan retensi.
   static const String _relevantDevicesCte = '''
 relevant AS (
   SELECT d.id FROM devices d
   WHERE d.owner_id = @owner AND d.revoked_at IS NULL
     AND d.store_ids @> CAST(@stores AS jsonb)
+    AND COALESCE(d.last_seen_at, d.created_at) >=
+        now() - make_interval(days => @active_days)
     AND (
       d.kind = 'owner'
       OR (d.kind = 'employee' AND d.id = (
@@ -1051,7 +1235,11 @@ relevant AS (
     if (store.isEmpty) return;
     final activeRow = await db.one(
       'WITH $_relevantDevicesCte SELECT COUNT(*) AS total FROM relevant',
-      {'owner': ownerId, 'stores': jsonEncode([store])},
+      {
+        'owner': ownerId,
+        'stores': jsonEncode([store]),
+        'active_days': config.deviceActiveDays,
+      },
     );
     final active = (activeRow?['total'] as num?)?.toInt() ?? 0;
     if (active <= 0) return;
@@ -1067,6 +1255,7 @@ WHERE c.owner_id = @owner AND c.store_id = @store
         'owner': ownerId,
         'store': store,
         'stores': jsonEncode([store]),
+        'active_days': config.deviceActiveDays,
       },
     );
     final acked = (floorRow?['total'] as num?)?.toInt() ?? 0;
@@ -1092,6 +1281,8 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
   }
 
   Future<Response> _feed(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final store = request.url.queryParameters['store_id'] ?? '';
@@ -1177,6 +1368,7 @@ ORDER BY relay_seq ASC LIMIT @limit
             'entity_id': row['entity_id'],
             'hints_signature': row['hints_signature'],
             'key_id': row['key_id'] ?? '',
+            'key_version': (row['key_version'] as num?)?.toInt() ?? 1,
             'relay_seq': (row['relay_seq'] as num?)?.toInt() ?? 0,
           },
         )
@@ -1197,6 +1389,8 @@ ORDER BY relay_seq ASC LIMIT @limit
   }
 
   Future<Response> _ack(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final body = await _body(request);
@@ -1233,19 +1427,33 @@ ON CONFLICT (owner_id, device_id, store_id) DO UPDATE SET
   Future<Response> _devices(Request request) async {
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final query = request.url.queryParameters;
+    final store = query['store_id'] ?? '';
+    final limit = (int.tryParse(query['limit'] ?? '') ?? 100).clamp(1, 500);
+    final offset = (int.tryParse(query['offset'] ?? '') ?? 0).clamp(0, 1 << 30);
     final rows = await db.query(
       '''
 SELECT d.id, d.owner_id, d.nama, d.kind, d.public_key, d.encryption_key,
        d.store_ids, d.created_at, d.revoked_at, d.last_seen_at,
        d.employee_account_id,
        a.role_base, a.extra_permissions, a.permissions_explicit,
-       a.aktif AS akun_aktif
+       a.aktif AS akun_aktif,
+       (sk.device_id IS NOT NULL) AS has_key,
+       COALESCE(sk.key_version, 0) AS key_version
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id
-WHERE d.owner_id = @owner ORDER BY d.created_at
+LEFT JOIN store_keys sk ON sk.owner_id = d.owner_id
+  AND sk.device_id = d.id AND sk.store_id = @store
+WHERE d.owner_id = @owner ORDER BY d.created_at, d.id
+LIMIT @limit OFFSET @offset
 ''',
-      {'owner': device['owner_id']},
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'limit': limit,
+        'offset': offset,
+      },
     );
     return _json(200, rows.map(_deviceJson).toList());
   }
@@ -1269,9 +1477,13 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
         'created_at': _iso(row['created_at']),
         'last_seen_at': _iso(row['last_seen_at']),
         'revoked_at': _iso(row['revoked_at']),
+        'has_key': row['has_key'] == true,
+        'key_version': (row['key_version'] as num?)?.toInt() ?? 0,
       };
 
   Future<Response> _bootstrap(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     final store = request.url.queryParameters['store_id'] ?? '';
@@ -1280,7 +1492,7 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
       return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
     }
     final wrap = await db.one(
-      'SELECT wrapped_key, signature FROM store_keys WHERE owner_id = @owner AND store_id = @store AND device_id = @device',
+      'SELECT wrapped_key, signature, key_version FROM store_keys WHERE owner_id = @owner AND store_id = @store AND device_id = @device',
       {'owner': device['owner_id'], 'store': store, 'device': device['id']},
     );
     final exists = await db.one(
@@ -1308,6 +1520,7 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
       'store_key_exists': exists != null,
       'wrapped_key': wrap?['wrapped_key'] ?? '',
       'wrapped_key_signature': wrap?['signature'] ?? '',
+      'key_version': (wrap?['key_version'] as num?)?.toInt() ?? 1,
       'latest_seq': latest,
       'cursor': cursor,
       'snapshot_required': snapshot != null && cursor < snapSeq,
@@ -1329,6 +1542,11 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
         'checksum': row['checksum'],
         'hlc_wall': (row['hlc_wall'] as num?)?.toInt() ?? 0,
         'hlc_counter': (row['hlc_counter'] as num?)?.toInt() ?? 0,
+        'schema_version': (row['schema_version'] as num?)?.toInt() ?? 0,
+        'schema_contract_version':
+            (row['schema_contract_version'] as num?)?.toInt() ?? 0,
+        'app_version': '${row['app_version'] ?? ''}',
+        'created_at': _iso(row['created_at']),
         'round_id': '${row['round_id'] ?? ''}',
         'complete': row['complete'] != false,
         'device_manifest': jsonList(row['device_manifest']),
@@ -1578,6 +1796,8 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
   }
 
   Future<Response> _createSnapshot(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
     final device = await _deviceAuth(request);
     if (device == null) return _error(401, 'Token perangkat tidak valid.');
     if (!_licenseActive(device)) return _licenseExpired(device);
@@ -1632,6 +1852,10 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
     final signature = '${body['signature'] ?? ''}';
     final wall = (body['hlc_wall'] as num?)?.toInt() ?? 0;
     final counter = (body['hlc_counter'] as num?)?.toInt() ?? 0;
+    final schemaVersion = (body['schema_version'] as num?)?.toInt() ?? 0;
+    final schemaContract =
+        (body['schema_contract_version'] as num?)?.toInt() ?? 0;
+    final appVersion = '${body['app_version'] ?? ''}'.trim();
     if (checksum.isEmpty ||
         signature.isEmpty ||
         '${body['ciphertext'] ?? ''}'.isEmpty ||
@@ -1647,6 +1871,10 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
         'store_seq': seq,
         'hlc_wall': wall,
         'hlc_counter': counter,
+        if (schemaVersion > 0) 'schema_version': schemaVersion,
+        if (schemaContract > 0)
+          'schema_contract_version': schemaContract,
+        if (appVersion.isNotEmpty) 'app_version': appVersion,
       }),
       signature: signature,
     );
@@ -1658,9 +1886,10 @@ ON CONFLICT (round_id, device_id) DO UPDATE SET
       '''
 INSERT INTO snapshots (owner_id, store_id, id, device_id, store_seq, ciphertext,
   nonce, signature, checksum, hlc_wall, hlc_counter, round_id, complete,
-  device_manifest)
+  device_manifest, schema_version, schema_contract_version, app_version)
 VALUES (@owner, @store, @id, @device, @seq, @ciphertext, @nonce, @signature,
-  @checksum, @wall, @counter, @round, true, CAST(@manifest AS jsonb))
+  @checksum, @wall, @counter, @round, true, CAST(@manifest AS jsonb),
+  @schema_version, @schema_contract_version, @app_version)
 ON CONFLICT (owner_id, store_id) DO UPDATE SET
   id = EXCLUDED.id, device_id = EXCLUDED.device_id, store_seq = EXCLUDED.store_seq,
   ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce,
@@ -1668,6 +1897,9 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
   hlc_wall = EXCLUDED.hlc_wall, hlc_counter = EXCLUDED.hlc_counter,
   round_id = EXCLUDED.round_id, complete = EXCLUDED.complete,
   device_manifest = EXCLUDED.device_manifest,
+  schema_version = EXCLUDED.schema_version,
+  schema_contract_version = EXCLUDED.schema_contract_version,
+  app_version = EXCLUDED.app_version,
   created_at = now()
 ''',
       {
@@ -1684,6 +1916,9 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
         'counter': counter,
         'round': roundId,
         'manifest': jsonEncode(roundStatus['devices'] ?? const []),
+        'schema_version': schemaVersion,
+        'schema_contract_version': schemaContract,
+        'app_version': appVersion,
       },
     );
     return _json(200, {
@@ -1695,6 +1930,359 @@ ON CONFLICT (owner_id, store_id) DO UPDATE SET
       'round_id': roundId,
       'complete': true,
       'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  Future<Response> _archivePutDocument(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    if (!_licenseActive(device)) return _licenseExpired(device);
+    final body = await _body(request);
+    final store = '${body['store_id'] ?? ''}';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final docType = '${body['doc_type'] ?? ''}'.trim();
+    final docId = '${body['doc_id'] ?? ''}'.trim();
+    final contentHash = '${body['content_hash'] ?? ''}'.trim();
+    final ciphertext = '${body['ciphertext'] ?? ''}';
+    final nonce = '${body['nonce'] ?? ''}';
+    final validId = RegExp(r'^[A-Za-z0-9._:-]{1,120}$');
+    if (!validId.hasMatch(docType) ||
+        !validId.hasMatch(docId) ||
+        contentHash.isEmpty ||
+        ciphertext.isEmpty ||
+        nonce.isEmpty) {
+      return _error(400, 'Bundel arsip tidak lengkap.', code: 'invalid_body');
+    }
+    final existing = await db.one(
+      '''
+SELECT object_id, content_hash, schema_version, key_version, received_at
+FROM archive_documents
+WHERE owner_id = @owner AND store_id = @store AND doc_type = @type
+  AND doc_id = @doc AND content_hash = @hash
+''',
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'type': docType,
+        'doc': docId,
+        'hash': contentHash,
+      },
+    );
+    if (existing != null) {
+      return _json(
+        200,
+        await _archiveReceipt(
+          device: device,
+          store: store,
+          docType: docType,
+          docId: docId,
+          contentHash: contentHash,
+          objectId: '${existing['object_id']}',
+          schemaVersion: (existing['schema_version'] as num?)?.toInt() ?? 0,
+          keyVersion: (existing['key_version'] as num?)?.toInt() ?? 1,
+          archivedAt: _iso(existing['received_at']) ??
+              DateTime.now().toUtc().toIso8601String(),
+        ),
+      );
+    }
+    final usedRow = await db.one(
+      'SELECT COALESCE(SUM(length(ciphertext)), 0) AS total '
+      'FROM archive_documents WHERE owner_id = @owner',
+      {'owner': device['owner_id']},
+    );
+    final used = (usedRow?['total'] as num?)?.toInt() ?? 0;
+    if (used + ciphertext.length > config.archiveLimitBytes) {
+      return _error(
+        413,
+        'Penyimpanan arsip owner ini penuh. Ekspor lalu rapikan arsip lama '
+        'tidak dapat dihapus; hubungi admin penyimpanan.',
+        code: 'archive_full',
+      );
+    }
+    final objectId = _id('arc');
+    final schemaVersion = (body['schema_version'] as num?)?.toInt() ?? 0;
+    final keyId = '${body['key_id'] ?? ''}';
+    final keyVersion = (body['key_version'] as num?)?.toInt() ?? 1;
+    final indexes = body['indexes'];
+    await db.tx((tx) async {
+      await tx.execute(
+        '''
+INSERT INTO archive_documents (owner_id, store_id, doc_type, doc_id,
+  no_nota, tanggal, schema_version, key_id, key_version, content_hash,
+  ciphertext, nonce, object_id, created_at)
+VALUES (@owner, @store, @type, @doc, @nota, @tanggal, @schema, @key, @version,
+  @hash, @ciphertext, @nonce, @object, @created)
+ON CONFLICT DO NOTHING
+''',
+        {
+          'owner': device['owner_id'],
+          'store': store,
+          'type': docType,
+          'doc': docId,
+          'nota': '${body['no_nota'] ?? ''}',
+          'tanggal': '${body['tanggal'] ?? ''}',
+          'schema': schemaVersion,
+          'key': keyId,
+          'version': keyVersion,
+          'hash': contentHash,
+          'ciphertext': ciphertext,
+          'nonce': nonce,
+          'object': objectId,
+          'created': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
+      if (indexes is List) {
+        for (final entry in indexes.whereType<Map>()) {
+          final token = '${entry['token'] ?? ''}'.trim();
+          if (token.isEmpty) continue;
+          await tx.execute(
+            '''
+INSERT INTO archive_index_tokens (owner_id, store_id, doc_type, doc_id,
+  content_hash, token, kind)
+VALUES (@owner, @store, @type, @doc, @hash, @token, @kind)
+ON CONFLICT DO NOTHING
+''',
+            {
+              'owner': device['owner_id'],
+              'store': store,
+              'type': docType,
+              'doc': docId,
+              'hash': contentHash,
+              'token': token,
+              'kind': '${entry['kind'] ?? ''}',
+            },
+          );
+        }
+      }
+    });
+    return _json(
+      200,
+      await _archiveReceipt(
+        device: device,
+        store: store,
+        docType: docType,
+        docId: docId,
+        contentHash: contentHash,
+        objectId: objectId,
+        schemaVersion: schemaVersion,
+        keyVersion: keyVersion,
+        archivedAt: DateTime.now().toUtc().toIso8601String(),
+      ),
+    );
+  }
+
+  Future<Map<String, Object?>> _archiveReceipt({
+    required Map<String, Object?> device,
+    required String store,
+    required String docType,
+    required String docId,
+    required String contentHash,
+    required String objectId,
+    required int schemaVersion,
+    required int keyVersion,
+    required String archivedAt,
+  }) async {
+    final payload = {
+      'v': 1,
+      'owner_id': '${device['owner_id']}',
+      'store_id': store,
+      'doc_type': docType,
+      'doc_id': docId,
+      'content_hash': contentHash,
+      'object_id': objectId,
+      'schema_version': schemaVersion,
+      'key_version': keyVersion,
+      'archived_at': archivedAt,
+    };
+    final signed = await license.signSummary(payload);
+    return {
+      'receipt': signed['payload'],
+      'signature': signed['signature'],
+      'public_key': signed['public_key'],
+    };
+  }
+
+  Future<Response> _archiveGetDocument(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final query = request.url.queryParameters;
+    final store = query['store_id'] ?? '';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final docType = query['doc_type'] ?? '';
+    final docId = query['doc_id'] ?? '';
+    final hash = query['content_hash'] ?? '';
+    final row = await db.one(
+      '''
+SELECT * FROM archive_documents
+WHERE owner_id = @owner AND store_id = @store AND doc_type = @type
+  AND doc_id = @doc AND (@hash = '' OR content_hash = @hash)
+ORDER BY received_at DESC LIMIT 1
+''',
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'type': docType,
+        'doc': docId,
+        'hash': hash,
+      },
+    );
+    if (row == null) return _error(404, 'Dokumen arsip tidak ditemukan.');
+    return _json(200, {
+      'doc_id': row['doc_id'],
+      'doc_type': row['doc_type'],
+      'no_nota': row['no_nota'],
+      'tanggal': row['tanggal'],
+      'schema_version': row['schema_version'],
+      'key_id': row['key_id'],
+      'key_version': (row['key_version'] as num?)?.toInt() ?? 1,
+      'content_hash': row['content_hash'],
+      'ciphertext': row['ciphertext'],
+      'nonce': row['nonce'],
+      'archived_at': _iso(row['received_at']),
+    });
+  }
+
+  Future<Response> _archiveSearch(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final query = request.url.queryParameters;
+    final store = query['store_id'] ?? '';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final token = (query['token'] ?? '').trim();
+    var dari = (query['dari'] ?? '').trim();
+    var sampai = (query['sampai'] ?? '').trim();
+    if (token.isEmpty && dari.isEmpty && sampai.isEmpty) {
+      return _error(
+        400,
+        'Pencarian arsip butuh token atau rentang tanggal.',
+      );
+    }
+    if (dari.length == 10) dari = '${dari}T00:00:00.000Z';
+    if (sampai.length == 10) sampai = '${sampai}T23:59:59.999Z';
+    final limit = (int.tryParse(query['limit'] ?? '') ?? 50).clamp(1, 200);
+    final offset = (int.tryParse(query['offset'] ?? '') ?? 0).clamp(0, 1 << 30);
+    const columns = '''
+SELECT DISTINCT d.doc_id, d.doc_type, d.no_nota, d.tanggal,
+  d.schema_version, d.content_hash, d.received_at
+''';
+    final rows = token.isEmpty
+        ? await db.query(
+            '$columns FROM archive_documents d '
+            'WHERE d.owner_id = @owner AND d.store_id = @store '
+            "AND (@dari = '' OR d.tanggal >= @dari) "
+            "AND (@sampai = '' OR d.tanggal <= @sampai) "
+            'ORDER BY d.tanggal DESC, d.received_at DESC '
+            'LIMIT @limit OFFSET @offset',
+            {
+              'owner': device['owner_id'],
+              'store': store,
+              'dari': dari,
+              'sampai': sampai,
+              'limit': limit,
+              'offset': offset,
+            },
+          )
+        : await db.query(
+            '$columns FROM archive_index_tokens t '
+            'JOIN archive_documents d '
+            '  ON d.owner_id = t.owner_id AND d.store_id = t.store_id '
+            ' AND d.doc_type = t.doc_type AND d.doc_id = t.doc_id '
+            ' AND d.content_hash = t.content_hash '
+            'WHERE t.owner_id = @owner AND t.store_id = @store '
+            '  AND t.token = @token '
+            "  AND (@dari = '' OR d.tanggal >= @dari) "
+            "  AND (@sampai = '' OR d.tanggal <= @sampai) "
+            'ORDER BY d.tanggal DESC, d.received_at DESC '
+            'LIMIT @limit OFFSET @offset',
+            {
+              'owner': device['owner_id'],
+              'store': store,
+              'token': token,
+              'dari': dari,
+              'sampai': sampai,
+              'limit': limit,
+              'offset': offset,
+            },
+          );
+    return _json(200, {
+      'documents': [
+        for (final row in rows)
+          {
+            'doc_id': row['doc_id'],
+            'doc_type': row['doc_type'],
+            'no_nota': row['no_nota'],
+            'tanggal': row['tanggal'],
+            'schema_version': row['schema_version'],
+            'content_hash': row['content_hash'],
+            'archived_at': _iso(row['received_at']),
+          },
+      ],
+      'next_offset': offset + rows.length,
+      'has_more': rows.length >= limit,
+    });
+  }
+
+  Future<Response> _archiveExport(Request request) async {
+    final rejected = _protocolRejection(request);
+    if (rejected != null) return rejected;
+    final device = await _deviceAuth(request);
+    if (device == null) return _error(401, 'Token perangkat tidak valid.');
+    final query = request.url.queryParameters;
+    final store = query['store_id'] ?? '';
+    if (!stringList(device['store_ids']).contains(store)) {
+      return _error(403, 'Perangkat tidak terdaftar pada toko $store.');
+    }
+    final since = query['since'] ?? '';
+    final limit = (int.tryParse(query['limit'] ?? '') ?? 100).clamp(1, 500);
+    final offset = (int.tryParse(query['offset'] ?? '') ?? 0).clamp(0, 1 << 30);
+    final rows = await db.query(
+      '''
+SELECT doc_id, doc_type, no_nota, tanggal, schema_version, key_id,
+  key_version, content_hash, ciphertext, nonce, received_at
+FROM archive_documents
+WHERE owner_id = @owner AND store_id = @store
+  AND (@since = '' OR received_at >= CAST(@since AS TIMESTAMPTZ))
+ORDER BY received_at, doc_id LIMIT @limit OFFSET @offset
+''',
+      {
+        'owner': device['owner_id'],
+        'store': store,
+        'since': since,
+        'limit': limit,
+        'offset': offset,
+      },
+    );
+    return _json(200, {
+      'documents': [
+        for (final row in rows)
+          {
+            'doc_id': row['doc_id'],
+            'doc_type': row['doc_type'],
+            'no_nota': row['no_nota'],
+            'tanggal': row['tanggal'],
+            'schema_version': row['schema_version'],
+            'key_id': row['key_id'],
+            'key_version': (row['key_version'] as num?)?.toInt() ?? 1,
+            'content_hash': row['content_hash'],
+            'ciphertext': row['ciphertext'],
+            'nonce': row['nonce'],
+            'archived_at': _iso(row['received_at']),
+          },
+      ],
+      'next_offset': offset + rows.length,
+      'has_more': rows.length >= limit,
     });
   }
 
@@ -1799,6 +2387,15 @@ VALUES (@id, @owner, @nama, 'employee', @account, @public, @encrypt,
         {'device': deviceId, 'code': code},
       );
     });
+    await _logDeviceEvent(
+      ownerId,
+      deviceId,
+      action: 'invite_claim',
+      detail: {
+        'store_id': storeId,
+        'account_sync_id': '${account['sync_id']}',
+      },
+    );
     return _json(200, {
       'device': {
         'id': deviceId,
@@ -2412,16 +3009,30 @@ WHERE i.owner_id = @owner ORDER BY i.created_at DESC LIMIT 50
     final ownerId = request.url.queryParameters['owner_id'] ?? '';
     final auth = await _manageAuth(request, ownerId, allowViewer: true);
     if (auth == null) return _error(401, 'Sesi perangkat tidak valid.');
+    final query = request.url.queryParameters;
+    final store = query['store_id'] ?? '';
+    final limit = (int.tryParse(query['limit'] ?? '') ?? 100).clamp(1, 500);
+    final offset = (int.tryParse(query['offset'] ?? '') ?? 0).clamp(0, 1 << 30);
     final rows = await db.query(
       '''
 SELECT d.*, a.role_base, a.extra_permissions, a.permissions_explicit,
-       a.aktif AS akun_aktif
+       a.aktif AS akun_aktif,
+       (sk.device_id IS NOT NULL) AS has_key,
+       COALESCE(sk.key_version, 0) AS key_version
 FROM devices d
 LEFT JOIN accounts a ON a.owner_id = d.owner_id
   AND a.sync_id = d.employee_account_id
-WHERE d.owner_id = @owner ORDER BY d.created_at
+LEFT JOIN store_keys sk ON sk.owner_id = d.owner_id
+  AND sk.device_id = d.id AND sk.store_id = @store
+WHERE d.owner_id = @owner ORDER BY d.created_at, d.id
+LIMIT @limit OFFSET @offset
 ''',
-      {'owner': ownerId},
+      {
+        'owner': ownerId,
+        'store': store,
+        'limit': limit,
+        'offset': offset,
+      },
     );
     return _json(200, rows.map(_deviceJson).toList());
   }
@@ -2438,6 +3049,12 @@ WHERE d.owner_id = @owner ORDER BY d.created_at
     await db.execute(
       'DELETE FROM store_keys WHERE owner_id = @owner AND device_id = @id',
       {'owner': ownerId, 'id': id},
+    );
+    await _logDeviceEvent(
+      ownerId,
+      id,
+      action: 'revoke',
+      actorDeviceId: '${auth['id'] ?? ''}',
     );
     return _json(200, {'ok': true});
   }
@@ -2708,12 +3325,24 @@ class _BodyTooLarge implements Exception {
   const _BodyTooLarge();
 }
 
+/// Token perangkat cocok tetapi perangkat sudah dicabut. Dibedakan dari 401
+/// agar aplikasi dapat masuk mode terkunci dan menawarkan ekspor antrean.
+class _DeviceRevoked implements Exception {
+  const _DeviceRevoked();
+}
+
 class _EnvelopeRejection implements Exception {
-  _EnvelopeRejection(this.status, this.detail, {this.code = ''});
+  _EnvelopeRejection(
+    this.status,
+    this.detail, {
+    this.code = '',
+    this.extra = const {},
+  });
 
   final int status;
   final String detail;
   final String code;
+  final Map<String, Object?> extra;
 }
 
 class _BusyRejection implements Exception {

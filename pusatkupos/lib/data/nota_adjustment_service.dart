@@ -8,6 +8,7 @@ import '../core/ids.dart';
 import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'approval_service.dart';
+import 'pajak.dart';
 import 'price_rules.dart';
 import 'store_settings.dart';
 
@@ -147,6 +148,10 @@ class NotaAdjustmentService {
           'total_servis',
           'biaya_jasa',
           'total_part',
+          'pajak_mode',
+          'pajak_dpp',
+          'pajak',
+          'pajak_diserap',
         ],
         where: 'id = ?',
         whereArgs: [recordId],
@@ -169,11 +174,21 @@ class NotaAdjustmentService {
         );
       }
       final now = nowIso();
+      final totalServis =
+          (current.first['total_servis'] as num?)?.toInt() ?? 0;
       final allocation = _splitAdjustment(
         target: target,
-        totalServis: (current.first['total_servis'] as num?)?.toInt() ?? 0,
+        totalServis: totalServis,
         biayaJasa: (current.first['biaya_jasa'] as num?)?.toInt() ?? 0,
         totalPart: (current.first['total_part'] as num?)?.toInt() ?? 0,
+      );
+      final tax = _scaledTaxSnapshot(
+        target: target,
+        totalServis: totalServis,
+        mode: '${current.first['pajak_mode'] ?? pajakModeTanpa}',
+        dpp: (current.first['pajak_dpp'] as num?)?.toInt() ?? 0,
+        pajak: (current.first['pajak'] as num?)?.toInt() ?? 0,
+        diserap: (current.first['pajak_diserap'] as num?)?.toInt() ?? 0,
       );
       final id = await txn.insert('nota_adjustments', {
         'sync_id': newSyncId(),
@@ -183,6 +198,9 @@ class NotaAdjustmentService {
         'nominal_jasa': allocation.$1,
         'nominal_part': allocation.$2,
         'diskon': 0,
+        'dpp_cents': tax.$1,
+        'ppn_cents': tax.$2,
+        'pajak_diserap_cents': tax.$3,
         'alasan': cleanReason,
         'dibuat_oleh': actor.label,
         'disetujui_oleh': ownerApproved ? approver : null,
@@ -234,6 +252,32 @@ class NotaAdjustmentService {
     if (bruto <= 0) return (adjustment, 0);
     final jasa = (adjustment * biayaJasa) ~/ bruto;
     return (jasa, adjustment - jasa);
+  }
+
+  /// Pajak efektif setelah koreksi: DPP/PPN/diserap nota asli diskalakan
+  /// terhadap total efektif. Snapshot disimpan agar rekap tidak berubah bila
+  /// tarif atau mode pajak toko diubah kemudian.
+  static (int, int, int) _scaledTaxSnapshot({
+    required int target,
+    required int totalServis,
+    required String mode,
+    required int dpp,
+    required int pajak,
+    required int diserap,
+  }) {
+    if (mode == pajakModeTanpa || totalServis <= 0) return (0, 0, 0);
+    int scale(int value) =>
+        value <= 0 || target <= 0
+        ? 0
+        : (value * target + totalServis ~/ 2) ~/ totalServis;
+    final dppSkala = scale(dpp);
+    final pajakSkala = scale(pajak);
+    final diserapSkala = scale(diserap);
+    return (
+      dppSkala,
+      pajakSkala,
+      diserapSkala > pajakSkala ? pajakSkala : diserapSkala,
+    );
   }
 
   /// Koreksi cepat memakai selisih (boleh negatif untuk retur).
@@ -383,6 +427,21 @@ class NotaAdjustmentService {
             biayaJasa: (record.first['biaya_jasa'] as num?)?.toInt() ?? 0,
             totalPart: (record.first['total_part'] as num?)?.toInt() ?? 0,
           );
+    final tax = payload.containsKey('dpp_cents')
+        ? (
+            (payload['dpp_cents'] as num?)?.toInt() ?? 0,
+            (payload['ppn_cents'] as num?)?.toInt() ?? 0,
+            (payload['pajak_diserap_cents'] as num?)?.toInt() ?? 0,
+          )
+        : _scaledTaxSnapshot(
+            target: nilaiBaru,
+            totalServis:
+                (record.first['total_servis'] as num?)?.toInt() ?? 0,
+            mode: '${record.first['pajak_mode'] ?? pajakModeTanpa}',
+            dpp: (record.first['pajak_dpp'] as num?)?.toInt() ?? 0,
+            pajak: (record.first['pajak'] as num?)?.toInt() ?? 0,
+            diserap: (record.first['pajak_diserap'] as num?)?.toInt() ?? 0,
+          );
     await txn.insert('nota_adjustments', {
       'sync_id': syncId,
       'nota_sync_id': notaSync,
@@ -391,6 +450,9 @@ class NotaAdjustmentService {
       'nominal_jasa': allocation.$1,
       'nominal_part': allocation.$2,
       'diskon': (payload['diskon'] as num?)?.toInt() ?? 0,
+      'dpp_cents': tax.$1,
+      'ppn_cents': tax.$2,
+      'pajak_diserap_cents': tax.$3,
       'alasan': payload['alasan'] ?? 'Koreksi dari perangkat lain',
       'dibuat_oleh': payload['dibuat_oleh'],
       'disetujui_oleh': payload['disetujui_oleh'],

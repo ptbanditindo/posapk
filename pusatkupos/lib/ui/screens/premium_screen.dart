@@ -65,8 +65,12 @@ class _PremiumScreenState extends State<PremiumScreen> {
       final api = await _ownerApi();
       if (api != null) {
         try {
+          final storeId = await SyncService.instance.storeId();
           relayAccounts = await api.accounts();
-          relayDevices = await api.devices();
+          relayDevices = await api.devices(
+            limit: 500,
+            storeId: storeId,
+          );
         } catch (_) {
           // Server belum siap; daftar akses tetap kosong.
         }
@@ -117,7 +121,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
     setState(() => _busy = true);
     try {
       final accounts = await api.accounts();
-      final devices = await api.devices();
+      final devices = await api.devices(
+        limit: 500,
+        storeId: await SyncService.instance.storeId(),
+      );
       if (!mounted) return;
       setState(() {
         _relayAccounts = accounts;
@@ -659,25 +666,59 @@ class _PremiumScreenState extends State<PremiumScreen> {
     }
   }
 
+  Future<void> _rotateKey() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rotasi kunci toko?'),
+        content: const Text(
+          'Semua perangkat aktif akan menerima kunci versi baru. Perangkat '
+          'yang sudah dicabut tidak dapat membuka data baru, sementara data '
+          'lama tetap dapat dibaca dengan kunci sebelumnya.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Rotasi'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      final result = await SyncService.instance.rotateStoreKey();
+      if (!mounted) return;
+      showSnack(
+        context,
+        'Kunci toko versi ${result['version']} aktif untuk '
+        '${result['devices']} perangkat.',
+      );
+      await _load();
+    } catch (error) {
+      if (mounted) {
+        showSnack(context, 'Rotasi kunci gagal: $error', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _shareStoreKey() async {
     setState(() => _busy = true);
     try {
-      final devices = await SyncService.instance.relayDevices();
-      final current = await SyncService.instance.relayDeviceId();
-      var count = 0;
-      for (final device in devices) {
-        final id = device['id'] as String? ?? '';
-        final revoked = device['revoked_at'] as String? ?? '';
-        if (id.isEmpty || id == current || revoked.isNotEmpty) continue;
-        await SyncService.instance.wrapStoreKeyForDevice(
-          targetRelayDeviceId: id,
-          targetEncryptionKey: device['encryption_key'] as String,
-        );
-        count++;
-      }
-      if (mounted) {
-        showSnack(context, 'Kunci toko dibagikan ke $count perangkat.');
-      }
+      final count = await SyncService.instance.syncStoreKeysToDevices();
+      if (!mounted) return;
+      showSnack(
+        context,
+        count == 0
+            ? 'Semua perangkat aktif sudah memegang kunci toko terbaru.'
+            : 'Kunci toko dibagikan ke $count perangkat aktif.',
+      );
     } catch (error) {
       if (mounted) {
         showSnack(context, 'Gagal bagikan kunci: $error', error: true);
@@ -825,8 +866,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                           'bisa dipakai; sinkronisasi dan multi-toko '
                           'dinonaktifkan sampai lisensi diperbarui.'
                       : 'Belum ada lisensi server yang valid. Kasir offline '
-                          'tetap gratis; sinkronisasi, multi-toko, dan '
-                          'akun karyawan memerlukan lisensi.',
+                          'tetap gratis; sinkronisasi dan multi-toko '
+                          'memerlukan lisensi.',
                 ),
               ),
             ),
@@ -911,7 +952,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
           SectionCard(
             title: 'Akun karyawan',
           trailing: TextButton.icon(
-            onPressed: premium ? _addAccount : null,
+            onPressed: _addAccount,
             icon: const Icon(Icons.person_add_alt_1),
             label: const Text('Tambah'),
           ),
@@ -1083,7 +1124,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                             subtitle: Text(
                               revoked
                                   ? 'dicabut'
-                                  : '${device['kind'] ?? '-'} · $lastSeen',
+                                  : '${device['kind'] ?? '-'} · $lastSeen'
+                                      '${_keyLabel(device)}',
                             ),
                             trailing: revoked
                                 ? null
@@ -1121,7 +1163,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   ),
                   OutlinedButton(
                     onPressed: premium ? _shareStoreKey : null,
-                    child: const Text('Bagikan akses toko'),
+                    child: const Text('Selaraskan akses kunci'),
+                  ),
+                  OutlinedButton(
+                    onPressed: premium ? _rotateKey : null,
+                    child: const Text('Rotasi kunci toko'),
                   ),
                   OutlinedButton(
                     onPressed: premium ? _uploadSnapshot : null,
@@ -1221,6 +1267,12 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final days = DateTime.now().difference(local).inDays;
     final label = DateFormat('dd/MM/yyyy HH:mm').format(local);
     return days >= 7 ? '$label (tertinggal)' : label;
+  }
+
+  String _keyLabel(Map<String, Object?> device) {
+    final version = (device['key_version'] as num?)?.toInt() ?? 0;
+    if (version <= 0) return ' · belum memegang kunci';
+    return ' · kunci v$version';
   }
 
   Widget _line(String label, String value) {

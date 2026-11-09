@@ -355,10 +355,16 @@ class FeatureFlagsService {
       final localWall = (rows.first['sync_hlc_wall'] as num?)?.toInt() ?? 0;
       final localCounter =
           (rows.first['sync_hlc_counter'] as num?)?.toInt() ?? 0;
-      if (localWall > wall ||
-          (localWall == wall && localCounter >= counter)) {
-        return;
-      }
+      final localDevice = '${rows.first['device_id'] ?? ''}';
+      final remoteDevice = '${payload['device_id'] ?? ''}';
+      // HLC terbaru menang; HLC sama diputus device_id terkecil (Lampiran C).
+      final localWins = localWall > wall ||
+          (localWall == wall &&
+              (localCounter > counter ||
+                  (localCounter == counter &&
+                      (localDevice.isEmpty ||
+                          localDevice.compareTo(remoteDevice) <= 0))));
+      if (localWins) return;
     }
     final enabled = payload['enabled'] == true ? 1 : 0;
     final values = {

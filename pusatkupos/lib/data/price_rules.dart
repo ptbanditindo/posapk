@@ -16,19 +16,26 @@ class PriceLine {
     required this.jumlah,
     required this.hargaTerdaftar,
     required this.hargaModal,
+    int? hargaInput,
     int? qtyMilli,
     this.stockItemId,
     this.jasaId,
     this.intervalBulan = 0,
     this.alasanDiskon,
     this.disetujuiOleh,
-  }) : qtyMilli = qtyMilli ?? jumlah * 1000;
+  }) : hargaInput = hargaInput ?? hargaTerdaftar,
+       qtyMilli = qtyMilli ?? jumlah * 1000;
 
   final String jenis; // jasa | part
   final String label;
   final int jumlah;
   final int qtyMilli;
+
+  /// Harga acuan (katalog/tarif normal), bukan harga yang disepakati.
   final int hargaTerdaftar;
+
+  /// Harga yang disepakati untuk baris ini sebelum alokasi diskon nota.
+  final int hargaInput;
   final int hargaModal;
   final int? stockItemId;
   final int? jasaId;
@@ -36,7 +43,7 @@ class PriceLine {
   String? alasanDiskon;
   String? disetujuiOleh;
 
-  int get subtotal => (hargaTerdaftar * qtyMilli / 1000).round();
+  int get subtotal => (hargaInput * qtyMilli / 1000).round();
   int get batasTotal => (hargaModal * qtyMilli / 1000).round();
 
   /// Jasa adalah keahlian, bukan pembelian: jasa tanpa modal tidak memiliki
@@ -102,11 +109,12 @@ class PriceRules {
             jumlah: line.jumlah,
             qtyMilli: line.qtyMilli,
             hargaTerdaftar: line.hargaTerdaftar,
+            hargaInput: line.hargaInput,
             hargaModal: line.hargaModal,
             stockItemId: line.stockItemId,
             jasaId: line.jasaId,
             intervalBulan: line.intervalBulan,
-            alasanDiskon: alasanDiskon ?? line.alasanDiskon,
+            alasanDiskon: line.alasanDiskon ?? alasanDiskon,
             disetujuiOleh: disetujuiOleh ?? line.disetujuiOleh,
           ),
         )
@@ -145,10 +153,10 @@ class PriceRules {
     final marginTotal = bruto - modalTotal;
     if (!allowBelowMinimum) {
       for (final line in lines) {
-        if (line.kenaBatasModal && line.hargaTerdaftar < line.hargaModal) {
+        if (line.kenaBatasModal && line.hargaInput < line.hargaModal) {
           throw PriceRuleViolation(
             'di_bawah_batas_minimal',
-            'Harga ${line.label} ${formatRupiah(line.hargaTerdaftar)} '
+            'Harga ${line.label} ${formatRupiah(line.hargaInput)} '
                 'di bawah modal ${formatRupiah(line.hargaModal)}.',
           );
         }

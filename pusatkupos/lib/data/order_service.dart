@@ -200,6 +200,8 @@ class WorkOrderStatusLog {
     required this.waktu,
     this.pembuat,
     this.perangkat,
+    this.hlcWall = 0,
+    this.hlcCounter = 0,
   });
 
   final int id;
@@ -209,6 +211,8 @@ class WorkOrderStatusLog {
   final String waktu;
   final String? pembuat;
   final String? perangkat;
+  final int hlcWall;
+  final int hlcCounter;
 
   factory WorkOrderStatusLog.fromRow(Map<String, Object?> row) =>
       WorkOrderStatusLog(
@@ -219,6 +223,8 @@ class WorkOrderStatusLog {
         waktu: row['waktu'] as String? ?? '',
         pembuat: row['pembuat'] as String?,
         perangkat: row['perangkat'] as String?,
+        hlcWall: (row['sync_hlc_wall'] as num?)?.toInt() ?? 0,
+        hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -277,6 +283,45 @@ class OrderService {
     }
     final isOwner = actor.isOwner;
     final hasReason = (alasanDiskon ?? '').trim().isNotEmpty;
+    ApprovalGrant? approvalGrant;
+    var approver = isOwner ? actor.label : null;
+    Future<ApprovalGrant> verifyApproval() async {
+      if (isOwner) {
+        return approvalGrant ??= ApprovalGrant(
+          label: actor.label,
+          isOwner: true,
+        );
+      }
+      if (approvalGrant != null) return approvalGrant!;
+      final hasApprovalInput =
+          (ownerPin ?? '').trim().isNotEmpty ||
+          (approverSecret ?? '').trim().isNotEmpty;
+      if (!hasApprovalInput) {
+        throw StateError(
+          'Tindakan ini memerlukan persetujuan pemilik atau penanggung jawab.',
+        );
+      }
+      try {
+        approvalGrant = await ApprovalService.instance.verify(
+          settings: settings,
+          ownerPin: ownerPin,
+          approverSecret: approverSecret,
+        );
+      } on ApprovalException catch (failure) {
+        throw PriceRuleViolation('persetujuan_gagal', failure.message);
+      }
+      approver = approvalGrant!.isOwner
+          ? 'Pemilik (PIN)'
+          : approvalGrant!.label;
+      return approvalGrant!;
+    }
+
+    if (!isOwner &&
+        ((ownerPin ?? '').trim().isNotEmpty ||
+            (approverSecret ?? '').trim().isNotEmpty)) {
+      await verifyApproval();
+    }
+    final allowBelowMinimum = isOwner || approvalGrant != null;
     final lines = <PriceLine>[];
     final jasaSyncIds = <String?>[];
     final hargaTerdaftars = <int>[];
@@ -293,11 +338,17 @@ class OrderService {
       if (jenisTransaksi == transactionJualSparepart && item.jenis != 'part') {
         throw StateError('Penjualan sparepart hanya boleh memuat barang.');
       }
-      if (item.hargaCents == 0 && (!isOwner || !hasReason)) {
+      if (item.hargaCents == 0 && !allowBelowMinimum) {
         throw PriceRuleViolation(
           'harga_nol',
           'Harga ${item.deskripsi} tidak boleh nol tanpa persetujuan '
-              'pemilik dan alasan.',
+              'pemilik.',
+        );
+      }
+      if (item.hargaCents == 0 && !hasReason) {
+        throw PriceRuleViolation(
+          'alasan_diskon_wajib',
+          'Harga ${item.deskripsi} nol. Isi alasan diskon terlebih dahulu.',
         );
       }
       var modal = item.modalCents < 0 ? 0 : item.modalCents;
@@ -356,13 +407,21 @@ class OrderService {
       jasaSyncIds.add(jasaSync);
       hargaTerdaftars.add(hargaTerdaftar);
       hargaBebasFlags.add(hargaBebas ? 1 : 0);
+      if (hargaTerdaftar > item.hargaCents && !hasReason) {
+        throw PriceRuleViolation(
+          'alasan_diskon_wajib',
+          'Harga ${item.deskripsi} di bawah harga acuan. '
+              'Isi alasan negosiasi/diskon.',
+        );
+      }
       lines.add(
         PriceLine(
           jenis: item.jenis,
           label: item.deskripsi,
           jumlah: item.jumlah,
           qtyMilli: item.qtyMilli,
-          hargaTerdaftar: item.hargaCents,
+          hargaTerdaftar: hargaTerdaftar > 0 ? hargaTerdaftar : item.hargaCents,
+          hargaInput: item.hargaCents,
           hargaModal: modal,
           stockItemId: item.stockItemId,
           jasaId: item.jasaId,
@@ -370,33 +429,35 @@ class OrderService {
         ),
       );
     }
-    String? approver = isOwner ? actor.label : null;
-    final allocation = PriceRules.allocate(
-      lines,
-      diskonCents: diskonCents,
-      allowBelowMinimum: isOwner,
-      alasanDiskon: alasanDiskon,
-      disetujuiOleh: approver,
-    );
-    if (!isOwner && diskonCents > 0 && settings.approvalDiscount) {
-      final hasApprovalInput =
-          (ownerPin ?? '').trim().isNotEmpty ||
-          (approverSecret ?? '').trim().isNotEmpty;
-      if (!hasApprovalInput) {
-        throw StateError(
-          'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
+    if (!isOwner &&
+        diskonCents > 0 &&
+        settings.approvalDiscount &&
+        approvalGrant == null) {
+      throw StateError(
+        'Diskon memerlukan persetujuan pemilik atau penanggung jawab.',
+      );
+    }
+    PriceAllocation allocation;
+    try {
+      allocation = PriceRules.allocate(
+        lines,
+        diskonCents: diskonCents,
+        allowBelowMinimum: allowBelowMinimum,
+        alasanDiskon: alasanDiskon,
+        disetujuiOleh: approver,
+      );
+    } on PriceRuleViolation catch (violation) {
+      if (!isOwner &&
+          approvalGrant == null &&
+          (violation.code == 'di_bawah_batas_minimal' ||
+              violation.code == 'diskon_melebihi_margin')) {
+        throw PriceRuleViolation(
+          'persetujuan_diperlukan',
+          '${violation.message} Diperlukan persetujuan pemilik atau '
+              'penanggung jawab.',
         );
       }
-      try {
-        final approval = await ApprovalService.instance.verify(
-          settings: settings,
-          ownerPin: ownerPin,
-          approverSecret: approverSecret,
-        );
-        approver = approval.isOwner ? 'Pemilik (PIN)' : approval.label;
-      } on ApprovalException catch (failure) {
-        throw PriceRuleViolation('persetujuan_gagal', failure.message);
-      }
+      rethrow;
     }
     return AppDatabase.instance.db.transaction((txn) async {
       String nomor;
@@ -771,7 +832,6 @@ class OrderService {
       estimateSyncId: estimateSyncId,
       totalEstimasiTerakhir: estimate.totalCents,
       pajakSnapshot: pajakSnapshot,
-      approvedByOverride: estimate.disetujuiOleh,
       alasanDiskon: 'Konversi estimasi ${estimate.nomorEstimasi}',
       enqueue: enqueueNote,
       enqueueEstimate: enqueueEstimate,

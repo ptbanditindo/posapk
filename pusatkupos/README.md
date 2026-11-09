@@ -79,10 +79,17 @@ aplikasi tetap bisa dipasang di perangkat tanpa Bluetooth/USB OTG.
 | Platform | Status | Database | Catatan |
 |---|---|---|---|
 | Android | Target utama | SQLCipher | Kunci database di secure storage; printer Bluetooth/USB; APK rilis |
-| Windows | Pengembangan/desktop | SQLite FFI | Tidak terenkripsi; `encryptionNote` ditampilkan |
+| Windows | Pengembangan/desktop | SQLite FFI | Tidak terenkripsi; wajib BitLocker/EFS + ACL folder data; `encryptionNote` ditampilkan |
 | Web | Pengembangan | SQLite FFI web | Tidak terenkripsi; secure storage terbatas; bukan untuk data produksi |
 | iOS/macOS | Kode tersedia | SQLCipher | Folder platform belum dikonfigurasi di repositori |
-| Linux | Kode tersedia | SQLite FFI | Folder platform belum dikonfigurasi di repositori |
+| Linux | Kode tersedia | SQLite FFI | Tidak terenkripsi; wajib LUKS + ACL folder data; folder platform belum dikonfigurasi |
+
+Database lokal hanya dienkripsi SQLCipher di Android/iOS/macOS. Di
+Windows/Linux, lindungi folder data aplikasi dengan enkripsi volume
+(BitLocker/EFS atau LUKS) dan ACL pengguna; web hanya untuk pengembangan.
+PIN pemilik tidak disimpan sebagai hash di `app_meta`; verifikasi memakai
+hash PBKDF2 di secure storage sehingga berkas database tidak memuat bahan
+serangan PIN offline.
 
 Pengujian otomatis berjalan di Dart VM dengan database SQLite in-memory
 (`test/support/test_database.dart`) dan tidak menyentuh database pengguna.

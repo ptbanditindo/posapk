@@ -31,6 +31,7 @@ class PosScreen extends StatefulWidget {
 class _PosScreenState extends State<PosScreen> {
   final _keluhan = TextEditingController();
   final _diskon = TextEditingController();
+  final _alasanDiskon = TextEditingController();
   final _bayar = TextEditingController();
   final _garansiBulan = TextEditingController(text: '1');
   bool _garansiEdited = false;
@@ -75,6 +76,7 @@ class _PosScreenState extends State<PosScreen> {
     AppState.instance.removeListener(_load);
     _keluhan.dispose();
     _diskon.dispose();
+    _alasanDiskon.dispose();
     _bayar.dispose();
     _garansiBulan.dispose();
     _garansiCatatan.dispose();
@@ -137,6 +139,22 @@ class _PosScreenState extends State<PosScreen> {
     return margin < 0 ? 0 : margin;
   }
 
+  /// Alasan nota wajib bila ada diskon atau baris nego tanpa alasan sendiri.
+  bool get _alasanWajib =>
+      _diskonCents > 0 ||
+      _jobs.any(
+        (job) =>
+            job.hargaTerdaftarCents > 0 &&
+            job.hargaCents < job.hargaTerdaftarCents &&
+            (job.alasanDiskon ?? '').trim().isEmpty,
+      ) ||
+      _parts.any(
+        (part) =>
+            part.hargaTerdaftarCents > 0 &&
+            part.hargaCents < part.hargaTerdaftarCents &&
+            (part.alasanDiskon ?? '').trim().isEmpty,
+      );
+
   bool get _diskonMelebihiMargin =>
       !AppState.instance.isOwner &&
       !_diskonInvalid &&
@@ -157,6 +175,14 @@ class _PosScreenState extends State<PosScreen> {
     if (actor == null || settings == null) return false;
     return AppState.instance.can('beri_kredit') &&
         settings.roleAllows(actor.role, 'beri_kredit');
+  }
+
+  bool get _canStockOut {
+    final actor = _actor;
+    final settings = _settings;
+    if (actor == null || settings == null) return false;
+    return AppState.instance.can('stok_keluar') &&
+        settings.roleAllows(actor.role, 'stok_keluar');
   }
 
   bool get _canSave {
@@ -351,6 +377,14 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _addPart() async {
+    if (_jenis != transactionEstimasiSaja && !_canStockOut) {
+      showSnack(
+        context,
+        'Peran ini tidak berhak mengeluarkan stok.',
+        error: true,
+      );
+      return;
+    }
     if (_stock.isEmpty) {
       showSnack(context, 'Belum ada sparepart. Tambahkan di menu Stok.',
           error: true);
@@ -428,6 +462,17 @@ class _PosScreenState extends State<PosScreen> {
       showSnack(context, 'Tambahkan minimal satu jasa atau part.', error: true);
       return;
     }
+    if (_jenis != transactionEstimasiSaja &&
+        _parts.isNotEmpty &&
+        !_canStockOut) {
+      showSnack(
+        context,
+        'Peran ini tidak berhak mengeluarkan stok. Hapus part atau minta '
+        'izin stok keluar.',
+        error: true,
+      );
+      return;
+    }
     if (_diskonInvalid) {
       showSnack(context, 'Format diskon tidak valid.', error: true);
       return;
@@ -446,6 +491,14 @@ class _PosScreenState extends State<PosScreen> {
         context,
         'Diskon maksimal ${formatRupiah(_maxDiscountCents)} '
         '(selisih harga jual dan modal).',
+        error: true,
+      );
+      return;
+    }
+    if (_alasanWajib && _alasanDiskon.text.trim().isEmpty) {
+      showSnack(
+        context,
+        'Alasan negosiasi/diskon wajib diisi.',
         error: true,
       );
       return;
@@ -552,6 +605,7 @@ class _PosScreenState extends State<PosScreen> {
         _parts.clear();
         _keluhan.clear();
         _diskon.clear();
+        _alasanDiskon.clear();
         _bayar.clear();
         _unitId = null;
         _mechanicIds.clear();
@@ -630,7 +684,9 @@ class _PosScreenState extends State<PosScreen> {
               ? transactionServisLangsung
               : _jenis,
           diskonCents: _diskonCents,
-          alasanDiskon: _diskonCents > 0 ? 'Diskon estimasi' : null,
+          alasanDiskon: _alasanDiskon.text.trim().isEmpty
+              ? (_alasanWajib ? 'Diskon estimasi' : null)
+              : _alasanDiskon.text.trim(),
           ownerPin: ownerPin,
           approverSecret: approverSecret,
           actor: actor,
@@ -697,6 +753,7 @@ class _PosScreenState extends State<PosScreen> {
         _parts.clear();
         _keluhan.clear();
         _diskon.clear();
+        _alasanDiskon.clear();
         _bayar.clear();
         _unitId = null;
         _mechanicIds.clear();
@@ -774,9 +831,9 @@ class _PosScreenState extends State<PosScreen> {
     final settings = _settings;
     String? ownerPin;
     String? approverSecret;
-    // Diskon diverifikasi sebelum transaksi, limit kredit setelah total
-    // dihitung; izinkan dua permintaan PIN dalam satu simpan.
+    // Satu grant berlaku untuk seluruh baris dan limit kredit transaksi ini.
     var approvalPrompts = 0;
+    final alasan = _alasanDiskon.text.trim();
     while (true) {
       try {
         return await AppDatabase.instance.createTransaction(
@@ -811,6 +868,7 @@ class _PosScreenState extends State<PosScreen> {
           garansiBarangNilai: garansiBarangNilai,
           garansiBarangSatuan: _garansiBarangSatuan,
           unitDitinggal: _unitDitinggal,
+          alasanDiskon: alasan.isEmpty ? null : alasan,
           ownerPin: ownerPin,
           approverSecret: approverSecret,
           enqueue: (txn, recordId) =>
@@ -819,7 +877,7 @@ class _PosScreenState extends State<PosScreen> {
               SyncService.instance.enqueueCommission(commissionId, txn: txn),
         );
       } on StateError catch (error) {
-        if (approvalPrompts >= 2 || !error.message.contains('persetujuan')) {
+        if (approvalPrompts >= 1 || !error.message.contains('persetujuan')) {
           rethrow;
         }
         final secret = await _askApproval(settings);
@@ -1122,7 +1180,15 @@ class _PosScreenState extends State<PosScreen> {
                         contentPadding: EdgeInsets.zero,
                         title: Text(_jobs[i].deskripsi),
                         subtitle: Text(
-                          '${_jobs[i].jumlah} × ${formatRupiah(_jobs[i].hargaCents)}',
+                          _jobs[i].hargaTerdaftarCents > 0 &&
+                                  _jobs[i].hargaTerdaftarCents !=
+                                      _jobs[i].hargaCents
+                              ? '${_jobs[i].jumlah} × '
+                                  '${formatRupiah(_jobs[i].hargaCents)} · '
+                                  'acuan '
+                                  '${formatRupiah(_jobs[i].hargaTerdaftarCents)}'
+                              : '${_jobs[i].jumlah} × '
+                                  '${formatRupiah(_jobs[i].hargaCents)}',
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -1156,7 +1222,15 @@ class _PosScreenState extends State<PosScreen> {
                         contentPadding: EdgeInsets.zero,
                         title: Text(_parts[i].nama),
                         subtitle: Text(
-                          '${_parts[i].qtyLabel} × ${formatRupiah(_parts[i].hargaCents)}',
+                          _parts[i].hargaTerdaftarCents > 0 &&
+                                  _parts[i].hargaTerdaftarCents !=
+                                      _parts[i].hargaCents
+                              ? '${_parts[i].qtyLabel} × '
+                                  '${formatRupiah(_parts[i].hargaCents)} · '
+                                  'acuan '
+                                  '${formatRupiah(_parts[i].hargaTerdaftarCents)}'
+                              : '${_parts[i].qtyLabel} × '
+                                  '${formatRupiah(_parts[i].hargaCents)}',
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -1311,6 +1385,17 @@ class _PosScreenState extends State<PosScreen> {
                   ),
                 ],
               ),
+              if (_alasanWajib) ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _alasanDiskon,
+                  decoration: const InputDecoration(
+                    labelText: 'Alasan negosiasi/diskon (wajib)',
+                    hintText: 'Contoh: pelanggan langganan',
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ],
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -1329,7 +1414,7 @@ class _PosScreenState extends State<PosScreen> {
                   const SizedBox(width: 8),
                   OutlinedButton(
                     onPressed: () {
-                      _bayar.text = formatRupiahPlain(_total);
+                      _bayar.text = formatRupiahInput(_total);
                       setState(() {});
                     },
                     child: const Text('Bayar penuh'),
@@ -1616,15 +1701,27 @@ class _JobDialog extends StatefulWidget {
 class _JobDialogState extends State<_JobDialog> {
   final _desc = TextEditingController();
   final _qty = TextEditingController(text: '1');
+  final _acuan = TextEditingController();
   final _harga = TextEditingController();
+  final _alasan = TextEditingController();
   int? _catalogId;
   String? _error;
+
+  int? get _acuanCents => tryParseRupiahToCents(_acuan.text);
+  int? get _hargaCents => tryParseRupiahToCents(_harga.text);
+  bool get _nego {
+    final acuan = _acuanCents;
+    final harga = _hargaCents;
+    return acuan != null && harga != null && harga < acuan;
+  }
 
   @override
   void dispose() {
     _desc.dispose();
     _qty.dispose();
+    _acuan.dispose();
     _harga.dispose();
+    _alasan.dispose();
     super.dispose();
   }
 
@@ -1659,6 +1756,7 @@ class _JobDialogState extends State<_JobDialog> {
                   _catalogId = value;
                   if (item != null) {
                     _desc.text = item.nama;
+                    _acuan.text = formatRupiahPlain(item.hargaCents);
                     _harga.text = formatRupiahPlain(item.hargaCents);
                   }
                 });
@@ -1683,20 +1781,40 @@ class _JobDialogState extends State<_JobDialog> {
               const SizedBox(width: 10),
               Expanded(
                 child: TextField(
-                  controller: _harga,
+                  controller: _acuan,
                   keyboardType: TextInputType.number,
                   readOnly: _catalogId != null,
                   decoration: InputDecoration(
-                    labelText: 'Harga',
-                    errorText: _error,
+                    labelText: 'Harga normal',
                     helperText: _catalogId == null
-                        ? null
-                        : 'Harga dari daftar tarif',
+                        ? 'Harga acuan sebelum nego'
+                        : 'Dari daftar tarif',
                   ),
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _harga,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: 'Harga disepakati',
+              errorText: _error,
+              helperText: 'Boleh di bawah harga normal dengan alasan',
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          if (_nego) ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _alasan,
+              decoration: const InputDecoration(
+                labelText: 'Alasan nego (wajib)',
+                hintText: 'Contoh: pelanggan langganan',
+              ),
+            ),
+          ],
         ],
       ),
       actions: [
@@ -1708,13 +1826,26 @@ class _JobDialogState extends State<_JobDialog> {
           onPressed: () async {
             final desc = _desc.text.trim();
             final qty = int.tryParse(_qty.text.trim()) ?? 0;
+            final acuan = tryParseRupiahToCents(_acuan.text);
             final harga = tryParseRupiahToCents(_harga.text);
             if (desc.isEmpty || qty < 1) {
               setState(() => _error = 'Deskripsi dan qty wajib diisi.');
               return;
             }
-            if (harga == null) {
-              setState(() => _error = 'Format harga tidak valid.');
+            if (acuan == null || acuan < 0) {
+              setState(() => _error = 'Format harga normal tidak valid.');
+              return;
+            }
+            if (harga == null || harga < 0) {
+              setState(() => _error = 'Format harga disepakati tidak valid.');
+              return;
+            }
+            if (harga > acuan) {
+              setState(() => _error = 'Harga disepakati melebihi harga normal.');
+              return;
+            }
+            if (_nego && _alasan.text.trim().isEmpty) {
+              setState(() => _error = 'Alasan nego wajib diisi.');
               return;
             }
             if (harga == 0) {
@@ -1739,7 +1870,10 @@ class _JobDialogState extends State<_JobDialog> {
                 jasaId: _catalogId,
                 modalCents: selected?.hargaModalCents ?? 0,
                 intervalBulan: selected?.intervalBulan ?? 0,
-                hargaTerdaftarCents: selected?.hargaCents ?? 0,
+                hargaTerdaftarCents: acuan,
+                alasanDiskon: _nego && _alasan.text.trim().isNotEmpty
+                    ? _alasan.text.trim()
+                    : null,
               ),
             );
           },
@@ -1761,12 +1895,26 @@ class _PartDialog extends StatefulWidget {
 
 class _PartDialogState extends State<_PartDialog> {
   final _qty = TextEditingController(text: '1');
+  final _acuan = TextEditingController();
+  final _harga = TextEditingController();
+  final _alasan = TextEditingController();
   int? _stockId;
   String? _error;
+
+  int? get _acuanCents => tryParseRupiahToCents(_acuan.text);
+  int? get _hargaCents => tryParseRupiahToCents(_harga.text);
+  bool get _nego {
+    final acuan = _acuanCents;
+    final harga = _hargaCents;
+    return acuan != null && harga != null && harga < acuan;
+  }
 
   @override
   void dispose() {
     _qty.dispose();
+    _acuan.dispose();
+    _harga.dispose();
+    _alasan.dispose();
     super.dispose();
   }
 
@@ -1795,9 +1943,57 @@ class _PartDialogState extends State<_PartDialog> {
                   ),
                 )
                 .toList(),
-            onChanged: (value) => setState(() => _stockId = value),
+            onChanged: (value) {
+              final item = widget.stock
+                  .where((row) => row.id == value)
+                  .firstOrNull;
+              setState(() {
+                _stockId = value;
+                if (item != null) {
+                  _acuan.text = formatRupiahPlain(item.hargaJualCents);
+                  _harga.text = formatRupiahPlain(item.hargaJualCents);
+                }
+              });
+            },
           ),
           const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _acuan,
+                  keyboardType: TextInputType.number,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Harga normal',
+                    helperText: 'Dari daftar stok',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _harga,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'Harga disepakati',
+                    errorText: _error,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+            ],
+          ),
+          if (_nego) ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _alasan,
+              decoration: const InputDecoration(
+                labelText: 'Alasan nego (wajib)',
+                hintText: 'Contoh: pembelian banyak',
+              ),
+            ),
+          ],
           TextField(
             controller: _qty,
             keyboardType:
@@ -1832,10 +2028,29 @@ class _PartDialogState extends State<_PartDialog> {
         FilledButton(
           onPressed: () {
             final item = selected;
-            final qtyMilli =
-                parseQuantityToMilli(_qty.text.trim(), desimal: 3);
+            final qtyMilli = item == null
+                ? null
+                : parseQuantityToMilli(_qty.text.trim(), desimal: item.desimal);
+            final acuan = _acuanCents;
+            final harga = _hargaCents;
             if (item == null || qtyMilli == null || qtyMilli <= 0) {
               setState(() => _error = 'Jumlah harus lebih dari nol.');
+              return;
+            }
+            if (acuan == null || acuan < 0) {
+              setState(() => _error = 'Pilih barang terlebih dahulu.');
+              return;
+            }
+            if (harga == null || harga < 0) {
+              setState(() => _error = 'Format harga tidak valid.');
+              return;
+            }
+            if (harga > acuan) {
+              setState(() => _error = 'Harga melebihi harga normal.');
+              return;
+            }
+            if (_nego && _alasan.text.trim().isEmpty) {
+              setState(() => _error = 'Alasan nego wajib diisi.');
               return;
             }
             if (qtyMilli > item.jumlahMilli) {
@@ -1852,9 +2067,13 @@ class _PartDialogState extends State<_PartDialog> {
                 nama: item.nama,
                 jumlah: qtyMilli ~/ 1000,
                 qtyMilli: qtyMilli,
-                hargaCents: item.hargaJualCents,
+                hargaCents: harga,
                 modalCents: item.hargaModalCents,
                 intervalBulan: item.intervalBulan,
+                hargaTerdaftarCents: acuan,
+                alasanDiskon: _nego && _alasan.text.trim().isNotEmpty
+                    ? _alasan.text.trim()
+                    : null,
               ),
             );
           },

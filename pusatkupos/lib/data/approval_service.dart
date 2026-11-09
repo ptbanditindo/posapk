@@ -15,6 +15,18 @@ class ApprovalResult {
   final bool isOwner;
 }
 
+/// Grant persetujuan: hasil verifikasi yang berlaku untuk seluruh baris pada
+/// satu transaksi. PIN hanya membuka grant; grant inilah yang memberi izin.
+class ApprovalGrant extends ApprovalResult {
+  ApprovalGrant({
+    required super.label,
+    required super.isOwner,
+    DateTime? verifiedAt,
+  }) : verifiedAt = verifiedAt ?? DateTime.now();
+
+  final DateTime verifiedAt;
+}
+
 class ApprovalException implements Exception {
   ApprovalException(this.message);
 
@@ -37,7 +49,7 @@ class ApprovalService {
 
   /// [executor] wajib diisi bila dipanggil di dalam transaksi database agar
   /// verifikasi memakai koneksi transaksi yang sama.
-  Future<ApprovalResult> verify({
+  Future<ApprovalGrant> verify({
     required StoreSettings settings,
     String? ownerPin,
     String? approverSecret,
@@ -64,7 +76,7 @@ class ApprovalService {
       if (verification != PinVerification.ok) {
         throw ApprovalException('PIN pemilik tidak valid.');
       }
-      return const ApprovalResult(label: 'Pemilik', isOwner: true);
+      return ApprovalGrant(label: 'Pemilik', isOwner: true);
     }
 
     final syncId = (settings.approverEmployeeSyncId ?? '').trim();
@@ -124,7 +136,7 @@ class ApprovalService {
     await LoginGuard.clear(scope, executor: executor);
     final nama =
         '${account['nama'] ?? account['username'] ?? 'Penanggung jawab'}';
-    return ApprovalResult(label: '$nama (Penanggung jawab)', isOwner: false);
+    return ApprovalGrant(label: '$nama (Penanggung jawab)', isOwner: false);
   }
 
   Future<bool> _verify(

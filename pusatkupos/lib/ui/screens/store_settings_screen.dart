@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/dates.dart';
 import '../../data/access_control.dart';
 import '../../data/account_service.dart';
 import '../../data/pajak.dart';
@@ -100,6 +101,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     String? pajakMode,
     int? pajakPersenBp,
     String? pajakPenanggung,
+    String? zonaWaktu,
   }) {
     final current = _settings!;
     return StoreSettings(
@@ -122,6 +124,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
       pajakMode: pajakMode ?? current.pajakMode,
       pajakPersenBp: pajakPersenBp ?? current.pajakPersenBp,
       pajakPenanggung: pajakPenanggung ?? current.pajakPenanggung,
+      zonaWaktu: zonaWaktu ?? current.zonaWaktu,
       syncHlcWall: current.syncHlcWall,
       syncHlcCounter: current.syncHlcCounter,
     );
@@ -643,6 +646,30 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                     ),
                   ),
               ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SectionCard(
+            title: 'Zona waktu',
+            subtitle: 'Dipakai untuk batas hari laporan, nomor harian, dan '
+                'tanggal nota. Pilih sesuai lokasi toko.',
+            child: DropdownButtonFormField<String>(
+              initialValue: zonaWaktuOffsets.containsKey(settings.zonaWaktu)
+                  ? settings.zonaWaktu
+                  : zonaWaktuDefault,
+              decoration: const InputDecoration(labelText: 'Zona waktu toko'),
+              items: zonaWaktuOffsets.keys
+                  .map(
+                    (zona) => DropdownMenuItem(
+                      value: zona,
+                      child: Text(zonaWaktuLabel(zona)),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                _update((current) => _copy(zonaWaktu: value));
+              },
             ),
           ),
           const SizedBox(height: 12),

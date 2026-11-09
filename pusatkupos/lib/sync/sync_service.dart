@@ -8,8 +8,11 @@ import '../core/app_log.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
 import '../core/relay_url.dart';
+import '../auth/operator.dart';
 import '../data/account_service.dart';
+import '../data/access_control.dart';
 import '../data/app_database.dart';
+import '../data/audit_service.dart';
 import '../data/device_service.dart';
 import '../data/feature_flags.dart';
 import '../data/license_service.dart';
@@ -29,7 +32,9 @@ import 'crypto.dart';
 import 'protocol.dart';
 import 'relay_client.dart';
 import 'snapshot_sync.dart';
+import 'store_key_ring.dart';
 import 'sync_conflict_rules.dart';
+import 'sync_scheduler.dart';
 import 'sync_secrets.dart';
 
 class SyncService {
@@ -55,7 +60,7 @@ class SyncService {
     required String enrollToken,
     required String storeId,
   }) =>
-      AppDatabase.instance.runViewerWrite(
+      AppDatabase.instance.runViewerSyncWrite(
         () => _configureBody(
           relayUrl: relayUrl,
           enrollToken: enrollToken,
@@ -115,19 +120,93 @@ class SyncService {
     return legacy;
   }
 
+  static const String _keyRingSecret = 'sync.store_key_ring';
+
+  Future<StoreKeyRing?> storeKeyRing({String? storeId}) async {
+    final raw = await SyncSecrets.instance.read(
+      _keyRingSecret,
+      storeId: storeId,
+    );
+    if (raw != null && raw.isNotEmpty) {
+      return StoreKeyRing.fromJson(raw);
+    }
+    final single = await SyncSecrets.instance.read(
+      'sync.store_key',
+      storeId: storeId,
+    );
+    if (single == null || single.isEmpty) return null;
+    final ring = StoreKeyRing(
+      activeVersion: 1,
+      keys: {1: b64d(single)},
+    );
+    await _saveStoreKeyRing(ring, storeId: storeId);
+    return ring;
+  }
+
+  Future<StoreKeyRing> ensureStoreKeyRing({String? storeId}) async {
+    final existing = await storeKeyRing(storeId: storeId);
+    if (existing != null) return existing;
+    final secureRandom = Random.secure();
+    final key = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+    final ring = StoreKeyRing(activeVersion: 1, keys: {1: key});
+    await _saveStoreKeyRing(ring, storeId: storeId);
+    return ring;
+  }
+
+  Future<void> _saveStoreKeyRing(
+    StoreKeyRing ring, {
+    String? storeId,
+  }) async {
+    await SyncSecrets.instance.write(
+      _keyRingSecret,
+      ring.toJson(),
+      storeId: storeId,
+    );
+    await SyncSecrets.instance.write(
+      'sync.store_key',
+      b64e(ring.active),
+      storeId: storeId,
+    );
+  }
+
+  /// Menyimpan kunci hasil pemulihan escrow. Bila kunci dengan penanda sama
+  /// sudah ada, versi lama dipertahankan dan hanya status aktif yang berubah.
+  Future<void> installRecoveredStoreKey({
+    required String storeId,
+    required List<int> key,
+  }) async {
+    final existing = await storeKeyRing(storeId: storeId);
+    if (existing == null) {
+      await _saveStoreKeyRing(
+        StoreKeyRing(activeVersion: 1, keys: {1: key}),
+        storeId: storeId,
+      );
+      return;
+    }
+    final keyId = keyIdFor(key);
+    final matching = existing.versionForKeyId(keyId);
+    if (matching > 0) {
+      await _saveStoreKeyRing(
+        StoreKeyRing(activeVersion: matching, keys: existing.keys),
+        storeId: storeId,
+      );
+      return;
+    }
+    final nextVersion = existing.keys.keys.reduce(max) + 1;
+    await _saveStoreKeyRing(
+      existing.withKey(nextVersion, key, activate: true),
+      storeId: storeId,
+    );
+  }
+
   Future<List<int>?> existingStoreKey() async {
-    final stored = await SyncSecrets.instance.read('sync.store_key');
-    if (stored == null || stored.isEmpty) return null;
-    return b64d(stored);
+    final ring = await storeKeyRing();
+    return ring?.active;
   }
 
   Future<List<int>> ensureStoreKey() async {
-    final stored = await existingStoreKey();
-    if (stored != null) return stored;
-    final secureRandom = Random.secure();
-    final random = List<int>.generate(32, (_) => secureRandom.nextInt(256));
-    await SyncSecrets.instance.write('sync.store_key', b64e(random));
-    return random;
+    final ring = await ensureStoreKeyRing();
+    return ring.active;
   }
 
   Future<String> pinnedOwnerPublicKey() async {
@@ -150,6 +229,7 @@ class SyncService {
     required String store,
     required String deviceId,
     required String wrapped,
+    required int keyVersion,
     required String signature,
   }) async {
     if (signature.isEmpty) {
@@ -166,14 +246,28 @@ class SyncService {
           'store_id': store,
           'device_id': deviceId,
           'wrapped_key': wrapped,
+          'key_version': keyVersion,
         }),
       ),
       signature,
     );
     if (!valid) {
-      throw StateError(
-        'Tanda tangan key-wrap tidak cocok dengan kunci owner yang dipin.',
+      final legacy = await verifyPayload(
+        ownerKey,
+        utf8.encode(
+          canonicalJson({
+            'store_id': store,
+            'device_id': deviceId,
+            'wrapped_key': wrapped,
+          }),
+        ),
+        signature,
       );
+      if (!legacy || keyVersion != 1) {
+        throw StateError(
+          'Tanda tangan key-wrap tidak cocok dengan kunci owner yang dipin.',
+        );
+      }
     }
   }
 
@@ -195,10 +289,12 @@ class SyncService {
         .bootstrap(store);
     final wrapped = boot['wrapped_key'] as String? ?? '';
     if (wrapped.isEmpty) return (await existingStoreKey()) != null;
+    final keyVersion = (boot['key_version'] as num?)?.toInt() ?? 1;
     await _verifyKeyWrap(
       store: store,
       deviceId: relayId,
       wrapped: wrapped,
+      keyVersion: keyVersion,
       signature: boot['wrapped_key_signature'] as String? ?? '',
     );
     final encryptionPrivate =
@@ -207,13 +303,35 @@ class SyncService {
       throw StateError('Kunci enkripsi perangkat tidak tersedia.');
     }
     final storeKey = await unwrapStoreKey(encryptionPrivate, wrapped);
-    await SyncSecrets.instance.write('sync.store_key', b64e(storeKey));
+    final current = await storeKeyRing();
+    if (current == null) {
+      await _saveStoreKeyRing(
+        StoreKeyRing(activeVersion: keyVersion, keys: {keyVersion: storeKey}),
+      );
+      return true;
+    }
+    final keyId = keyIdFor(storeKey);
+    final knownVersion = current.versionForKeyId(keyId);
+    var ring = current.withKey(keyVersion, storeKey);
+    if (knownVersion > 0 && knownVersion != keyVersion) {
+      ring = ring.withKey(knownVersion, storeKey);
+    }
+    final active = knownVersion > 0
+        ? knownVersion
+        : (keyVersion >= current.activeVersion
+            ? keyVersion
+            : current.activeVersion);
+    await _saveStoreKeyRing(
+      StoreKeyRing(activeVersion: active, keys: ring.keys),
+    );
     return true;
   }
 
   Future<void> wrapStoreKeyForDevice({
     required String targetRelayDeviceId,
     required String targetEncryptionKey,
+    List<int>? storeKey,
+    int? keyVersion,
   }) async {
     await _requirePremium();
     final url = await relayUrl();
@@ -224,8 +342,11 @@ class SyncService {
     final ownerPrivate =
         await SecureStore.instance.read('owner.signing.private');
     if (ownerPrivate == null) throw StateError('Kunci owner tidak tersedia.');
-    final storeKey = await ensureStoreKey();
-    final wrapped = await wrapStoreKey(targetEncryptionKey, storeKey);
+    final ring = await ensureStoreKeyRing();
+    final key = storeKey ?? ring.active;
+    final version =
+        keyVersion ?? (storeKey == null ? ring.activeVersion : 1);
+    final wrapped = await wrapStoreKey(targetEncryptionKey, key);
     final signature = await signPayload(
       ownerPrivate,
       utf8.encode(
@@ -233,6 +354,7 @@ class SyncService {
           'store_id': await storeId(),
           'device_id': targetRelayDeviceId,
           'wrapped_key': wrapped,
+          'key_version': version,
         }),
       ),
     );
@@ -240,17 +362,152 @@ class SyncService {
       storeId: await storeId(),
       deviceId: targetRelayDeviceId,
       wrappedKey: wrapped,
+      keyVersion: version,
       signature: signature,
     );
   }
 
-  Future<List<Map<String, Object?>>> relayDevices() async {
+  /// Merotasi store key: membuat versi baru, membagikan wrap baru ke semua
+  /// perangkat aktif, lalu mengaktifkan versi baru. Kunci lama tetap disimpan
+  /// di key ring agar payload historis masih terbaca.
+  Future<Map<String, Object?>> rotateStoreKey() async {
+    await _requirePremium();
     final url = await relayUrl();
     final token = await relayDeviceToken();
     if (url == null || url.isEmpty || token == null || token.isEmpty) {
       throw StateError('Daftarkan perangkat ini ke relay terlebih dahulu.');
     }
-    return RelayClient(baseUrl: url, deviceToken: token).devices();
+    final ring = await ensureStoreKeyRing();
+    final nextVersion = ring.keys.keys.reduce(max) + 1;
+    final oldKey = ring.active;
+    final secureRandom = Random.secure();
+    final newKey = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+    final devices = await relayDevices(limit: 500);
+    final targets = <String, String>{};
+    for (final device in devices) {
+      final id = '${device['id'] ?? ''}';
+      final encryption = '${device['encryption_key'] ?? ''}';
+      final revoked = '${device['revoked_at'] ?? ''}';
+      if (id.isEmpty || encryption.isEmpty || revoked.isNotEmpty) continue;
+      targets[id] = encryption;
+    }
+    if (targets.isEmpty) {
+      throw StateError(
+        'Tidak ada perangkat aktif yang dapat menerima kunci baru.',
+      );
+    }
+    final rotated = <String>[];
+    try {
+      for (final entry in targets.entries) {
+        await wrapStoreKeyForDevice(
+          targetRelayDeviceId: entry.key,
+          targetEncryptionKey: entry.value,
+          storeKey: newKey,
+          keyVersion: nextVersion,
+        );
+        rotated.add(entry.key);
+      }
+    } catch (error) {
+      for (final id in rotated) {
+        final encryption = targets[id];
+        if (encryption == null) continue;
+        try {
+          await wrapStoreKeyForDevice(
+            targetRelayDeviceId: id,
+            targetEncryptionKey: encryption,
+            storeKey: oldKey,
+            keyVersion: ring.activeVersion,
+          );
+        } catch (_) {
+          // Rollback terbaik; owner dapat mengulang rotasi.
+        }
+      }
+      throw StateError('Rotasi kunci dibatalkan: $error');
+    }
+    await _saveStoreKeyRing(
+      ring.withKey(nextVersion, newKey, activate: true),
+    );
+    final keyId = keyIdFor(newKey);
+    await AuditService.instance.recordNow(
+      aksi: 'key.rotate',
+      entity: 'store_key',
+      entityId: await storeId(),
+      aktor: 'pemilik',
+      before: {
+        'version': ring.activeVersion,
+        'key_id': keyIdFor(oldKey),
+      },
+      after: {
+        'version': nextVersion,
+        'key_id': keyId,
+        'devices': targets.length,
+      },
+    );
+    return {
+      'version': nextVersion,
+      'key_id': keyId,
+      'devices': targets.length,
+    };
+  }
+
+  Future<List<Map<String, Object?>>> relayDevices({
+    int limit = 100,
+    int offset = 0,
+  }) async {
+    final url = await relayUrl();
+    final token = await relayDeviceToken();
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw StateError('Daftarkan perangkat ini ke relay terlebih dahulu.');
+    }
+    return RelayClient(baseUrl: url, deviceToken: token).devices(
+      limit: limit,
+      offset: offset,
+      storeId: await storeId(),
+    );
+  }
+
+  /// Membagikan kunci toko aktif ke perangkat aktif yang belum memegangnya
+  /// atau masih memakai versi lama. Hanya owner yang menandatangani key-wrap,
+  /// sehingga perangkat baru tidak pernah memegang kunci tanpa izin owner.
+  Future<int> syncStoreKeysToDevices() async {
+    await _requirePremium();
+    final ownerPrivate =
+        await SecureStore.instance.read('owner.signing.private');
+    if (ownerPrivate == null || ownerPrivate.isEmpty) {
+      throw StateError('Kunci owner tidak tersedia untuk membagikan kunci.');
+    }
+    final ring = await ensureStoreKeyRing();
+    final devices = await relayDevices(limit: 500);
+    final granted = <String>[];
+    for (final device in devices) {
+      final id = '${device['id'] ?? ''}';
+      final encryption = '${device['encryption_key'] ?? ''}';
+      final revoked = '${device['revoked_at'] ?? ''}';
+      final hasKey = device['has_key'] == true;
+      final version = (device['key_version'] as num?)?.toInt() ?? 0;
+      if (id.isEmpty || encryption.isEmpty || revoked.isNotEmpty) continue;
+      if (hasKey && version >= ring.activeVersion) continue;
+      await wrapStoreKeyForDevice(
+        targetRelayDeviceId: id,
+        targetEncryptionKey: encryption,
+        storeKey: ring.active,
+        keyVersion: ring.activeVersion,
+      );
+      granted.add(id);
+    }
+    if (granted.isNotEmpty) {
+      await AuditService.instance.recordNow(
+        aksi: 'key.grant',
+        entity: 'store_key',
+        entityId: await storeId(),
+        aktor: 'pemilik',
+        after: {
+          'version': ring.activeVersion,
+          'devices': granted,
+        },
+      );
+    }
+    return granted.length;
   }
 
   /// Membuat kode pairing karyawan yang berlaku 10 menit dan sekali pakai.
@@ -327,6 +584,7 @@ class SyncService {
     await SyncSecrets.instance.delete('device.current_token');
     await SyncSecrets.instance.delete('sync.relay_device_token');
     await SyncSecrets.instance.delete('sync.store_key');
+    await SyncSecrets.instance.delete('sync.store_key_ring');
     await AppDatabase.instance.deleteSetting('device.current_id');
     await AppDatabase.instance.deleteSetting('sync.local_device_id');
     await AppDatabase.instance.deleteSetting('sync.relay_device_id');
@@ -344,7 +602,7 @@ class SyncService {
   }
 
   Future<Map<String, Object?>> bootstrapNow() =>
-      AppDatabase.instance.runViewerWrite(_bootstrapNowBody);
+      AppDatabase.instance.runViewerSyncWrite(_bootstrapNowBody);
 
   Future<Map<String, Object?>> _bootstrapNowBody() async {
     await _requirePremium();
@@ -408,6 +666,7 @@ class SyncService {
       storeKey: storeKey,
       storeId: store,
       deviceId: relayId,
+      activeDeviceIds: _activeWriterIds(devices, exclude: relayId),
     );
     if (result['applied'] != true) {
       return {
@@ -579,12 +838,22 @@ class SyncService {
     if (latest > localCursor) {
       throw StateError('Sinkronkan perangkat ini sebelum membuat snapshot.');
     }
+    final snapshotStarted = DateTime.now();
     final snapshot = await AppDatabase.instance.createSnapshotPayload(
       storeId: store,
       deviceId: relayId,
       devicePrivateKey: privateKey,
       storeKey: storeKey,
       storeSeq: latest,
+    );
+    AppLog.instance.event(
+      LogCategory.sync,
+      'sync.snapshot.create',
+      data: {
+        'bytes': '${snapshot['ciphertext'] ?? ''}'.length,
+        'seq': latest,
+        'ms': DateTime.now().difference(snapshotStarted).inMilliseconds,
+      },
     );
     return client.createSnapshot({
       'store_id': store,
@@ -596,6 +865,9 @@ class SyncService {
       'checksum': snapshot['checksum'],
       'hlc_wall': snapshot['hlc_wall'],
       'hlc_counter': snapshot['hlc_counter'],
+      'schema_version': snapshot['schema_version'],
+      'schema_contract_version': snapshot['schema_contract_version'],
+      'app_version': snapshot['app_version'],
     });
   }
 
@@ -603,7 +875,7 @@ class SyncService {
     required String nama,
     bool viewer = false,
   }) =>
-      AppDatabase.instance.runViewerWrite(
+      AppDatabase.instance.runViewerSyncWrite(
         () => _registerRelayDeviceBody(nama: nama, viewer: viewer),
       );
 
@@ -636,6 +908,7 @@ class SyncService {
       device = await DeviceService.instance.currentDevice();
     }
     if (device == null) throw StateError('Perangkat lokal belum terdaftar.');
+    final previousRelayId = await relayDeviceId();
     final client = RelayClient(baseUrl: url);
     final response = await client.enroll(
       enrollToken: enroll,
@@ -655,8 +928,23 @@ class SyncService {
     }
     await AppDatabase.instance.setSetting('sync.relay_device_id', relayId);
     await AppDatabase.instance.setSetting('sync.local_device_id', device['id'] as String);
+    if (previousRelayId != null &&
+        previousRelayId.isNotEmpty &&
+        previousRelayId != relayId) {
+      // Re-enroll tidak boleh membuang outbox lama. Amplop yang belum terkirim
+      // dipindahkan ke id perangkat baru agar dokumen lokal terkirim lebih
+      // dulu, baru snapshot diambil dari relay.
+      await AppDatabase.instance.db.update(
+        'sync_outbox',
+        {'device_id': relayId},
+        where: "device_id = ? AND status = 'pending'",
+        whereArgs: [previousRelayId],
+      );
+      await AppDatabase.instance.deleteSetting('device.seq_floor');
+    }
     await SyncSecrets.instance.write('sync.relay_device_token', token);
     await AppDatabase.instance.deleteSetting('sync.relay_device_token');
+    await AppDatabase.instance.deleteSetting('sync.device_revoked_at');
     await AppDatabase.instance.deleteSetting(
       'sync.restore_requires_bootstrap',
     );
@@ -665,10 +953,12 @@ class SyncService {
     final wrappedExisting = boot['wrapped_key'] as String? ?? '';
     var keyPending = false;
     if (wrappedExisting.isNotEmpty) {
+      final wrapVersion = (boot['key_version'] as num?)?.toInt() ?? 1;
       await _verifyKeyWrap(
         store: await storeId(),
         deviceId: relayId,
         wrapped: wrappedExisting,
+        keyVersion: wrapVersion,
         signature: boot['wrapped_key_signature'] as String? ?? '',
       );
       final encryptionPrivate = await DeviceService.instance
@@ -677,7 +967,24 @@ class SyncService {
         throw StateError('Kunci enkripsi perangkat tidak tersedia.');
       }
       final storeKey = await unwrapStoreKey(encryptionPrivate, wrappedExisting);
-      await SyncSecrets.instance.write('sync.store_key', b64e(storeKey));
+      final ring = await storeKeyRing();
+      if (ring == null) {
+        await _saveStoreKeyRing(
+          StoreKeyRing(
+            activeVersion: wrapVersion,
+            keys: {wrapVersion: storeKey},
+          ),
+        );
+      } else {
+        final known = ring.versionForKeyId(keyIdFor(storeKey));
+        final version = known > 0 ? known : wrapVersion;
+        await _saveStoreKeyRing(
+          StoreKeyRing(
+            activeVersion: version,
+            keys: {...ring.keys, version: storeKey},
+          ),
+        );
+      }
     } else if (viewer) {
       keyPending = (await existingStoreKey()) == null;
     } else if (boot['store_key_exists'] != true) {
@@ -693,6 +1000,7 @@ class SyncService {
             'store_id': await storeId(),
             'device_id': relayId,
             'wrapped_key': wrapped,
+            'key_version': 1,
           }),
         ),
       );
@@ -700,6 +1008,7 @@ class SyncService {
         storeId: await storeId(),
         deviceId: relayId,
         wrappedKey: wrapped,
+        keyVersion: 1,
         signature: signature,
       );
     } else {
@@ -717,6 +1026,69 @@ class SyncService {
       "SELECT COUNT(*) AS total FROM sync_outbox WHERE status = 'pending'",
     );
     return rows.first['total'] as int? ?? 0;
+  }
+
+  /// Ringkasan antrean keluar untuk dialog keluar/reset dan panel status.
+  /// `total` menghitung semua dokumen yang belum ack agar tidak ada logout
+  /// diam-diam saat data masih tertahan.
+  Future<Map<String, Object?>> outboxSummary() async {
+    final db = AppDatabase.instance.db;
+    final counts = await db.rawQuery(
+      'SELECT status, COUNT(*) AS total, MIN(created_at) AS oldest '
+      'FROM sync_outbox GROUP BY status',
+    );
+    var pending = 0;
+    var failed = 0;
+    var deadLetter = 0;
+    var sent = 0;
+    String? oldest;
+    for (final row in counts) {
+      final status = '${row['status'] ?? ''}';
+      final total = (row['total'] as num?)?.toInt() ?? 0;
+      final created = row['oldest'] as String?;
+      final outstanding =
+          status == 'pending' || status == 'failed' || status == 'dead_letter';
+      if (outstanding &&
+          created != null &&
+          created.isNotEmpty &&
+          (oldest == null || created.compareTo(oldest) < 0)) {
+        oldest = created;
+      }
+      switch (status) {
+        case 'pending':
+          pending = total;
+        case 'failed':
+          failed = total;
+        case 'dead_letter':
+          deadLetter = total;
+        case 'sent':
+          sent = total;
+      }
+    }
+    return {
+      'pending': pending,
+      'failed': failed,
+      'sent': sent,
+      'dead_letter': deadLetter,
+      'total': pending + failed + deadLetter,
+      'oldest_at': oldest ?? '',
+    };
+  }
+
+  /// Ekspor antrean keluar sebagai JSON agar pengguna tidak kehilangan bukti
+  /// dokumen sebelum keluar atau mereset perangkat.
+  Future<String> exportOutboxJson() async {
+    final rows = await AppDatabase.instance.db.query(
+      'sync_outbox',
+      orderBy: 'seq ASC',
+    );
+    return jsonEncode({
+      'format': 'pusatkupos.outbox',
+      'version': 1,
+      'exported_at': nowIso(),
+      'store_id': await storeId(),
+      'documents': rows,
+    });
   }
 
   Future<int> pendingInboxCount() async {
@@ -781,12 +1153,24 @@ class SyncService {
     if (inboxId == null) {
       // Konflik lama tanpa amplop tersimpan (mis. versi lokal lebih baru)
       // tidak dapat diputar ulang. Tandai selesai agar tidak menggantung.
-      await db.update(
-        'sync_conflicts',
-        {'status': 'ignored', 'resolved_at': stamp, 'last_error': ''},
-        where: 'id = ?',
-        whereArgs: [conflictId],
-      );
+      await db.transaction((txn) async {
+        await txn.update(
+          'sync_conflicts',
+          {'status': 'ignored', 'resolved_at': stamp, 'last_error': ''},
+          where: 'id = ?',
+          whereArgs: [conflictId],
+        );
+        await AuditService.instance.record(
+          txn,
+          aksi: 'sync_konflik_cobaLagi',
+          entity: 'sync_conflict',
+          entityId: '$conflictId',
+          aktor: Operator.owner.label,
+          alasan: 'Amplop tidak tersimpan; konflik ditutup.',
+          before: {'status': '${rows.first['status'] ?? ''}'},
+          after: {'status': 'ignored'},
+        );
+      });
       return;
     }
     await db.transaction((txn) async {
@@ -812,12 +1196,27 @@ class SyncService {
         where: 'id = ?',
         whereArgs: [inboxId],
       );
+      await AuditService.instance.record(
+        txn,
+        aksi: 'sync_konflik_cobaLagi',
+        entity: 'sync_conflict',
+        entityId: '$conflictId',
+        aktor: Operator.owner.label,
+        alasan: 'Coba ulang konflik ${rows.first['reason'] ?? ''}.',
+        before: {'status': '${rows.first['status'] ?? ''}'},
+        after: {'status': 'retrying'},
+      );
     });
   }
 
   /// Tandai konflik selesai atas pilihan pengguna. Baris konflik tidak
   /// dihapus; amplop yang diabaikan juga ditandai agar tidak diterapkan ulang.
-  Future<void> ignoreConflict(int conflictId) async {
+  /// `resolution` membedakan "abaikan" biasa dari penyelesaian bantuan owner
+  /// dan ikut tercatat di `business_audits`.
+  Future<void> ignoreConflict(
+    int conflictId, {
+    String resolution = 'abaikan',
+  }) async {
     final db = AppDatabase.instance.db;
     final rows = await db.query(
       'sync_conflicts',
@@ -835,6 +1234,17 @@ class SyncService {
         {'status': 'ignored', 'resolved_at': stamp},
         where: 'id = ?',
         whereArgs: [conflictId],
+      );
+      await AuditService.instance.record(
+        txn,
+        aksi: 'sync_konflik_$resolution',
+        entity: 'sync_conflict',
+        entityId: '$conflictId',
+        aktor: Operator.owner.label,
+        alasan: 'Konflik ${conflict['reason'] ?? ''} ditandai selesai '
+            '($resolution).',
+        before: {'status': '${conflict['status'] ?? ''}'},
+        after: {'status': 'ignored', 'resolusi': resolution},
       );
       if (inboxId == null) return;
       final inbox = await txn.query(
@@ -905,6 +1315,7 @@ class SyncService {
         int.tryParse(await _setting('sync.storage_used_bytes') ?? '') ?? 0;
     final storageLimit =
         int.tryParse(await _setting('sync.storage_limit_bytes') ?? '') ?? 0;
+    final upgradeRequired = await _upgradeFlag();
     return {
       'relay_url': await relayUrl() ?? '',
       'store_id': await storeId(),
@@ -925,8 +1336,37 @@ class SyncService {
       'storage_limit_bytes': storageLimit,
       'storage_warning':
           (await _setting('sync.storage_warning') ?? '0') == '1',
+      'upgrade_required': upgradeRequired,
+      'device_revoked_at': await _setting('sync.device_revoked_at') ?? '',
     };
   }
+
+  /// Penanda "perbarui aplikasi" menyimpan versi yang ditolak. Setelah
+  /// aplikasi diperbarui, versi berbeda sehingga penanda lama gugur sendiri.
+  Future<String> _upgradeFlag() async {
+    final value = await _setting('sync.upgrade_required');
+    if (value == null || value.isEmpty) return '';
+    if (value != appVersion) {
+      await AppDatabase.instance.deleteSetting('sync.upgrade_required');
+      return '';
+    }
+    return value;
+  }
+
+  Future<void> _markUpgradeRequired() {
+    return AppDatabase.instance
+        .setSetting('sync.upgrade_required', appVersion);
+  }
+
+  /// Perangkat dicabut pemilik. Sinkronisasi dihentikan, outbox tidak dibuang,
+  /// dan pengguna ditawari ekspor antrean sebelum reset manual.
+  Future<void> _markDeviceRevoked() async {
+    if (await _setting('sync.device_revoked_at') != null) return;
+    await AppDatabase.instance.setSetting('sync.device_revoked_at', nowIso());
+    AppLog.instance.event(LogCategory.sync, 'sync.device_revoked');
+  }
+
+  Future<String?> deviceRevokedAt() => _setting('sync.device_revoked_at');
 
   Future<void> enqueue({
     required String entity,
@@ -984,6 +1424,7 @@ class SyncService {
       'status': 'pending',
       'created_at': nowIso(),
     });
+    SyncScheduler.instance.requestSync();
   }
 
   Future<void> enqueueCustomer(int id, {DatabaseExecutor? txn}) async {
@@ -1724,6 +2165,9 @@ class SyncService {
         'nominal_jasa': row['nominal_jasa'],
         'nominal_part': row['nominal_part'],
         'diskon': row['diskon'],
+        'dpp_cents': row['dpp_cents'],
+        'ppn_cents': row['ppn_cents'],
+        'pajak_diserap_cents': row['pajak_diserap_cents'],
         'alasan': row['alasan'],
         'dibuat_oleh': row['dibuat_oleh'],
         'disetujui_oleh': row['disetujui_oleh'],
@@ -1758,6 +2202,130 @@ class SyncService {
         'jumlah': row['jumlah'],
         'hash': row['hash'],
         'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueuePeriodClosing(
+    String syncId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'period_closings',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'period_closing',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'periode': row['periode'],
+        'rev': row['rev'],
+        'zona': row['zona'],
+        'omzet_cents': row['omzet_cents'],
+        'dpp_cents': row['dpp_cents'],
+        'ppn_cents': row['ppn_cents'],
+        'hpp_cents': row['hpp_cents'],
+        'retur_nilai_cents': row['retur_nilai_cents'],
+        'retur_hpp_cents': row['retur_hpp_cents'],
+        'kas_metode_json': row['kas_metode_json'],
+        'komisi_cents': row['komisi_cents'],
+        'transaksi': row['transaksi'],
+        'jasa_cents': row['jasa_cents'],
+        'part_cents': row['part_cents'],
+        'diskon_cents': row['diskon_cents'],
+        'dibayar_cents': row['dibayar_cents'],
+        'piutang_cents': row['piutang_cents'],
+        'modal_part_cents': row['modal_part_cents'],
+        'modal_jasa_cents': row['modal_jasa_cents'],
+        'laba_part_cents': row['laba_part_cents'],
+        'laba_jasa_cents': row['laba_jasa_cents'],
+        'ppn_diserap_cents': row['ppn_diserap_cents'],
+        'retur_jasa_cents': row['retur_jasa_cents'],
+        'retur_part_cents': row['retur_part_cents'],
+        'gaji_cents': row['gaji_cents'],
+        'jenis_json': row['jenis_json'],
+        'hash': row['hash'],
+        'closed_at': row['closed_at'],
+        'status': row['status'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueueArchiveReturn(
+    int returnId, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'archive_returns',
+      where: 'id = ?',
+      whereArgs: [returnId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final syncId = '${row['sync_id'] ?? ''}';
+    if (syncId.isEmpty) return;
+    final items = await executor.query(
+      'archive_return_items',
+      where: 'return_id = ? AND deleted_at IS NULL',
+      whereArgs: [returnId],
+      orderBy: 'id',
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'archive_return',
+      action: 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'ref_doc_id': row['ref_doc_id'],
+        'no_nota': row['no_nota'],
+        'no_retur': row['no_retur'],
+        'request_id': row['request_id'],
+        'status': row['status'],
+        'total': row['total'],
+        'total_refund': row['total_refund'],
+        'dpp': row['dpp'],
+        'pajak': row['pajak'],
+        'pajak_diserap': row['pajak_diserap'],
+        'metode_refund': row['metode_refund'],
+        'alasan': row['alasan'],
+        'dibuat_oleh': row['dibuat_oleh'],
+        'device_id': row['device_id'],
+        'created_at': row['created_at'],
+        'items': [
+          for (final item in items)
+            {
+              'sync_id': item['sync_id'],
+              'line_type': item['line_type'],
+              'line_sync_id': item['line_sync_id'],
+              'deskripsi': item['deskripsi'],
+              'jumlah_milli': item['jumlah_milli'],
+              'qty_asal_milli': item['qty_asal_milli'],
+              'harga_satuan': item['harga_satuan'],
+              'subtotal': item['subtotal'],
+              'modal_satuan': item['modal_satuan'],
+              'dpp_cents': item['dpp_cents'],
+              'ppn_cents': item['ppn_cents'],
+              'total_ditagih_cents': item['total_ditagih_cents'],
+              'stock_sync_id': item['stock_sync_id'],
+              'created_at': item['created_at'],
+            },
+        ],
       },
     );
   }
@@ -2278,16 +2846,35 @@ class SyncService {
       return result;
     } catch (error) {
       AppLog.instance.event(LogCategory.sync, 'sync.fail', error: error);
+      if (error is RelayException &&
+          (error.statusCode == 426 ||
+              error.code == 'protocol_unsupported')) {
+        // Relay menolak versi aplikasi ini. Tahan sinkronisasi, tetapi jangan
+        // buang outbox: setelah aplikasi diperbarui semua delta tetap terkirim.
+        await _markUpgradeRequired();
+      }
+      if (error is RelayException &&
+          (error.code == 'device_revoked' ||
+              (error.statusCode == 403 &&
+                  error.message.toLowerCase().contains('dicabut')))) {
+        await _markDeviceRevoked();
+      }
       await AppDatabase.instance.setSetting('sync.last_error', '$error');
       rethrow;
     }
   }
 
   Future<Map<String, Object?>> _syncNow() =>
-      AppDatabase.instance.runViewerWrite(_syncNowBody);
+      AppDatabase.instance.runViewerSyncWrite(_syncNowBody);
 
   Future<Map<String, Object?>> _syncNowBody() async {
     await _requirePremium();
+    if (await _setting('sync.device_revoked_at') != null) {
+      throw StateError(
+        'Perangkat ini sudah dicabut pemilik. Ekspor data lokal dari banner '
+        'sinkronisasi, lalu reset dan pasangkan ulang perangkat.',
+      );
+    }
     final url = await relayUrl();
     if (url == null || url.isEmpty) {
       throw StateError('Alamat relay belum diatur.');
@@ -2316,7 +2903,9 @@ class SyncService {
         'Kunci toko belum tersedia. Minta pemilik mengirim kunci toko.',
       );
     }
-    final storeKey = (await existingStoreKey())!;
+    final ring = (await storeKeyRing())!;
+    final storeKey = ring.active;
+    final storeKeysById = ring.byKeyId();
     final privateKey = await DeviceService.instance.privateKey(localId);
     if (privateKey == null) throw StateError('Kunci perangkat tidak tersedia.');
     final store = await storeId();
@@ -2339,6 +2928,7 @@ class SyncService {
             await buildEnvelope(
               devicePrivateKey: privateKey,
               storeKey: storeKey,
+              keyVersion: ring.activeVersion,
               storeId: store,
               senderDeviceId: deviceId,
               recipientDeviceId: '',
@@ -2370,7 +2960,7 @@ class SyncService {
     final inbox = await _retryInbox(
       store: store,
       deviceId: deviceId,
-      storeKey: storeKey,
+      storeKeys: storeKeysById,
       keys: keys,
       profiles: profiles,
     );
@@ -2396,6 +2986,8 @@ class SyncService {
     var pageCursor = cursor;
     var refreshedDevices = false;
     while (true) {
+      final pageStarted = DateTime.now();
+      final appliedBefore = applied;
       final feed = await client.feed(storeId: store, sinceSeq: pageCursor);
       final logStart = (feed['log_start_seq'] as num?)?.toInt() ?? 0;
       final prunedThrough = (feed['pruned_through'] as num?)?.toInt();
@@ -2420,16 +3012,30 @@ class SyncService {
         if (rawSnapshot is Map) {
           final snapshot = Map<String, Object?>.from(rawSnapshot);
           final sender = snapshot['device_id'] as String? ?? '';
-          final senderKey = keys[sender];
+          final deviceRows = await client.devices();
+          final senderKey = keys[sender] ?? _senderKeys(deviceRows)[sender];
           if (senderKey == null) {
             throw StateError('Kunci publik pengirim snapshot tidak ditemukan.');
           }
+          final snapshotStarted = DateTime.now();
           final result = await AppDatabase.instance.applySnapshotPayload(
             snapshot,
             senderPublicKey: senderKey,
             storeKey: storeKey,
             storeId: store,
             deviceId: deviceId,
+            activeDeviceIds: _activeWriterIds(deviceRows, exclude: deviceId),
+          );
+          AppLog.instance.event(
+            LogCategory.sync,
+            'sync.snapshot.apply',
+            data: {
+              'bytes': '${snapshot['ciphertext'] ?? ''}'.length,
+              'applied': result['applied'] == true,
+              'ms': DateTime.now()
+                  .difference(snapshotStarted)
+                  .inMilliseconds,
+            },
           );
           if (result['applied'] == true) {
             final seq = (result['store_seq'] as num?)?.toInt() ?? 0;
@@ -2509,11 +3115,19 @@ class SyncService {
             senderKey: key,
             senderKind: profiles[sender]?.kind ?? 'unknown',
             senderProfile: profiles[sender],
-            storeKey: storeKey,
+            storeKeys: storeKeysById,
             storeId: store,
           );
           if (didApply) applied++;
         } catch (error) {
+          if (error is ProtocolVersionException) {
+            await _markUpgradeRequired();
+            blockedSeq = blockedSeq == null || relaySeq < blockedSeq
+                ? relaySeq
+                : blockedSeq;
+            blockedError = '$error';
+            continue;
+          }
           final attempts = await _rememberFailure(
             storeId: store,
             deviceId: deviceId,
@@ -2522,10 +3136,13 @@ class SyncService {
             error: error,
           );
           conflictCount++;
-          // Baik masih dapat dicoba ulang maupun sudah habis percobaan,
-          // cursor tidak boleh melewati amplop ini. Pengguna dapat memilih
-          // "coba lagi" atau "abaikan" dari layar konflik.
-          if (blockedSeq == null || relaySeq < blockedSeq) {
+          final permanent = attempts >= SyncConflictRules.maxRetries ||
+              SyncConflictRules.isPermanent(error);
+          final compensation = error is CompensationRequired;
+          // Dead-letter dan kompensasi tidak menahan amplop lain. Hanya
+          // konflik yang masih dapat diterapkan ulang yang menahan cursor.
+          if (!compensation && !permanent &&
+              (blockedSeq == null || relaySeq < blockedSeq)) {
             blockedSeq = relaySeq;
             blockedError = attempts >= SyncConflictRules.maxRetries
                 ? 'Percobaan habis: $error'
@@ -2535,6 +3152,18 @@ class SyncService {
       }
       final latest = (feed['latest_seq'] as num?)?.toInt() ?? 0;
       final advance = feed['next_seq'] as int? ?? pageCursor;
+      AppLog.instance.event(
+        LogCategory.sync,
+        'sync.feed.page',
+        data: {
+          'since': pageCursor,
+          'envelopes': (feed['envelopes'] as List? ?? const []).length,
+          'applied': applied - appliedBefore,
+          'conflicts': conflictCount,
+          'latest': latest,
+          'ms': DateTime.now().difference(pageStarted).inMilliseconds,
+        },
+      );
       if (advance <= pageCursor) break;
       pageCursor = advance;
       if (pageCursor >= latest) break;
@@ -2568,6 +3197,7 @@ class SyncService {
       enqueueMovement: (txn, movementId) =>
           enqueueStockMovement(movementId, txn: txn),
     );
+    await _shareKeysIfNeeded(kind: profiles[deviceId]?.kind ?? '');
     return {
       'sent': sent,
       'applied': applied,
@@ -2577,7 +3207,60 @@ class SyncService {
     };
   }
 
+  /// Perangkat baru mendapat kunci tanpa tombol manual: owner memindai daftar
+  /// perangkat paling sering setiap 10 menit dan membungkus kunci aktif untuk
+  /// perangkat yang belum memilikinya. Kegagalan tidak menggagalkan sinkron.
+  Future<void> _shareKeysIfNeeded({required String kind}) async {
+    if (kind != 'owner') return;
+    final last = DateTime.tryParse(
+      await _setting('sync.last_key_grant_scan') ?? '',
+    );
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(minutes: 10)) {
+      return;
+    }
+    try {
+      final count = await syncStoreKeysToDevices();
+      await AppDatabase.instance.setSetting(
+        'sync.last_key_grant_scan',
+        nowIso(),
+      );
+      if (count > 0) {
+        AppLog.instance.event(
+          LogCategory.sync,
+          'sync.key_grant',
+          data: {'devices': count},
+        );
+      }
+    } catch (error) {
+      AppLog.instance.event(
+        LogCategory.sync,
+        'sync.key_grant_failed',
+        error: error,
+      );
+    }
+  }
+
   Future<void> _failOutbox(Map<String, Object?> row, Object error) async {
+    if (error is RelayException && error.statusCode == 426) {
+      // Simpan tetap pending tanpa menambah hitungan percobaan; relay tidak
+      // akan menerima sebelum aplikasi diperbarui.
+      await _markUpgradeRequired();
+      await AppDatabase.instance.db.update(
+        'sync_outbox',
+        {
+          'status': 'pending',
+          'error': '$error',
+          'next_retry_at': DateTime.now()
+              .add(const Duration(hours: 1))
+              .toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+      await AppDatabase.instance.setSetting('sync.last_error', '$error');
+      return;
+    }
     final attempts = ((row['retry_count'] as num?)?.toInt() ?? 0) + 1;
     if (error is RelayException &&
         error.statusCode == 409 &&
@@ -2684,6 +3367,25 @@ class SyncService {
         await AppDatabase.instance
             .setSetting('sync.batch_bytes', '$bytesLimit');
       } on RelayException catch (error) {
+        if (error.statusCode == 426) {
+          await _markUpgradeRequired();
+          for (final row in rows.sublist(start)) {
+            await AppDatabase.instance.db.update(
+              'sync_outbox',
+              {
+                'status': 'pending',
+                'error': '$error',
+                'next_retry_at': DateTime.now()
+                    .add(const Duration(hours: 1))
+                    .toIso8601String(),
+              },
+              where: 'id = ?',
+              whereArgs: [row['id']],
+            );
+          }
+          await AppDatabase.instance.setSetting('sync.last_error', '$error');
+          break;
+        }
         if (error.busy) {
           countLimit = max(1, countLimit ~/ 2);
           await AppDatabase.instance
@@ -2775,13 +3477,13 @@ class SyncService {
     required String senderKey,
     required String senderKind,
     SenderProfile? senderProfile,
-    required List<int> storeKey,
+    required Map<String, List<int>> storeKeys,
     required String storeId,
   }) async {
     final data = await verifyEnvelope(
       envelope: envelope,
       senderPublicKey: senderKey,
-      storeKey: storeKey,
+      storeKeys: storeKeys,
     );
     final idem = envelope['idempotency_key'] as String? ?? '';
     if (idem.isEmpty) {
@@ -2891,7 +3593,7 @@ class SyncService {
       })> _retryInbox({
     required String store,
     required String deviceId,
-    required List<int> storeKey,
+    required Map<String, List<int>> storeKeys,
     required Map<String, String?> keys,
     required Map<String, SenderProfile> profiles,
   }) async {
@@ -2900,24 +3602,21 @@ class SyncService {
       where: "status = 'pending'",
       orderBy: 'relay_seq',
     );
-    final permanentRows = await AppDatabase.instance.db.query(
+    final deadRows = await AppDatabase.instance.db.query(
       'sync_inbox',
-      columns: ['relay_seq', 'last_error'],
+      columns: ['relay_seq'],
       where: "status = 'failed'",
-      orderBy: 'relay_seq',
-      limit: 1,
     );
     int? blockedSeq;
     var applied = 0;
     var failed = 0;
     var lastError = '';
-    final attempted = <int>{};
-    if (permanentRows.isNotEmpty) {
-      // Amplop permanen yang belum diselesaikan pengguna tetap menahan ack
-      // agar relay tidak menganggapnya sudah diterima.
-      blockedSeq = (permanentRows.first['relay_seq'] as num?)?.toInt() ?? 1;
-      lastError = permanentRows.first['last_error'] as String? ?? '';
-    }
+    final attempted = <int>{
+      for (final row in deadRows) (row['relay_seq'] as num?)?.toInt() ?? 0,
+    };
+    // Dead-letter tidak lagi menahan ack. Amplopnya tetap tersimpan di
+    // `sync_inbox` untuk "Coba lagi" dari layar Konflik, sedangkan relay boleh
+    // memangkas salinan yang sudah tidak berguna bagi perangkat lain.
     final now = DateTime.now();
     for (final row in rows) {
       final relaySeq = (row['relay_seq'] as num?)?.toInt() ?? 0;
@@ -2933,9 +3632,42 @@ class SyncService {
         continue;
       }
       attempted.add(relaySeq);
-      final raw = jsonDecode(row['envelope_json'] as String);
+      Object? raw;
+      try {
+        raw = jsonDecode(row['envelope_json'] as String);
+      } catch (_) {
+        raw = null;
+      }
       if (raw is! Map) {
-        blockedSeq ??= relaySeq;
+        const message =
+            'Amplop tersimpan rusak dan tidak dapat dibaca. Minta perangkat '
+            'pengirim mengirim ulang dokumennya.';
+        await AppDatabase.instance.db.update(
+          'sync_inbox',
+          {
+            'status': 'failed',
+            'retry_count': SyncConflictRules.maxRetries,
+            'last_error': message,
+            'next_retry_at': null,
+            'updated_at': nowIso(),
+          },
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+        await _upsertConflictForInbox(
+          inboxId: row['id'] as int,
+          entity: '${row['entity'] ?? ''}',
+          entityId: '${row['entity_id'] ?? ''}',
+          error: FormatException(
+            'Amplop rusak dan tidak dapat dibaca: ${row['last_error'] ?? ''}',
+          ),
+          attempts: SyncConflictRules.maxRetries,
+          permanent: true,
+          relaySeq: relaySeq,
+          envelope: const {},
+        );
+        failed++;
+        lastError = message;
         continue;
       }
       final envelope = raw.map((key, value) => MapEntry('$key', value));
@@ -2952,7 +3684,7 @@ class SyncService {
           senderKey: key,
           senderKind: profiles[sender]?.kind ?? 'unknown',
           senderProfile: profiles[sender],
-          storeKey: storeKey,
+          storeKeys: storeKeys,
           storeId: store,
         );
         if (didApply) applied++;
@@ -2968,14 +3700,34 @@ class SyncService {
         );
       } catch (error) {
         final attempts = ((row['retry_count'] as num?)?.toInt() ?? 0) + 1;
-        final permanent = attempts >= SyncConflictRules.maxRetries;
+        if (error is ProtocolVersionException) {
+          // Versi baru bukan dead-letter: berhenti sebelum amplop ini,
+          // tampilkan "Perbarui aplikasi", dan biarkan operasi lokal jalan.
+          await _markUpgradeRequired();
+          await AppDatabase.instance.db.update(
+            'sync_inbox',
+            {
+              'last_error': '$error',
+              'updated_at': nowIso(),
+            },
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+          blockedSeq ??= relaySeq;
+          lastError = '$error';
+          continue;
+        }
+        final compensation = error is CompensationRequired;
+        final permanent = !compensation &&
+            (attempts >= SyncConflictRules.maxRetries ||
+                SyncConflictRules.isPermanent(error));
         await AppDatabase.instance.db.update(
           'sync_inbox',
           {
             'retry_count': attempts,
             'last_error': '$error',
-            'next_retry_at': permanent
-                ? null
+            'next_retry_at': permanent || compensation
+                ? (compensation ? nowIso() : null)
                 : DateTime.now()
                     .add(SyncConflictRules.backoffFor(attempts))
                     .toIso8601String(),
@@ -2985,6 +3737,9 @@ class SyncService {
           where: 'id = ?',
           whereArgs: [row['id']],
         );
+        if (error is CompensationRequired) {
+          await _queueCompensation(error, envelope: envelope, relaySeq: relaySeq);
+        }
         await _upsertConflictForInbox(
           inboxId: row['id'] as int,
           entity: '${row['entity'] ?? envelope['entity'] ?? ''}',
@@ -2995,10 +3750,10 @@ class SyncService {
           relaySeq: relaySeq,
           envelope: envelope,
         );
-        if (permanent) {
-          failed++;
-        }
-        blockedSeq ??= relaySeq;
+        if (permanent) failed++;
+        // Kompensasi lokal tidak menahan envelope lain; amplop ini dicoba lagi
+        // setelah dokumen kompensasi selesai.
+        if (!compensation && !permanent) blockedSeq ??= relaySeq;
         lastError = '$error';
       }
     }
@@ -3009,6 +3764,61 @@ class SyncService {
       lastError: lastError,
       attempted: attempted,
     );
+  }
+
+  /// Antrean kompensasi ditulis di luar transaksi penerapan yang gagal agar
+  /// tidak ikut ter-rollback. `request_id` diturunkan dari id dokumen terurut
+  /// (D25), jadi semua perangkat menghasilkan kunci yang sama.
+  Future<void> _queueCompensation(
+    CompensationRequired error, {
+    required Map<String, Object?> envelope,
+    int? relaySeq,
+  }) async {
+    if (error.kind != 'cancel_return' || error.returnSyncIds.isEmpty) return;
+    final sorted = [...error.returnSyncIds]..sort();
+    final seed = '${error.notaSyncId}|${sorted.join('|')}';
+    final requestId = 'comp-${sha256Hex(utf8.encode(seed)).substring(0, 32)}';
+    final stamp = nowIso();
+    final localDevice = await _localRelayDeviceId(AppDatabase.instance.db);
+    final originRows = await AppDatabase.instance.db.query(
+      'sale_returns',
+      columns: ['sync_id'],
+      where: 'sync_id IN (${List.filled(sorted.length, '?').join(',')})',
+      whereArgs: sorted,
+    );
+    // Lampiran C: hanya perangkat asal dokumen yang kalah yang menerbitkan
+    // kompensasi. Perangkat lain membiarkan antrean ini kosong.
+    final ownReturns = {
+      for (final row in originRows)
+        if ('${row['device_id'] ?? ''}' == localDevice) '${row['sync_id']}',
+    };
+    if (ownReturns.isEmpty) return;
+    await AppDatabase.instance.db.transaction((txn) async {
+      for (final returnSync in sorted) {
+        if (!ownReturns.contains(returnSync)) continue;
+        await txn.insert(
+          'sync_compensations',
+          {
+            'request_id': '$requestId:$returnSync',
+            'kind': error.kind,
+            'nota_sync_id': error.notaSyncId,
+            'return_sync_id': returnSync,
+            'payload_json': jsonEncode({
+              ...error.detail,
+              'envelope_id': envelope['id'] ?? '',
+              'relay_seq': relaySeq ?? 0,
+              'sender_device_id': envelope['sender_device_id'] ?? '',
+            }),
+            'status': 'pending',
+            'retry_count': 0,
+            'last_error': '',
+            'created_at': stamp,
+            'updated_at': stamp,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
   }
 
   Future<int> _rememberFailure({
@@ -3029,7 +3839,13 @@ class SyncService {
     final attempts = existing.isEmpty
         ? 1
         : ((existing.first['retry_count'] as num?)?.toInt() ?? 0) + 1;
-    final permanent = attempts >= SyncConflictRules.maxRetries;
+    final compensation = error is CompensationRequired;
+    final permanent = !compensation &&
+        (attempts >= SyncConflictRules.maxRetries ||
+            SyncConflictRules.isPermanent(error));
+    if (error is CompensationRequired) {
+      await _queueCompensation(error, envelope: envelope, relaySeq: relaySeq);
+    }
     final stamp = nowIso();
     int inboxId;
     if (existing.isEmpty) {
@@ -3046,9 +3862,11 @@ class SyncService {
         'retry_count': attempts,
         'next_retry_at': permanent
             ? null
-            : DateTime.now()
-                .add(SyncConflictRules.backoffFor(attempts))
-                .toIso8601String(),
+            : compensation
+                ? stamp
+                : DateTime.now()
+                    .add(SyncConflictRules.backoffFor(attempts))
+                    .toIso8601String(),
         'status': permanent ? 'failed' : 'pending',
         'created_at': stamp,
         'updated_at': stamp,
@@ -3064,9 +3882,11 @@ class SyncService {
           'retry_count': attempts,
           'next_retry_at': permanent
               ? null
-              : DateTime.now()
-                  .add(SyncConflictRules.backoffFor(attempts))
-                  .toIso8601String(),
+              : compensation
+                  ? stamp
+                  : DateTime.now()
+                      .add(SyncConflictRules.backoffFor(attempts))
+                      .toIso8601String(),
           'status': permanent ? 'failed' : 'pending',
           'updated_at': stamp,
         },
@@ -3105,6 +3925,7 @@ class SyncService {
       limit: 1,
     );
     final reason = SyncConflictRules.reasonFor(error);
+    final suggestion = SyncConflictRules.suggestionFor(error);
     final detail = jsonEncode({
       'seq': relaySeq,
       'envelope_id': envelope['id'],
@@ -3112,6 +3933,14 @@ class SyncService {
       'error': '$error',
       'retryable': SyncConflictRules.isRetryable(error),
       'permanent': permanent,
+      'dead_letter': permanent,
+      if (suggestion.isNotEmpty) 'saran': suggestion,
+      if (permanent) 'butuh_bantuan_owner': true,
+      if (error is CompensationRequired) ...{
+        'kompensasi': error.kind,
+        'nota_sync_id': error.notaSyncId,
+        'retur_sync_ids': error.returnSyncIds,
+      },
     });
     if (existing.isEmpty) {
       await AppDatabase.instance.db.insert('sync_conflicts', {
@@ -3147,6 +3976,24 @@ class SyncService {
         if (device['id'] != null)
           '${device['id']}': device['public_key'] as String?,
     };
+  }
+
+  /// Perangkat penulis yang wajib tercakup dalam snapshot. Perangkat lokal
+  /// dikecualikan karena datanya belum tentu ikut snapshot yang dibuat
+  /// perangkat lain.
+  List<String> _activeWriterIds(
+    List<Map<String, Object?>> devices, {
+    required String exclude,
+  }) {
+    return [
+      for (final device in devices)
+        if ('${device['id'] ?? ''}'.trim().isNotEmpty &&
+            '${device['id']}' != exclude &&
+            '${device['revoked_at'] ?? ''}'.trim().isEmpty &&
+            device['akun_aktif'] != false &&
+            '${device['kind'] ?? ''}' != 'viewer')
+          '${device['id']}',
+    ];
   }
 
   Map<String, SenderProfile> _senderProfiles(
@@ -4149,6 +4996,10 @@ class SyncService {
       final incomingVersion =
           (payload['permission_version'] as num?)?.toInt() ?? 0;
       final applyPermissions = incomingVersion >= localVersion;
+      final remoteRole = payload['role_base'] as String?;
+      final safeRole = remoteRole == null
+          ? null
+          : employeeRole(remoteRole);
       await txn.update(
         'employee_accounts',
         {
@@ -4156,8 +5007,7 @@ class SyncService {
           'aktif': payload['aktif'] ?? 1,
           if (payload['username'] != null)
             'username': payload['username'],
-          if (applyPermissions && payload['role_base'] != null)
-            'role_base': payload['role_base'],
+          if (applyPermissions && safeRole != null) 'role_base': safeRole,
           if (applyPermissions && payload['extra_permissions_json'] != null)
             'extra_permissions_json': payload['extra_permissions_json'],
           if (applyPermissions && payload['permissions_explicit'] != null)
@@ -4186,7 +5036,7 @@ class SyncService {
         await AccountService.syncStoreAccess(
           txn,
           employeeSyncId: syncId,
-          role: '${payload['role_base'] ?? 'KASIR'}',
+          role: safeRole ?? employeeRole('${payload['role_base'] ?? 'KASIR'}'),
           extraPermissions: _jsonList(payload['extra_permissions_json']),
           explicit: payload['permissions_explicit'] == 1,
           aktif: payload['aktif'] != 0,
@@ -4423,6 +5273,9 @@ class SyncService {
         action: action,
         enqueueCommission: (txn2, commissionId) =>
             enqueueCommission(commissionId, txn: txn2),
+        hlcWall: wall,
+        hlcCounter: counter,
+        senderDeviceId: senderDeviceId,
       );
       final autoCancelled = noteResult == 'auto_cancelled';
       final record = payload['record'] as Map<String, Object?>? ?? const {};
@@ -4939,7 +5792,14 @@ class SyncService {
       if (syncId.isEmpty || notaSync.isEmpty) return;
       final record = await txn.query(
         'service_records',
-        columns: ['id', 'status', 'voided_at'],
+        columns: [
+          'id',
+          'status',
+          'voided_at',
+          'sync_hlc_wall',
+          'sync_hlc_counter',
+          'device_id',
+        ],
         where: 'sync_id = ?',
         whereArgs: [notaSync],
         limit: 1,
@@ -4953,7 +5813,20 @@ class SyncService {
       if (record.first['voided_at'] != null ||
           '${record.first['status']}' == 'VOID') {
         // Koreksi tidak dapat diterapkan ke nota VOID, tetapi tidak boleh
-        // dibuang diam-diam. Konflik menandai koreksi yang tidak terpakai.
+        // dibuang diam-diam. Pemenang ditentukan HLC: void menang bila lebih
+        // awal; koreksi yang lebih awal pun tidak menghidupkan lagi nota void.
+        final voidWall = (record.first['sync_hlc_wall'] as num?)?.toInt() ?? 0;
+        final voidCounter =
+            (record.first['sync_hlc_counter'] as num?)?.toInt() ?? 0;
+        final voidDevice = '${record.first['device_id'] ?? ''}';
+        final adjustmentEarlier = SyncConflictRules.aEarlierThanB(
+          aWall: wall,
+          aCounter: counter,
+          aDevice: senderDeviceId,
+          bWall: voidWall,
+          bCounter: voidCounter,
+          bDevice: voidDevice,
+        );
         await _recordConflict(
           txn,
           entity: 'nota_adjustment',
@@ -4962,6 +5835,18 @@ class SyncService {
           detail: {
             'nota_sync_id': notaSync,
             'nilai_baru': payload['nilai_baru'],
+            'pemenang': 'void',
+            'koreksi_lebih_awal': adjustmentEarlier,
+            'koreksi_hlc': {
+              'wall': wall,
+              'counter': counter,
+              'device_id': senderDeviceId,
+            },
+            'void_hlc': {
+              'wall': voidWall,
+              'counter': voidCounter,
+              'device_id': voidDevice,
+            },
             'error': '',
           },
           status: 'review',
@@ -5069,6 +5954,181 @@ class SyncService {
           },
           status: 'review',
         );
+      }
+    } else if (entity == 'period_closing') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final periode = payload['periode'] as String? ?? '';
+      final rev = (payload['rev'] as num?)?.toInt() ?? 1;
+      if (syncId.isEmpty || periode.isEmpty) return;
+      final hash = '${payload['hash'] ?? ''}';
+      final existing = await txn.query(
+        'period_closings',
+        columns: ['sync_id', 'hash'],
+        where: 'store_id = ? AND periode = ? AND rev = ?',
+        whereArgs: [storeId, periode, rev],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        if ('${existing.first['hash'] ?? ''}' == hash) return;
+        // Dua perangkat owner menutup periode yang sama dengan isi berbeda.
+        // Snapshot tidak ditimpa diam-diam; owner menyelesaikan lewat layar
+        // Konflik lalu menerbitkan revisi baru.
+        await _recordConflict(
+          txn,
+          entity: 'period_closing',
+          entityId: syncId,
+          reason: 'tutup_buku_bentrok',
+          detail: {
+            'periode': periode,
+            'rev': rev,
+            'lokal': '${existing.first['hash'] ?? ''}',
+            'remote': hash,
+            'sender_device_id': senderDeviceId,
+            'error': '',
+          },
+          status: 'review',
+        );
+        return;
+      }
+      await txn.insert(
+        'period_closings',
+        {
+          'sync_id': syncId,
+          'store_id': storeId,
+          'device_id': payload['device_id'] ?? senderDeviceId,
+          'periode': periode,
+          'rev': rev,
+          'zona': payload['zona'] ?? zonaWaktuDefault,
+          'omzet_cents': payload['omzet_cents'] ?? 0,
+          'dpp_cents': payload['dpp_cents'] ?? 0,
+          'ppn_cents': payload['ppn_cents'] ?? 0,
+          'hpp_cents': payload['hpp_cents'] ?? 0,
+          'retur_nilai_cents': payload['retur_nilai_cents'] ?? 0,
+          'retur_hpp_cents': payload['retur_hpp_cents'] ?? 0,
+          'kas_metode_json': payload['kas_metode_json'] ?? '{}',
+          'komisi_cents': payload['komisi_cents'] ?? 0,
+          'transaksi': payload['transaksi'] ?? 0,
+          'jasa_cents': payload['jasa_cents'] ?? 0,
+          'part_cents': payload['part_cents'] ?? 0,
+          'diskon_cents': payload['diskon_cents'] ?? 0,
+          'dibayar_cents': payload['dibayar_cents'] ?? 0,
+          'piutang_cents': payload['piutang_cents'] ?? 0,
+          'modal_part_cents': payload['modal_part_cents'] ?? 0,
+          'modal_jasa_cents': payload['modal_jasa_cents'] ?? 0,
+          'laba_part_cents': payload['laba_part_cents'] ?? 0,
+          'laba_jasa_cents': payload['laba_jasa_cents'] ?? 0,
+          'ppn_diserap_cents': payload['ppn_diserap_cents'] ?? 0,
+          'retur_jasa_cents': payload['retur_jasa_cents'] ?? 0,
+          'retur_part_cents': payload['retur_part_cents'] ?? 0,
+          'gaji_cents': payload['gaji_cents'] ?? 0,
+          'jenis_json': payload['jenis_json'] ?? '{}',
+          'hash': hash,
+          'closed_at': payload['closed_at'] ?? nowIso(),
+          'status': payload['status'] ?? 'FINAL',
+          ...hlc,
+          'created_at': payload['created_at'] ?? nowIso(),
+          'updated_at': nowIso(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    } else if (entity == 'archive_return') {
+      final syncId = payload['sync_id'] as String? ?? '';
+      final refDocId = payload['ref_doc_id'] as String? ?? '';
+      if (syncId.isEmpty || refDocId.isEmpty) return;
+      final existing = await txn.query(
+        'archive_returns',
+        columns: ['id'],
+        where: 'sync_id = ?',
+        whereArgs: [syncId],
+        limit: 1,
+      );
+      var returnId = existing.isEmpty ? null : existing.first['id'] as int;
+      returnId ??= await txn.insert(
+          'archive_returns',
+          {
+            'sync_id': syncId,
+            'store_id': storeId,
+            'device_id': payload['device_id'] ?? senderDeviceId,
+            'ref_doc_id': refDocId,
+            'no_nota': payload['no_nota'] ?? '',
+            'no_retur': payload['no_retur'] ?? '',
+            'request_id': payload['request_id'] ?? syncId,
+            'status': payload['status'] ?? 'AKTIF',
+            'total': payload['total'] ?? 0,
+            'total_refund': payload['total_refund'] ?? 0,
+            'dpp': payload['dpp'] ?? 0,
+            'pajak': payload['pajak'] ?? 0,
+            'pajak_diserap': payload['pajak_diserap'] ?? 0,
+            'metode_refund': payload['metode_refund'] ?? 'CASH',
+            'alasan': payload['alasan'] ?? '',
+            'dibuat_oleh': payload['dibuat_oleh'],
+            ...hlc,
+            'created_at': payload['created_at'] ?? nowIso(),
+            'updated_at': nowIso(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      final items = payload['items'];
+      if (items is List) {
+        for (final raw in items) {
+          if (raw is! Map) continue;
+          final item = Map<String, Object?>.from(raw);
+          final itemSync = '${item['sync_id'] ?? ''}';
+          if (itemSync.isEmpty) continue;
+          await txn.insert(
+            'archive_return_items',
+            {
+              'sync_id': itemSync,
+              'return_id': returnId,
+              'return_sync_id': syncId,
+              'line_type': item['line_type'] ?? 'part',
+              'line_sync_id': item['line_sync_id'] ?? '',
+              'deskripsi': item['deskripsi'] ?? '',
+              'jumlah_milli': item['jumlah_milli'] ?? 0,
+              'qty_asal_milli': item['qty_asal_milli'] ?? 0,
+              'harga_satuan': item['harga_satuan'] ?? 0,
+              'subtotal': item['subtotal'] ?? 0,
+              'modal_satuan': item['modal_satuan'] ?? 0,
+              'dpp_cents': item['dpp_cents'] ?? 0,
+              'ppn_cents': item['ppn_cents'] ?? 0,
+              'total_ditagih_cents': item['total_ditagih_cents'] ?? 0,
+              'stock_sync_id': item['stock_sync_id'],
+              'created_at': item['created_at'] ?? nowIso(),
+              'updated_at': nowIso(),
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+      final refund = (payload['total_refund'] as num?)?.toInt() ?? 0;
+      if (refund > 0) {
+        final cash = await txn.query(
+          'cash_ledger',
+          columns: ['id'],
+          where: "sumber_entity = 'archive_return' AND sumber_sync_id = ?",
+          whereArgs: [syncId],
+          limit: 1,
+        );
+        if (cash.isEmpty) {
+          final now = payload['created_at'] ?? nowIso();
+          await txn.insert(
+            'cash_ledger',
+            {
+              'sync_id': newSyncId(),
+              'waktu': now,
+              'kategori': 'REFUND',
+              'sumber_entity': 'archive_return',
+              'sumber_sync_id': syncId,
+              'nominal': -refund,
+              'metode': payload['metode_refund'] ?? 'CASH',
+              'operator': payload['dibuat_oleh'] ?? '',
+              'catatan': 'Retur arsip ${payload['no_retur'] ?? ''}',
+              'created_at': now,
+              'updated_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
       }
     } else if (entity == 'data_request') {
       final target = payload['target_device_id'] as String? ?? '';
@@ -5343,24 +6403,8 @@ class SyncService {
         where: "status = 'sent' AND sent_at IS NOT NULL AND sent_at < ?",
         whereArgs: [cutoff],
       );
-      await txn.delete(
-        'applied_deltas',
-        where: 'applied_at < ?',
-        whereArgs: [cutoff],
-      );
-      final countRows = await txn.rawQuery(
-        'SELECT COUNT(*) AS total FROM applied_deltas',
-      );
-      final total = countRows.first['total'] as int? ?? 0;
-      if (total > 20000) {
-        final excess = total - 20000;
-        await txn.rawDelete(
-          'DELETE FROM applied_deltas WHERE idempotency_key IN '
-          '(SELECT idempotency_key FROM applied_deltas '
-          'ORDER BY applied_at ASC LIMIT ?)',
-          [excess],
-        );
-      }
+      // `applied_deltas` bersifat permanen: kunci idempotensi mencegah amplop
+      // lama diterapkan ulang setelah relay memangkas riwayatnya.
     });
   }
 

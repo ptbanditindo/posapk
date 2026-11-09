@@ -124,6 +124,9 @@ extension NoteSyncDatabase on AppDatabase {
         'voided_by': retur['voided_by'],
         'alasan': retur['alasan'],
         'dibuat_oleh': retur['dibuat_oleh'],
+        'sync_hlc_wall': retur['sync_hlc_wall'] ?? 0,
+        'sync_hlc_counter': retur['sync_hlc_counter'] ?? 0,
+        'device_id': retur['device_id'] ?? '',
         'created_at': retur['created_at'],
         'items': itemPayloads,
       });
@@ -271,6 +274,9 @@ extension NoteSyncDatabase on AppDatabase {
         'mechanic': row['mechanic'],
         'mechanic_employee_id': row['mechanic_employee_id'],
         'commission_snapshot_json': row['commission_snapshot_json'] ?? '{}',
+        'sync_hlc_wall': row['sync_hlc_wall'] ?? 0,
+        'sync_hlc_counter': row['sync_hlc_counter'] ?? 0,
+        'device_id': row['device_id'] ?? '',
         'created_at': row['created_at'],
         'updated_at': row['updated_at'],
       },
@@ -332,6 +338,9 @@ extension NoteSyncDatabase on AppDatabase {
     required String action,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
     enqueueCommission,
+    int hlcWall = 0,
+    int hlcCounter = 0,
+    String senderDeviceId = '',
   }) {
     return target.transaction(
       (txn) => applyNotePayloadTx(
@@ -339,6 +348,9 @@ extension NoteSyncDatabase on AppDatabase {
         payload,
         action: action,
         enqueueCommission: enqueueCommission,
+        hlcWall: hlcWall,
+        hlcCounter: hlcCounter,
+        senderDeviceId: senderDeviceId,
       ),
     );
   }
@@ -349,6 +361,9 @@ extension NoteSyncDatabase on AppDatabase {
     required String action,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
     enqueueCommission,
+    int hlcWall = 0,
+    int hlcCounter = 0,
+    String senderDeviceId = '',
   }) async {
     final record = Map<String, Object?>.from(
       payload['record'] as Map? ?? const {},
@@ -374,6 +389,11 @@ extension NoteSyncDatabase on AppDatabase {
         .toList();
     final recordSync = record['sync_id'] as String? ?? '';
     if (recordSync.isEmpty) throw StateError('Nota tanpa sync_id.');
+    final recordWall = (record['sync_hlc_wall'] as num?)?.toInt() ?? hlcWall;
+    final recordCounter =
+        (record['sync_hlc_counter'] as num?)?.toInt() ?? hlcCounter;
+    final payloadDevice = '${record['device_id'] ?? ''}'.trim();
+    final recordDevice = payloadDevice.isEmpty ? senderDeviceId : payloadDevice;
     final existingRecord = await txn.query(
       'service_records',
       where: 'sync_id = ?',
@@ -409,29 +429,100 @@ extension NoteSyncDatabase on AppDatabase {
       if (existingRecord.first['voided_at'] != null) return 'duplicate';
       final reason =
           record['void_reason'] as String? ?? 'Void dari perangkat lain';
-      // Retur yang sudah aktif di perangkat ini dapat membuat refund void
-      // melebihi uang yang benar-benar diterima. Perubahan tetap diterapkan
-      // agar sama dengan perangkat asal, tetapi pemilik wajib meninjaunya.
+      // Void dan retur bersamaan diselesaikan dengan HLC (Lampiran C): HLC
+      // lebih awal menang, `device_id` terkecil menjadi tie-break. Retur yang
+      // kalah dibalik oleh perangkat asalnya setelah void diterapkan.
       final activeReturns = await txn.query(
         'sale_returns',
-        columns: ['id'],
+        columns: [
+          'id',
+          'sync_id',
+          'device_id',
+          'sync_hlc_wall',
+          'sync_hlc_counter',
+        ],
         where:
             "service_record_id = ? AND deleted_at IS NULL "
             "AND status = 'AKTIF'",
         whereArgs: [existingRecord.first['id']],
       );
-      if (activeReturns.isNotEmpty) {
+      final losingReturns = <Map<String, Object?>>[];
+      var earlierReturn = false;
+      for (final retur in activeReturns) {
+        final cmp = SyncConflictRules.compareHlc(
+          aWall: (retur['sync_hlc_wall'] as num?)?.toInt() ?? 0,
+          aCounter: (retur['sync_hlc_counter'] as num?)?.toInt() ?? 0,
+          aDevice: '${retur['device_id'] ?? ''}',
+          bWall: recordWall,
+          bCounter: recordCounter,
+          bDevice: recordDevice,
+        );
+        if (cmp < 0) {
+          earlierReturn = true;
+        } else {
+          losingReturns.add(retur);
+        }
+      }
+      if (earlierReturn) {
         await _recordPendingConflict(
           txn,
           entity: 'nota',
           entityId: recordSync,
           reason: 'void_setelah_retur',
+          status: 'open',
           detail: {
             'no_nota': existingRecord.first['no_nota'],
             'retur_aktif': activeReturns.length,
             'void_refund': record['void_refund'] ?? 0,
+            'void_ditolak': true,
+            'pemenang': 'retur',
+            'butuh_bantuan_owner': true,
+            'void_hlc': '$recordWall:$recordCounter:$recordDevice',
           },
         );
+        return 'conflict';
+      }
+      final losingReturnSyncs = [
+        for (final retur in losingReturns)
+          if ('${retur['sync_id'] ?? ''}'.trim().isNotEmpty)
+            '${retur['sync_id']}'.trim(),
+      ];
+      if (losingReturnSyncs.isNotEmpty) {
+        await _recordPendingConflict(
+          txn,
+          entity: 'nota',
+          entityId: recordSync,
+          reason: 'void_menang',
+          status: 'open',
+          detail: {
+            'no_nota': existingRecord.first['no_nota'],
+            'pemenang': 'void',
+            'kompensasi': 'pembatalan_retur',
+            'return_sync_ids': losingReturnSyncs,
+            'void_hlc': '$recordWall:$recordCounter:$recordDevice',
+          },
+        );
+        final localDevice = await _localDeviceId(txn);
+        final ownReturnSyncs = [
+          for (final retur in losingReturns)
+            if (localDevice.isNotEmpty &&
+                '${retur['device_id'] ?? ''}' == localDevice)
+              '${retur['sync_id']}',
+        ];
+        if (ownReturnSyncs.isNotEmpty) {
+          // Transaksi dibatalkan; perangkat ini harus menerbitkan kompensasi
+          // lebih dulu agar void dapat diterapkan pada percobaan berikutnya.
+          throw CompensationRequired(
+            kind: 'cancel_return',
+            notaSyncId: recordSync,
+            returnSyncIds: ownReturnSyncs,
+            message: 'Void menang atas retur; batalkan retur lebih dulu.',
+            detail: {
+              'pemenang': 'void',
+              'no_nota': existingRecord.first['no_nota'],
+            },
+          );
+        }
       }
       for (final part in parts) {
         final stockSync = part['stock_sync_id'] as String? ?? '';
@@ -455,30 +546,15 @@ extension NoteSyncDatabase on AppDatabase {
             (part['jumlah_milli'] as num?)?.toInt() ??
             ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
         final partSync = part['sync_id'] as String? ?? '';
-        var returnedMilli = 0;
-        if (partSync.isNotEmpty) {
-          final returned = await txn.rawQuery(
-            '''
-SELECT COALESCE(SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000)), 0)
-  AS total
-FROM sale_return_items ri
-JOIN sale_returns sr ON sr.id = ri.return_id
-WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
-  AND ri.deleted_at IS NULL AND ri.line_type = 'part'
-  AND ri.line_sync_id = ?
-''',
-            [existingRecord.first['id'], partSync],
-          );
-          returnedMilli = (returned.first['total'] as num?)?.toInt() ?? 0;
-        }
-        final restockMilli = qtyMilli - returnedMilli;
-        if (restockMilli <= 0) continue;
+        // Void yang menang atas retur mengembalikan seluruh qty nota; retur
+        // yang kalah menarik kembali stoknya lewat dokumen kompensasi.
+        if (qtyMilli <= 0) continue;
         await StockLedger.instance.apply(
           txn,
           stockItemId: stock.first['id'] as int,
           stockSyncId: '${stock.first['sync_id']}',
           jenis: 'MASUK',
-          deltaMilli: restockMilli,
+          deltaMilli: qtyMilli,
           movementSyncId: movementKey,
           sumberEntity: 'void',
           sumberSyncId: partSync,
@@ -525,6 +601,9 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           'sisa_bayar': 0,
           'total_efektif': 0,
           'total_kas_diterima': 0,
+          'sync_hlc_wall': recordWall,
+          'sync_hlc_counter': recordCounter,
+          if (recordDevice.isNotEmpty) 'device_id': recordDevice,
           'updated_at': nowIso(),
         },
         where: 'id = ?',
@@ -700,6 +779,9 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           existingRecord.first['id'] as int,
           recordSync,
           retur,
+          envelopeWall: hlcWall,
+          envelopeCounter: hlcCounter,
+          senderDeviceId: senderDeviceId,
         );
         returnChanged =
             returnChanged || result == 'added' || result == 'updated';
@@ -955,6 +1037,10 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         : null;
     final recordId = await txn.insert('service_records', {
       'sync_id': recordSync,
+      'device_id': recordDevice,
+      'origin_device_id': recordDevice,
+      'sync_hlc_wall': recordWall,
+      'sync_hlc_counter': recordCounter,
       'unit_id': unitId,
       'customer_id': customerId,
       'no_nota': noNota,
@@ -1190,7 +1276,15 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       );
     } else {
       for (final retur in returns) {
-        final result = await _upsertReturn(txn, recordId, recordSync, retur);
+        final result = await _upsertReturn(
+          txn,
+          recordId,
+          recordSync,
+          retur,
+          envelopeWall: hlcWall,
+          envelopeCounter: hlcCounter,
+          senderDeviceId: senderDeviceId,
+        );
         returnChanged =
             returnChanged || result == 'added' || result == 'updated';
         if (result == 'rejected') {
@@ -1387,10 +1481,18 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     DatabaseExecutor txn,
     int recordId,
     String recordSync,
-    Map<String, Object?> retur,
-  ) async {
+    Map<String, Object?> retur, {
+    int envelopeWall = 0,
+    int envelopeCounter = 0,
+    String senderDeviceId = '',
+  }) async {
     final syncId = '${retur['sync_id'] ?? ''}';
     if (syncId.isEmpty) return 'duplicate';
+    final returWall = (retur['sync_hlc_wall'] as num?)?.toInt() ?? envelopeWall;
+    final returCounter =
+        (retur['sync_hlc_counter'] as num?)?.toInt() ?? envelopeCounter;
+    final payloadDevice = '${retur['device_id'] ?? ''}'.trim();
+    final returDevice = payloadDevice.isEmpty ? senderDeviceId : payloadDevice;
     final requestId = '${retur['request_id'] ?? ''}'.trim();
     final existing = await txn.query(
       'sale_returns',
@@ -1419,7 +1521,14 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     }
     final recordRows = await txn.query(
       'service_records',
-      columns: ['no_nota', 'status', 'voided_at'],
+      columns: [
+        'no_nota',
+        'status',
+        'voided_at',
+        'device_id',
+        'sync_hlc_wall',
+        'sync_hlc_counter',
+      ],
       where: 'id = ?',
       whereArgs: [recordId],
       limit: 1,
@@ -1428,6 +1537,19 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     final recordRow = recordRows.first;
     final noNota = '${recordRow['no_nota'] ?? ''}';
     if (recordRow['voided_at'] != null || '${recordRow['status']}' == 'VOID') {
+      final voidWall = (recordRow['sync_hlc_wall'] as num?)?.toInt() ?? 0;
+      final voidCounter =
+          (recordRow['sync_hlc_counter'] as num?)?.toInt() ?? 0;
+      final voidDevice = '${recordRow['device_id'] ?? ''}';
+      final returnEarlier = SyncConflictRules.compareHlc(
+        aWall: returWall,
+        aCounter: returCounter,
+        aDevice: returDevice,
+        bWall: voidWall,
+        bCounter: voidCounter,
+        bDevice: voidDevice,
+      ) <
+          0;
       await _recordReturnConflict(
         txn,
         returSync: syncId,
@@ -1437,6 +1559,11 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           'no_retur': retur['no_retur'],
           'no_nota': noNota,
           'total': retur['total'] ?? 0,
+          'pemenang': returnEarlier ? 'retur' : 'void',
+          'kompensasi': returnEarlier ? '' : 'pembatalan_retur',
+          'butuh_bantuan_owner': returnEarlier,
+          'retur_hlc': '$returWall:$returCounter:$returDevice',
+          'void_hlc': '$voidWall:$voidCounter:$voidDevice',
         },
       );
       return 'rejected';
@@ -1554,6 +1681,9 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'metode_refund': retur['metode_refund'] ?? 'CASH',
       'alasan': retur['alasan'] ?? 'Retur dari perangkat lain',
       'dibuat_oleh': retur['dibuat_oleh'],
+      'device_id': returDevice,
+      'sync_hlc_wall': returWall,
+      'sync_hlc_counter': returCounter,
       'created_at': createdAt,
       'updated_at': nowIso(),
     });
@@ -1726,6 +1856,18 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     return 'updated';
   }
 
+  Future<String> _localDeviceId(DatabaseExecutor txn) async {
+    final rows = await txn.query(
+      'app_meta',
+      columns: ['key', 'value'],
+      where: "key IN ('sync.relay_device_id', 'device.current_id')",
+    );
+    final values = {
+      for (final row in rows) '${row['key']}': '${row['value']}',
+    };
+    return values['sync.relay_device_id'] ?? values['device.current_id'] ?? '';
+  }
+
   Future<int> _soldMilli(
     DatabaseExecutor txn,
     int recordId,
@@ -1798,6 +1940,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     required String entityId,
     required String reason,
     required Map<String, Object?> detail,
+    String status = 'review',
   }) async {
     final existing = await txn.query(
       'sync_conflicts',
@@ -1811,7 +1954,10 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     if (existing.isNotEmpty) {
       await txn.update(
         'sync_conflicts',
-        {'detail_json': jsonEncode(detail)},
+        {
+          'detail_json': jsonEncode(detail),
+          if (status == 'open') 'status': 'open',
+        },
         where: 'id = ?',
         whereArgs: [existing.first['id']],
       );
@@ -1822,7 +1968,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'entity_id': entityId,
       'reason': reason,
       'detail_json': jsonEncode(detail),
-      'status': 'review',
+      'status': status,
       'retry_count': 0,
       'last_error': '',
       'created_at': nowIso(),

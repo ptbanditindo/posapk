@@ -114,9 +114,13 @@ CREATE TABLE IF NOT EXISTS store_keys (
   device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   wrapped_key TEXT NOT NULL,
   signature TEXT NOT NULL,
+  key_version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_id, store_id, device_id)
 )
+''',
+      '''
+ALTER TABLE store_keys ADD COLUMN IF NOT EXISTS key_version INTEGER NOT NULL DEFAULT 1
 ''',
       '''
 CREATE TABLE IF NOT EXISTS envelopes (
@@ -138,6 +142,7 @@ CREATE TABLE IF NOT EXISTS envelopes (
   entity_id TEXT NOT NULL DEFAULT '',
   hints_signature TEXT NOT NULL DEFAULT '',
   key_id TEXT NOT NULL DEFAULT '',
+  key_version INTEGER NOT NULL DEFAULT 1,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (owner_id, store_id, sender_device_id, seq),
   UNIQUE (owner_id, idempotency_key)
@@ -160,6 +165,9 @@ ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS hints_signature TEXT NOT NULL DEF
 ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''
 ''',
       '''
+ALTER TABLE envelopes ADD COLUMN IF NOT EXISTS key_version INTEGER NOT NULL DEFAULT 1
+''',
+      '''
 CREATE TABLE IF NOT EXISTS snapshots (
   owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
   store_id TEXT NOT NULL,
@@ -175,6 +183,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
   round_id TEXT NOT NULL DEFAULT '',
   complete BOOLEAN NOT NULL DEFAULT true,
   device_manifest JSONB NOT NULL DEFAULT '[]'::jsonb,
+  schema_version INTEGER NOT NULL DEFAULT 0,
+  schema_contract_version INTEGER NOT NULL DEFAULT 0,
+  app_version TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_id, store_id)
 )
@@ -182,6 +193,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
       'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS round_id TEXT NOT NULL DEFAULT \'\'',
       'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS complete BOOLEAN NOT NULL DEFAULT true',
       'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS device_manifest JSONB NOT NULL DEFAULT \'[]\'::jsonb',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS schema_contract_version INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS app_version TEXT NOT NULL DEFAULT \'\'',
       '''
 CREATE TABLE IF NOT EXISTS sync_rounds (
   id TEXT PRIMARY KEY,
@@ -231,6 +245,19 @@ CREATE TABLE IF NOT EXISTS accounts (
   UNIQUE (owner_id, username)
 )
 ''',
+      '''
+CREATE TABLE IF NOT EXISTS device_events (
+  id BIGSERIAL PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  actor_device_id TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+''',
+      'CREATE INDEX IF NOT EXISTS ix_device_events_owner '
+          'ON device_events(owner_id, created_at)',
       '''
 CREATE TABLE IF NOT EXISTS invites (
   code TEXT PRIMARY KEY,
@@ -310,6 +337,75 @@ WHERE permissions_explicit = true
   AND NOT (permission_payload ? 'permission_grants')
 ''',
       'ALTER TABLE owners ADD COLUMN IF NOT EXISTS license_store_limit INTEGER NOT NULL DEFAULT 1',
+      '''
+CREATE TABLE IF NOT EXISTS archive_documents (
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL,
+  doc_type TEXT NOT NULL,
+  doc_id TEXT NOT NULL,
+  no_nota TEXT NOT NULL DEFAULT '',
+  tanggal TEXT NOT NULL DEFAULT '',
+  schema_version INTEGER NOT NULL DEFAULT 0,
+  key_id TEXT NOT NULL DEFAULT '',
+  key_version INTEGER NOT NULL DEFAULT 1,
+  content_hash TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, store_id, doc_type, doc_id, content_hash)
+)
+''',
+      'CREATE INDEX IF NOT EXISTS ix_archive_documents_lookup '
+          'ON archive_documents(owner_id, store_id, doc_id)',
+      '''
+ALTER TABLE archive_documents ADD COLUMN IF NOT EXISTS key_version INTEGER NOT NULL DEFAULT 1
+''',
+      '''
+CREATE TABLE IF NOT EXISTS archive_index_tokens (
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL,
+  doc_type TEXT NOT NULL,
+  doc_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  token TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (owner_id, store_id, doc_type, doc_id, content_hash, token)
+)
+''',
+      'CREATE INDEX IF NOT EXISTS ix_archive_tokens_search '
+          'ON archive_index_tokens(owner_id, store_id, token)',
+      '''
+CREATE TABLE IF NOT EXISTS archive_envelopes (
+  archive_seq BIGSERIAL PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+  store_id TEXT NOT NULL,
+  sender_device_id TEXT NOT NULL DEFAULT '',
+  seq INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT NOT NULL,
+  entity TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  entity_id TEXT NOT NULL DEFAULT '',
+  hlc_wall BIGINT NOT NULL DEFAULT 0,
+  hlc_counter INTEGER NOT NULL DEFAULT 0,
+  ciphertext TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  signature TEXT NOT NULL DEFAULT '',
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (owner_id, idempotency_key)
+)
+''',
+      '''
+INSERT INTO archive_envelopes (owner_id, store_id, sender_device_id, seq,
+  idempotency_key, entity, action, entity_id, hlc_wall, hlc_counter,
+  ciphertext, nonce, signature, received_at)
+SELECT owner_id, store_id, sender_device_id, seq, idempotency_key, entity,
+  action, entity_id, hlc_wall, hlc_counter, ciphertext, nonce, signature,
+  received_at
+FROM envelopes
+ON CONFLICT DO NOTHING
+''',
     ];
     for (final statement in statements) {
       await _conn.execute(statement);

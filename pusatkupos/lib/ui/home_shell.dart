@@ -27,7 +27,9 @@ import 'screens/reports_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/stock_screen.dart';
 import 'screens/supplier_screen.dart';
+import 'widgets/health_surface.dart';
 import 'widgets/store_switcher.dart';
+import 'widgets/sync_status_banner.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -485,7 +487,13 @@ class _HomeShellState extends State<HomeShell>
               const SizedBox(width: 6),
             ],
           ),
-          body: wide
+          body: Column(
+            children: [
+              const SyncHealthBanner(),
+              const SyncStatusStrip(),
+              const OperationalHealthStrip(),
+              Expanded(
+                child: wide
               ? Row(
                   children: [
                     NavigationRail(
@@ -520,6 +528,9 @@ class _HomeShellState extends State<HomeShell>
                   ],
                 )
               : body,
+              ),
+            ],
+          ),
           bottomNavigationBar: wide
               ? null
               : NavigationBar(
@@ -624,13 +635,7 @@ class _HomeShellState extends State<HomeShell>
               ),
             ),
             const Divider(),
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'PusatkuPOS · mode lokal',
-                style: TextStyle(fontSize: 12),
-              ),
-            ),
+            const BackupStatusFooter(),
           ],
         ),
       ),

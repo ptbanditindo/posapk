@@ -12,6 +12,41 @@ class RetryableSyncException implements Exception {
   String toString() => message;
 }
 
+/// Amplop dibuat oleh versi protokol yang lebih baru dari yang dikenal
+/// perangkat ini. Bukan dead-letter: kursor berhenti sebelum amplop dan
+/// pengguna diminta memperbarui aplikasi (D26).
+class ProtocolVersionException implements Exception {
+  const ProtocolVersionException(this.requiredVersion, {this.received = 0});
+
+  final int requiredVersion;
+  final int received;
+
+  @override
+  String toString() =>
+      'Amplop memakai protokol v$received, perangkat ini hanya mengenal '
+      'v$requiredVersion. Perbarui aplikasi untuk melanjutkan sinkronisasi.';
+}
+
+/// Konflik domain yang menuntut dokumen kompensasi. Transaksi penerapan
+/// dibatalkan, lalu antrean kompensasi ditulis di luar transaksi agar tidak
+/// ikut ter-rollback.
+class CompensationRequired extends RetryableSyncException {
+  CompensationRequired({
+    required this.kind,
+    required this.notaSyncId,
+    required this.returnSyncIds,
+    required String message,
+    this.detail = const {},
+    String code = 'kompensasi_dibutuhkan',
+  }) : super(message, code: code);
+
+  /// `cancel_return` satu-satunya kompensasi otomatis yang aman saat ini.
+  final String kind;
+  final String notaSyncId;
+  final List<String> returnSyncIds;
+  final Map<String, Object?> detail;
+}
+
 /// Profil pengirim diambil dari daftar perangkat relay dan terikat pada kunci
 /// yang memverifikasi tanda tangan amplop. Relay tidak membaca isi payload.
 class SenderProfile {
@@ -68,7 +103,9 @@ class SenderProfile {
       'ubah_status',
       'ubah_stok',
       'koreksi',
+      permissionStockOut,
     },
+    'GUDANG': {permissionStockIn},
     'MEKANIK': {'ubah_status'},
     'SUPERVISOR': {
       'buat_nota',
@@ -78,6 +115,9 @@ class SenderProfile {
       'ubah_stok',
       'koreksi',
       'beri_kredit',
+      permissionStockIn,
+      permissionStockOut,
+      permissionOpname,
     },
     'KEDUANYA': {
       'buat_nota',
@@ -87,6 +127,9 @@ class SenderProfile {
       'ubah_stok',
       'koreksi',
       'beri_kredit',
+      permissionStockIn,
+      permissionStockOut,
+      permissionOpname,
     },
   };
 
@@ -172,6 +215,91 @@ class SyncConflictRules {
   static bool isFinal(String reason) =>
       finalReasons.contains(reason) || reason.startsWith('peran_tidak_berhak');
 
+  /// Amplop yang tidak akan pernah berhasil diverifikasi ulang. Setelah
+  /// menjadi dead-letter, amplop tidak menahan kursor perangkat lain.
+  static const Set<String> permanentReasons = {
+    'tanda_tangan_tidak_valid',
+    'dekripsi_gagal',
+    'amplop_tidak_lengkap',
+    'petunjuk_tidak_cocok',
+    'idempotency_tidak_valid',
+    'konflik_unik',
+  };
+
+  static bool isPermanent(Object error) =>
+      permanentReasons.contains(reasonFor(error));
+
+  /// Konflik kompensasi yang boleh berakhir sebagai bantuan owner. Dipakai
+  /// layar Konflik untuk menandai item yang sudah melewati tenggang 7 hari.
+  static const Set<String> ownerHelpReasons = {
+    'void_setelah_retur',
+    'retur_pada_nota_void',
+    'retur_melebihi_qty',
+    'koreksi_pada_nota_void',
+  };
+
+  static const Duration ownerHelpAfter = Duration(days: 7);
+
+  /// Aturan umum Lampiran C: HLC lebih awal menang; bila sama, `device_id`
+  /// terkecil menang. Nilai negatif berarti `a` lebih awal.
+  static int compareHlc({
+    required int aWall,
+    required int aCounter,
+    required String aDevice,
+    required int bWall,
+    required int bCounter,
+    required String bDevice,
+  }) {
+    if (aWall != bWall) return aWall < bWall ? -1 : 1;
+    if (aCounter != bCounter) return aCounter < bCounter ? -1 : 1;
+    if (aDevice == bDevice) return 0;
+    return aDevice.compareTo(bDevice);
+  }
+
+  static bool aEarlierThanB({
+    required int aWall,
+    required int aCounter,
+    required String aDevice,
+    required int bWall,
+    required int bCounter,
+    required String bDevice,
+  }) =>
+      compareHlc(
+        aWall: aWall,
+        aCounter: aCounter,
+        aDevice: aDevice,
+        bWall: bWall,
+        bCounter: bCounter,
+        bDevice: bDevice,
+      ) <
+      0;
+
+  /// Pesan yang dapat langsung ditindaklanjuti pengguna, bukan kode internal.
+  static String suggestionFor(Object error) =>
+      suggestionForReason(reasonFor(error));
+
+  /// Versi berbasis alasan tersimpan, dipakai layar Konflik.
+  static String suggestionForReason(String reason) {
+    return switch (reason) {
+      'kunci_toko_tidak_cocok' =>
+        'Muat ulang kunci toko dari perangkat pemilik, lalu coba lagi.',
+      'tanda_tangan_tidak_valid' || 'dekripsi_gagal' =>
+        'Minta pemilik mengirim ulang kunci toko. Bila tetap gagal, '
+            'abaikan amplop ini dan minta perangkat pengirim mengirim ulang.',
+      'amplop_tidak_lengkap' || 'petunjuk_tidak_cocok' ||
+      'idempotency_tidak_valid' =>
+        'Amplop rusak dan tidak dapat dipulihkan. Minta perangkat pengirim '
+            'mengirim ulang dokumennya.',
+      'konflik_unik' =>
+        'Data bentrok dengan dokumen lain. Selesaikan bentrok lalu coba lagi.',
+      'kompensasi_dibutuhkan' || 'kompensasi_gagal' =>
+        'Perangkat asal perlu menerbitkan dokumen kompensasi. Bila tidak '
+            'selesai dalam 7 hari, pemilik dapat menyelesaikannya dari layar '
+            'Konflik.',
+      _ => '',
+    };
+  }
+
   static const Set<String> employeeEntities = {
     'nota',
     'customer',
@@ -197,7 +325,6 @@ class SyncConflictRules {
     'work_order_status': 'ubah_status',
     'nota_adjustment': 'koreksi',
     'stock': 'ubah_stok',
-    'stock_movement': 'ubah_stok',
     'supplier': 'ubah_supplier',
     'supplier_purchase': 'buat_pembelian',
     'supplier_payment': 'bayar_utang',
@@ -239,6 +366,16 @@ class SyncConflictRules {
           return 'peran_tidak_berhak_$permissionCredit';
         }
       }
+      if (entity == 'stock_movement') {
+        final jenis = '${payload['jenis'] ?? ''}'.toUpperCase();
+        final required = switch (jenis) {
+          'MASUK' => permissionStockIn,
+          'KELUAR' => permissionStockOut,
+          _ when payload['opname_absolut_milli'] != null => permissionOpname,
+          _ => permissionChangeStock,
+        };
+        if (!sender.can(required)) return 'peran_tidak_berhak_$required';
+      }
       final required = employeeExtraPermission[entity];
       if (required != null && !sender.can(required)) {
         return 'peran_tidak_berhak_$required';
@@ -277,6 +414,16 @@ class SyncConflictRules {
     final text = '$error'.toLowerCase();
     if (text.contains('tanda tangan')) return 'tanda_tangan_tidak_valid';
     if (text.contains('dekripsi')) return 'dekripsi_gagal';
+    if (text.contains('kunci toko tidak cocok')) {
+      return 'kunci_toko_tidak_cocok';
+    }
+    if (text.contains('amplop tanpa') || text.contains('tidak lengkap')) {
+      return 'amplop_tidak_lengkap';
+    }
+    if (text.contains('petunjuk') || text.contains('tidak cocok dengan isi')) {
+      return 'petunjuk_tidak_cocok';
+    }
+    if (text.contains('idempotency')) return 'idempotency_tidak_valid';
     if (text.contains('unique') || text.contains('constraint')) {
       return 'konflik_unik';
     }

@@ -6,6 +6,7 @@ import '../dev/dummy_seed.dart';
 import '../state/app_state.dart';
 import '../sync/sync_scheduler.dart';
 import 'app_log.dart';
+import 'startup_diagnosis.dart';
 
 /// Urutan pembukaan aplikasi. Dipakai [main] dan layar pemulihan agar
 /// kegagalan inisialisasi tidak menghasilkan layar kosong tanpa jalan keluar.
@@ -35,9 +36,14 @@ class StartupService {
       SyncScheduler.instance.start();
       return null;
     } catch (error) {
+      final diagnosis = diagnoseStartupError(error);
       AppLog.instance.event(
         LogCategory.database,
         quarantine ? 'startup.safe_mode.fail' : 'startup.fail',
+        data: {
+          'cause': diagnosis.cause,
+          'action': diagnosis.action,
+        },
         error: error,
       );
       return error;

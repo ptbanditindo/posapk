@@ -158,11 +158,13 @@ class PajakReportService {
     final output = await db.rawQuery(
       '''
       SELECT COUNT(*) AS jumlah,
-        COALESCE(SUM(pajak_dpp), 0) AS dpp,
-        COALESCE(SUM(pajak), 0) AS pajak,
-        COALESCE(SUM(pajak_diserap), 0) AS diserap
-      FROM service_records
-      WHERE waktu_service BETWEEN ? AND ? AND status != 'VOID'
+        COALESCE(SUM(COALESCE(adj.dpp_cents, r.pajak_dpp)), 0) AS dpp,
+        COALESCE(SUM(COALESCE(adj.ppn_cents, r.pajak)), 0) AS pajak,
+        COALESCE(SUM(COALESCE(adj.pajak_diserap_cents, r.pajak_diserap)), 0)
+          AS diserap
+      FROM service_records r
+      ${AppDatabase.latestAdjustmentJoinSql}
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
       ''',
       [startIso, endIso],
     );
@@ -281,15 +283,17 @@ class PajakReportService {
   }) async {
     final output = await db.rawQuery(
       '''
-      SELECT pajak_mode, pajak_persen_bp, pajak_penanggung,
+      SELECT r.pajak_mode, r.pajak_persen_bp, r.pajak_penanggung,
         COUNT(*) AS jumlah,
-        COALESCE(SUM(pajak_dpp), 0) AS dpp,
-        COALESCE(SUM(pajak), 0) AS pajak,
-        COALESCE(SUM(pajak_diserap), 0) AS diserap
-      FROM service_records
-      WHERE waktu_service BETWEEN ? AND ? AND status != 'VOID'
-        AND pajak_mode <> 'TANPA' AND pajak_persen_bp > 0
-      GROUP BY pajak_mode, pajak_persen_bp, pajak_penanggung
+        COALESCE(SUM(COALESCE(adj.dpp_cents, r.pajak_dpp)), 0) AS dpp,
+        COALESCE(SUM(COALESCE(adj.ppn_cents, r.pajak)), 0) AS pajak,
+        COALESCE(SUM(COALESCE(adj.pajak_diserap_cents, r.pajak_diserap)), 0)
+          AS diserap
+      FROM service_records r
+      ${AppDatabase.latestAdjustmentJoinSql}
+      WHERE r.waktu_service BETWEEN ? AND ? AND r.status != 'VOID'
+        AND r.pajak_mode <> 'TANPA' AND r.pajak_persen_bp > 0
+      GROUP BY r.pajak_mode, r.pajak_persen_bp, r.pajak_penanggung
       ''',
       [startIso, endIso],
     );

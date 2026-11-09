@@ -183,9 +183,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           'Ringkasan milik akun lain. Keluar lalu masuk dengan akun tersebut.',
         );
       }
-      await AppDatabase.instance.runViewerWrite(() => _seedOwner(payload));
+      await AppDatabase.instance.runViewerSyncWrite(() => _seedOwner(payload));
       if (persist) {
-        await AppDatabase.instance.runViewerWrite(
+        await AppDatabase.instance.runViewerSyncWrite(
           () => AppDatabase.instance.setSetting(_summaryKey, raw),
         );
       }
@@ -233,7 +233,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
   }
 
   Future<void> _connectViewer({bool silent = false}) =>
-      AppDatabase.instance.runViewerWrite(
+      AppDatabase.instance.runViewerSyncWrite(
         () => _connectViewerBody(silent: silent),
       );
 
@@ -338,7 +338,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
   Future<void> _loadLocal() async {
     final db = AppDatabase.instance;
     final today = DateTime.now();
-    final records = await db.listRecords(query: _search.text, limit: 200);
+    final records = await db.listRecords(
+      query: _search.text,
+      limit: 200,
+      includeArchived: false,
+    );
     final dashboard = await db.dashboard();
     final stock = await db.listStock();
     final customers = await db.listCustomers();

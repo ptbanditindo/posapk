@@ -8,6 +8,11 @@ class RelayConfig {
     required this.adminToken,
     this.googleClientId = '',
     this.storageLimitBytes = 256 * 1024 * 1024,
+    this.storageWarnRatio = 0.8,
+    this.minSupportedProtocol = 1,
+    this.deviceActiveDays = 30,
+    this.archiveLimitBytes = 2 * 1024 * 1024 * 1024,
+    this.allowedOrigins = const [],
   });
 
   final String host;
@@ -16,6 +21,14 @@ class RelayConfig {
   final String adminToken;
   final String googleClientId;
   final int storageLimitBytes;
+  final double storageWarnRatio;
+  final int minSupportedProtocol;
+  final int deviceActiveDays;
+  final int archiveLimitBytes;
+
+  /// Origin web yang diizinkan. Kosong berarti tidak ada klien browser yang
+  /// dilayani; aplikasi native tidak memakai CORS dan tetap berjalan.
+  final List<String> allowedOrigins;
 
   factory RelayConfig.fromEnv() {
     final fileEnv = _readDotEnv();
@@ -48,8 +61,27 @@ class RelayConfig {
       storageLimitBytes:
           int.tryParse(read('RELAY_STORAGE_LIMIT_BYTES') ?? '') ??
               256 * 1024 * 1024,
+      storageWarnRatio: _readRatio(read('RELAY_STORAGE_WARN_RATIO')),
+      minSupportedProtocol:
+          int.tryParse(read('RELAY_MIN_PROTOCOL') ?? '') ?? 1,
+      deviceActiveDays:
+          int.tryParse(read('RELAY_DEVICE_ACTIVE_DAYS') ?? '') ?? 30,
+      archiveLimitBytes:
+          int.tryParse(read('RELAY_ARCHIVE_LIMIT_BYTES') ?? '') ??
+              2 * 1024 * 1024 * 1024,
+      allowedOrigins: (read('RELAY_ALLOWED_ORIGINS') ?? '')
+          .split(',')
+          .map((origin) => origin.trim())
+          .where((origin) => origin.isNotEmpty)
+          .toList(),
     );
   }
+}
+
+double _readRatio(String? raw) {
+  final value = double.tryParse(raw ?? '');
+  if (value == null || value <= 0 || value > 1) return 0.8;
+  return value;
 }
 
 Map<String, String> _readDotEnv() {

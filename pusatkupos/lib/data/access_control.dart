@@ -2,7 +2,7 @@
 ///
 /// Peran hanyalah label untuk menandai orang. Jalur yang boleh dibuka
 /// ditentukan oleh peta akses per peran di `store_settings`.
-const builtinRoles = ['KASIR', 'MEKANIK', 'SUPERVISOR', 'VIEWER'];
+const builtinRoles = ['KASIR', 'GUDANG', 'MEKANIK', 'SUPERVISOR', 'VIEWER'];
 
 /// Peran lama yang dipertahankan sebagai alias agar data dan sesi lama tetap
 /// terbaca. Penyimpanan baru selalu memakai `SUPERVISOR`.
@@ -10,6 +10,7 @@ const legacyRoleAliases = {'KEDUANYA': 'SUPERVISOR'};
 
 const builtinRoleLabels = {
   'KASIR': 'Kasir',
+  'GUDANG': 'Gudang',
   'MEKANIK': 'Mekanik',
   'SUPERVISOR': 'Supervisor',
   'VIEWER': 'Pengamat (hanya baca)',
@@ -102,6 +103,14 @@ String roleDisplayName(String role) {
 
 bool isBuiltinRole(String role) => builtinRoles.contains(canonicalRole(role));
 
+/// Peran yang sah untuk akun karyawan. `owner` bukan peran akun; bila data
+/// lokal/remote/snapshot memuatnya, akun diturunkan ke [fallback] agar tidak
+/// mewarisi seluruh akses pemilik.
+String employeeRole(String role, {String fallback = 'VIEWER'}) {
+  final canonical = canonicalRole(role);
+  return canonical == 'owner' ? fallback : canonical;
+}
+
 /// Akses bawaan tiap peran. Peran kustom dimulai tanpa akses lalu diatur
 /// pemilik.
 Map<String, Map<String, bool>> defaultRoleAccess() => {
@@ -131,9 +140,9 @@ Map<String, Map<String, bool>> defaultRoleAccess() => {
         'beri_kredit': false,
         'setujui': false,
         'ubah_stok': false,
-        'stok_masuk': true,
+        'stok_masuk': false,
         'stok_keluar': true,
-        'opname': true,
+        'opname': false,
         'ubah_harga_jasa': false,
         'followup': true,
         'ubah_pelanggan': true,
@@ -152,6 +161,55 @@ Map<String, Map<String, bool>> defaultRoleAccess() => {
         'jenis_servis_langsung': true,
         'jenis_order_kerja': true,
         'jenis_estimasi_saja': true,
+        'jenis_pelunasan_order': false,
+      },
+      'GUDANG': {
+        'lihat_ringkasan': true,
+        'lihat_kasir': false,
+        'lihat_riwayat': false,
+        'lihat_pelanggan': false,
+        'lihat_stok': true,
+        'lihat_order': false,
+        'lihat_jasa': false,
+        'lihat_laporan': false,
+        'lihat_supplier': false,
+        'lihat_pembelian': false,
+        'lihat_followup': false,
+        'lihat_karyawan': false,
+        'lihat_pengaturan': false,
+        'lihat_premium': false,
+        'buat_nota': false,
+        'buat_estimasi': false,
+        'buat_order': false,
+        'ubah_status': false,
+        'void': false,
+        'retur': false,
+        'koreksi': false,
+        'diskon': false,
+        'beri_kredit': false,
+        'setujui': false,
+        'ubah_stok': false,
+        'stok_masuk': true,
+        'stok_keluar': false,
+        'opname': false,
+        'ubah_harga_jasa': false,
+        'followup': false,
+        'ubah_pelanggan': false,
+        'ubah_supplier': false,
+        'buat_pembelian': false,
+        'bayar_utang': false,
+        'bayar_gaji': false,
+        'kelola_jasa': false,
+        'ubah_pengaturan': false,
+        'kelola_akun': false,
+        'kelola_perangkat': false,
+        'lisensi': false,
+        'backup': false,
+        'cetak_laporan': false,
+        'jenis_jual_sparepart': false,
+        'jenis_servis_langsung': false,
+        'jenis_order_kerja': false,
+        'jenis_estimasi_saja': false,
         'jenis_pelunasan_order': false,
       },
       'MEKANIK': {

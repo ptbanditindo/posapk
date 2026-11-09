@@ -85,9 +85,18 @@ class OwnerApi {
     return _rows(await _json(response));
   }
 
-  Future<List<Map<String, Object?>>> devices() async {
+  Future<List<Map<String, Object?>>> devices({
+    int limit = 100,
+    int offset = 0,
+    String? storeId,
+  }) async {
     final response = await http.get(
-      _uri('/relay/manage/devices', {'owner_id': ownerId}),
+      _uri('/relay/manage/devices', {
+        'owner_id': ownerId,
+        'limit': '$limit',
+        'offset': '$offset',
+        if (storeId != null && storeId.isNotEmpty) 'store_id': storeId,
+      }),
       headers: _headers,
     );
     return _rows(await _json(response));

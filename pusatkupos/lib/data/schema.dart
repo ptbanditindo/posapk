@@ -1,5 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 
+import '../core/app_config.dart';
+
 /// Skema database lokal PusatkuPOS.
 ///
 /// Database dirancang bersih dari kebutuhan bisnis saat ini. Tidak ada jalur
@@ -972,6 +974,9 @@ Future<void> createCleanSchema(Database db) async {
       nominal_jasa INTEGER NOT NULL DEFAULT 0,
       nominal_part INTEGER NOT NULL DEFAULT 0,
       diskon INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER,
+      ppn_cents INTEGER,
+      pajak_diserap_cents INTEGER,
       alasan TEXT NOT NULL,
       dibuat_oleh TEXT,
       disetujui_oleh TEXT,
@@ -1342,6 +1347,7 @@ Future<void> createCleanSchema(Database db) async {
       pajak_mode TEXT NOT NULL DEFAULT 'EKSLUSIF',
       pajak_persen_bp INTEGER NOT NULL DEFAULT 1100,
       pajak_penanggung TEXT NOT NULL DEFAULT 'PEMBELI',
+      zona_waktu TEXT NOT NULL DEFAULT 'Asia/Jakarta',
       permission_version INTEGER NOT NULL DEFAULT 1,
       schema_contract_version INTEGER NOT NULL DEFAULT 1,
       sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
@@ -1647,6 +1653,27 @@ Future<void> createCleanSchema(Database db) async {
       applied_at TEXT NOT NULL
     )
   ''');
+  // Antrean kompensasi D25: dokumen baru yang membatalkan efek dokumen kalah,
+  // ditulis hanya oleh perangkat asal dokumen yang kalah.
+  await db.execute('''
+    CREATE TABLE sync_compensations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      nota_sync_id TEXT NOT NULL,
+      return_sync_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX ix_sync_compensations_status '
+    'ON sync_compensations(status, id)',
+  );
   await db.execute('''
     CREATE TABLE sync_conflicts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1844,6 +1871,7 @@ Future<void> createOperationalSchema(DatabaseExecutor db) async {
       origin_device_id TEXT NOT NULL DEFAULT '',
       no_pembelian TEXT NOT NULL,
       request_id TEXT NOT NULL UNIQUE,
+      request_payload_hash TEXT,
       supplier_id INTEGER NOT NULL,
       supplier_sync_id TEXT NOT NULL DEFAULT '',
       supplier_nama_snapshot TEXT NOT NULL DEFAULT '',
@@ -1995,6 +2023,7 @@ Future<void> createOperationalSchema(DatabaseExecutor db) async {
       purchase_sync_id TEXT NOT NULL DEFAULT '',
       no_retur TEXT NOT NULL,
       request_id TEXT NOT NULL UNIQUE,
+      request_payload_hash TEXT,
       status TEXT NOT NULL DEFAULT 'AKTIF',
       total INTEGER NOT NULL DEFAULT 0,
       total_modal_kembali INTEGER NOT NULL DEFAULT 0,
@@ -2400,4 +2429,267 @@ Future<void> createOperationalSchema(DatabaseExecutor db) async {
       SELECT RAISE(ABORT, 'pembayaran PPN VOID bersifat final');
     END
   ''');
+
+  await createIntegrityBaseline(db);
+  await createPerformanceIndexes(db);
+}
+
+/// Tabel baseline F1: stub dokumen terpurge, tutup buku bulanan, salinan
+/// receipt arsip, dan versi protokol. Semua tabel memakai `IF NOT EXISTS` agar
+/// aman dibuat pada database baru maupun saat upgrade satu langkah.
+Future<void> createIntegrityBaseline(DatabaseExecutor db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS purged_documents (
+      doc_id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL DEFAULT '',
+      no_nota TEXT NOT NULL DEFAULT '',
+      tanggal TEXT NOT NULL DEFAULT '',
+      total_cents INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ARSIP',
+      receipt_id TEXT NOT NULL DEFAULT '',
+      purged_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_purged_documents_tanggal '
+    'ON purged_documents(store_id, tanggal)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS period_closings (
+      sync_id TEXT PRIMARY KEY,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      periode TEXT NOT NULL,
+      rev INTEGER NOT NULL DEFAULT 1,
+      zona TEXT NOT NULL DEFAULT '',
+      omzet_cents INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      hpp_cents INTEGER NOT NULL DEFAULT 0,
+      retur_nilai_cents INTEGER NOT NULL DEFAULT 0,
+      retur_hpp_cents INTEGER NOT NULL DEFAULT 0,
+      retur_jasa_cents INTEGER NOT NULL DEFAULT 0,
+      retur_part_cents INTEGER NOT NULL DEFAULT 0,
+      kas_metode_json TEXT NOT NULL DEFAULT '{}',
+      komisi_cents INTEGER NOT NULL DEFAULT 0,
+      transaksi INTEGER NOT NULL DEFAULT 0,
+      jasa_cents INTEGER NOT NULL DEFAULT 0,
+      part_cents INTEGER NOT NULL DEFAULT 0,
+      diskon_cents INTEGER NOT NULL DEFAULT 0,
+      dibayar_cents INTEGER NOT NULL DEFAULT 0,
+      piutang_cents INTEGER NOT NULL DEFAULT 0,
+      modal_part_cents INTEGER NOT NULL DEFAULT 0,
+      modal_jasa_cents INTEGER NOT NULL DEFAULT 0,
+      laba_part_cents INTEGER NOT NULL DEFAULT 0,
+      laba_jasa_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_diserap_cents INTEGER NOT NULL DEFAULT 0,
+      gaji_cents INTEGER NOT NULL DEFAULT 0,
+      jenis_json TEXT NOT NULL DEFAULT '{}',
+      hash TEXT NOT NULL DEFAULT '',
+      closed_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'FINAL',
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      UNIQUE (store_id, periode, rev)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_period_closings_periode '
+    'ON period_closings(store_id, periode)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_receipts (
+      store_id TEXT NOT NULL,
+      doc_id TEXT NOT NULL,
+      content_hash TEXT NOT NULL DEFAULT '',
+      object_id TEXT NOT NULL DEFAULT '',
+      archived_at TEXT NOT NULL,
+      signature TEXT NOT NULL DEFAULT '',
+      synced_at TEXT,
+      PRIMARY KEY (store_id, doc_id)
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_documents (
+      store_id TEXT NOT NULL DEFAULT '',
+      doc_type TEXT NOT NULL DEFAULT 'nota',
+      doc_id TEXT NOT NULL,
+      no_nota TEXT NOT NULL DEFAULT '',
+      tanggal TEXT NOT NULL DEFAULT '',
+      schema_version INTEGER NOT NULL DEFAULT 0,
+      key_id TEXT NOT NULL DEFAULT '',
+      key_version INTEGER NOT NULL DEFAULT 1,
+      content_hash TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      receipt_json TEXT NOT NULL DEFAULT '',
+      receipt_signature TEXT NOT NULL DEFAULT '',
+      archived_at TEXT,
+      upload_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_id, doc_type, doc_id, content_hash)
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_index_tokens (
+      store_id TEXT NOT NULL DEFAULT '',
+      doc_type TEXT NOT NULL DEFAULT 'nota',
+      doc_id TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      token TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (store_id, doc_type, doc_id, content_hash, token)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_archive_tokens_search '
+    'ON archive_index_tokens(store_id, token)',
+  );
+  await db.rawInsert(
+    'INSERT OR IGNORE INTO app_meta (key, value) '
+    "VALUES ('protocol_version', '$protocolVersion')",
+  );
+  await createArchiveReturnSchema(db);
+  await createPrintQueueSchema(db);
+}
+
+/// Antrean cetak lokal. Job disimpan per nota agar kegagalan printer tidak
+/// menghilangkan struk; status dan pesan error dapat dicoba ulang kapan saja.
+Future<void> createPrintQueueSchema(DatabaseExecutor db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS print_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_id INTEGER NOT NULL DEFAULT 0,
+      record_sync_id TEXT NOT NULL DEFAULT '',
+      no_nota TEXT NOT NULL DEFAULT '',
+      doc_type TEXT NOT NULL DEFAULT 'nota',
+      width INTEGER NOT NULL DEFAULT 32,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      printed_at TEXT
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_print_jobs_record '
+    'ON print_jobs(record_id, created_at)',
+  );
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_print_jobs_status '
+    'ON print_jobs(status, updated_at)',
+  );
+}
+
+/// Indeks untuk riwayat, pencarian nota, piutang, dan antrean sinkronisasi
+/// pada data dua tahun. Semua idempoten agar aman dijalankan saat upgrade.
+Future<void> createPerformanceIndexes(DatabaseExecutor db) async {
+  const statements = [
+    'CREATE INDEX IF NOT EXISTS ix_service_records_waktu_desc '
+        'ON service_records(waktu_service DESC)',
+    'CREATE INDEX IF NOT EXISTS ix_service_records_no_nota '
+        'ON service_records(no_nota)',
+    'CREATE INDEX IF NOT EXISTS ix_service_records_customer_nama '
+        'ON service_records(customer_nama)',
+    'CREATE INDEX IF NOT EXISTS ix_service_records_piutang '
+        'ON service_records(sisa_bayar) WHERE sisa_bayar > 0',
+    'CREATE INDEX IF NOT EXISTS ix_service_payments_waktu '
+        'ON service_payments(waktu)',
+    'CREATE INDEX IF NOT EXISTS ix_cash_ledger_waktu '
+        'ON cash_ledger(waktu)',
+    'CREATE INDEX IF NOT EXISTS ix_stock_movements_created '
+        'ON stock_movements(created_at)',
+    'CREATE INDEX IF NOT EXISTS ix_sync_outbox_entity '
+        'ON sync_outbox(entity, entity_id, id)',
+    'CREATE INDEX IF NOT EXISTS ix_sync_outbox_status '
+        'ON sync_outbox(status, id)',
+    'CREATE INDEX IF NOT EXISTS ix_purged_documents_order '
+        'ON purged_documents(tanggal DESC)',
+    'CREATE INDEX IF NOT EXISTS ix_sale_returns_created '
+        'ON sale_returns(created_at, status)',
+    'CREATE INDEX IF NOT EXISTS ix_archive_documents_pending '
+        'ON archive_documents(store_id, doc_type, archived_at)',
+  ];
+  for (final sql in statements) {
+    await db.execute(sql);
+  }
+}
+
+/// Retur atas nota yang sudah dipurge. Dokumen ini berdiri sendiri dan hanya
+/// merujuk nota lewat `ref_doc_id`; tabel nota tidak pernah ditulis ulang.
+Future<void> createArchiveReturnSchema(DatabaseExecutor db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      ref_doc_id TEXT NOT NULL,
+      no_nota TEXT NOT NULL DEFAULT '',
+      no_retur TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      total INTEGER NOT NULL DEFAULT 0,
+      total_refund INTEGER NOT NULL DEFAULT 0,
+      dpp INTEGER NOT NULL DEFAULT 0,
+      pajak INTEGER NOT NULL DEFAULT 0,
+      pajak_diserap INTEGER NOT NULL DEFAULT 0,
+      metode_refund TEXT NOT NULL DEFAULT 'CASH',
+      alasan TEXT NOT NULL,
+      dibuat_oleh TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (total >= 0),
+      CHECK (total_refund >= 0)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_archive_returns_ref '
+    'ON archive_returns(ref_doc_id, status)',
+  );
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      return_id INTEGER NOT NULL,
+      return_sync_id TEXT NOT NULL DEFAULT '',
+      line_type TEXT NOT NULL,
+      line_sync_id TEXT NOT NULL,
+      deskripsi TEXT NOT NULL DEFAULT '',
+      jumlah_milli INTEGER NOT NULL,
+      qty_asal_milli INTEGER NOT NULL,
+      harga_satuan INTEGER NOT NULL DEFAULT 0,
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      modal_satuan INTEGER NOT NULL DEFAULT 0,
+      dpp_cents INTEGER NOT NULL DEFAULT 0,
+      ppn_cents INTEGER NOT NULL DEFAULT 0,
+      total_ditagih_cents INTEGER NOT NULL DEFAULT 0,
+      stock_sync_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jumlah_milli > 0),
+      FOREIGN KEY (return_id) REFERENCES archive_returns(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_archive_return_items_return '
+    'ON archive_return_items(return_id)',
+  );
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_archive_return_items_line '
+    'ON archive_return_items(return_sync_id, line_sync_id)',
+  );
 }

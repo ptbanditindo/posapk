@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../core/quantity.dart';
 import '../../data/app_database.dart';
@@ -159,6 +160,15 @@ class _StockScreenState extends State<StockScreen> {
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal stok keluar: $error', error: true);
     }
+  }
+
+  Future<void> _showStockCard(StockItem item) async {
+    final card = await AppDatabase.instance.stockCard(item.id);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _StockCardDialog(card: card),
+    );
   }
 
   Future<void> _opname(StockItem item) async {
@@ -376,11 +386,16 @@ class _StockScreenState extends State<StockScreen> {
                             ),
                             PopupMenuButton<String>(
                               onSelected: (value) {
+                                if (value == 'kartu') _showStockCard(item);
                                 if (value == 'in') _stockIn(item);
                                 if (value == 'out') _stockOut(item);
                                 if (value == 'opname') _opname(item);
                               },
                               itemBuilder: (context) => [
+                                const PopupMenuItem(
+                                  value: 'kartu',
+                                  child: Text('Kartu stok'),
+                                ),
                                 if (AppState.instance.can('stok_masuk'))
                                   const PopupMenuItem(
                                     value: 'in',
@@ -419,13 +434,108 @@ class _StockScreenState extends State<StockScreen> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'Ketuk barang untuk ubah; menu di kanan untuk stok masuk, '
-                  'keluar, atau opname.',
+                  'Ketuk barang untuk ubah; menu di kanan untuk kartu stok, '
+                  'stok masuk, keluar, atau opname.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
             ],
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StockCardDialog extends StatelessWidget {
+  const _StockCardDialog({required this.card});
+
+  final Map<String, Object?> card;
+
+  @override
+  Widget build(BuildContext context) {
+    final item = card['item'] as StockItem;
+    final movements =
+        (card['movements'] as List).cast<Map<String, Object?>>();
+    final movementMilli = (card['saldo_movement_milli'] as num).toInt();
+    final selisih = item.jumlahMilli - movementMilli;
+    return AlertDialog(
+      title: Text('Kartu stok · ${item.nama}'),
+      content: SizedBox(
+        width: 560,
+        height: 420,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Saldo ${item.jumlahLabel} · nilai '
+              '${formatRupiah((card['value_cents'] as num).toInt())} · '
+              'HPP ${formatRupiah((card['avg_cost_cents'] as num).toInt())}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (selisih != 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Selisih ledger ${formatQuantity(selisih, item.desimal, satuan: item.satuan)}. '
+                'Jalankan rekonsiliasi di Diagnostik.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+            const Divider(),
+            Expanded(
+              child: movements.isEmpty
+                  ? const Center(child: Text('Belum ada mutasi stok.'))
+                  : ListView.separated(
+                      itemCount: movements.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final row = movements[index];
+                        final delta =
+                            (row['jumlah_milli'] as num?)?.toInt() ??
+                            ((row['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+                        final after =
+                            (row['stok_sesudah_milli'] as num?)?.toInt() ?? 0;
+                        final cost =
+                            (row['harga_pokok_satuan_cents'] as num?)
+                                ?.toInt() ??
+                            0;
+                        final waktu = localTime(row['created_at']);
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            delta >= 0
+                                ? Icons.arrow_downward
+                                : Icons.arrow_upward,
+                            color: delta >= 0
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.error,
+                          ),
+                          title: Text(
+                            '${row['jenis']} · '
+                            '${delta >= 0 ? '+' : ''}'
+                            '${formatQuantity(delta, item.desimal, satuan: item.satuan)}',
+                          ),
+                          subtitle: Text(
+                            '${dateTimeId.format(waktu)} · saldo '
+                            '${formatQuantity(after, item.desimal)} · '
+                            'HPP ${formatRupiah(cost)}'
+                            '${(row['alasan'] ?? '').toString().isEmpty ? '' : ' · ${row['alasan']}'}',
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Tutup'),
         ),
       ],
     );

@@ -63,11 +63,15 @@ Map<String, Object?> buildBackupManifest({
   required String createdAt,
   required String activeStoreId,
   required List<Map<String, Object?>> stores,
+  String ownerId = '',
 }) {
   return {
     'format': format,
     'app': 'PusatkuPOS',
     'created_at': createdAt,
+    // Identitas pemilik dipakai restore lokal untuk menolak backup milik akun
+    // lain pada perangkat yang sudah memiliki identitas owner.
+    'owner_id': ownerId,
     'schema_version': schemaVersion,
     'schema_contract_version': contractVersion,
     'app_version': appVersion,

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
@@ -6,6 +8,7 @@ import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/models.dart';
 import '../../data/opening_balance_service.dart';
+import '../../data/period_closing_service.dart';
 import '../../data/purchase_service.dart';
 import '../../state/app_state.dart';
 import '../widgets.dart';
@@ -23,6 +26,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const _pageSize = 50;
 
   _ReportPreset _preset = _ReportPreset.today;
+  int _monthOffset = 0;
   Future<ReportSummary>? _future;
   ReportSummary? _summary;
   List<ServiceRecordSummary> _rows = [];
@@ -32,6 +36,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
   List<Map<String, Object?>> _margin = const [];
   List<Map<String, Object?>> _valuation = const [];
   Map<String, Object?>? _opening;
+  Map<String, Object?>? _closing;
+  bool _fromSnapshot = false;
   bool _hasMore = false;
   bool _loadingMore = false;
 
@@ -55,12 +61,24 @@ class _ReportsScreenState extends State<ReportsScreen> {
     super.dispose();
   }
 
+  DateTime get _monthAnchor {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month - _monthOffset, 1);
+  }
+
+  String get _periode {
+    final anchor = _monthAnchor;
+    return '${anchor.year}-${anchor.month.toString().padLeft(2, '0')}';
+  }
+
   (DateTime, DateTime) get _range {
     final now = DateTime.now();
     return switch (_preset) {
       _ReportPreset.today => (now, now),
       _ReportPreset.week => (now.subtract(const Duration(days: 6)), now),
-      _ReportPreset.month => (DateTime(now.year, now.month, 1), now),
+      _ReportPreset.month => _monthOffset == 0
+          ? (_monthAnchor, now)
+          : (_monthAnchor, DateTime(_monthAnchor.year, _monthAnchor.month + 1, 0)),
       _ReportPreset.all => (DateTime(2000), now),
     };
   }
@@ -78,16 +96,30 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   Future<ReportSummary> _loadFirst(DateTime from, DateTime to) async {
     final db = AppDatabase.instance;
-    final results = await Future.wait<Object>([
-      db.reportSummary(from, to),
-      db.listRecords(from: from, to: to, limit: _pageSize),
-      if (AppState.instance.isOwner) db.belowPriceSales(from, to),
-      if (AppState.instance.isOwner) db.correctionsInRange(from, to),
-      if (AppState.instance.isOwner) db.estimateAging(from, to),
+    final owner = AppState.instance.isOwner;
+    final closing = _preset == _ReportPreset.month
+        ? await PeriodClosingService.instance.latest(_periode)
+        : null;
+    final snapshot = _monthOffset > 0 &&
+            closing != null &&
+            '${closing['status']}' == 'FINAL'
+        ? _summaryFromClosing(closing)
+        : null;
+    final includeArchived = _preset == _ReportPreset.month && _monthOffset > 0;
+    final results = await Future.wait<Object?>([
+      snapshot != null ? Future.value(snapshot) : db.reportSummary(from, to),
+      db.listRecords(
+        from: from,
+        to: to,
+        limit: _pageSize,
+        includeArchived: includeArchived,
+      ),
+      if (owner) db.belowPriceSales(from, to),
+      if (owner) db.correctionsInRange(from, to),
+      if (owner) db.estimateAging(from, to),
     ]);
     final summary = results[0] as ReportSummary;
     final rows = results[1] as List<ServiceRecordSummary>;
-    final owner = AppState.instance.isOwner;
     final margin = owner
         ? await PurchaseService.instance.marginReport(from: from, to: to)
         : const <Map<String, Object?>>[];
@@ -99,6 +131,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (mounted) {
       setState(() {
         _summary = summary;
+        _closing = closing;
+        _fromSnapshot = snapshot != null;
         _rows = rows;
         _below = owner
             ? results[2] as List<BelowPriceSale>
@@ -118,6 +152,96 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return summary;
   }
 
+  /// Angka periode tertutup dibaca dari snapshot tutup buku. Nota periode itu
+  /// boleh saja sudah dipurge, tetapi snapshot tidak ikut terhapus.
+  ReportSummary _summaryFromClosing(Map<String, Object?> closing) {
+    int value(String key) => (closing[key] as num?)?.toInt() ?? 0;
+    Map<String, int> intMap(Object? raw) {
+      final decoded = _decodeMap(raw);
+      return {
+        for (final entry in decoded.entries)
+          entry.key: (entry.value as num?)?.toInt() ?? 0,
+      };
+    }
+
+    final jenis = _decodeMap(closing['jenis_json']);
+    final countByType = <String, int>{};
+    final totalByType = <String, int>{};
+    for (final entry in jenis.entries) {
+      final row = entry.value;
+      if (row is! Map) continue;
+      countByType[entry.key] = (row['jumlah'] as num?)?.toInt() ?? 0;
+      totalByType[entry.key] = (row['total'] as num?)?.toInt() ?? 0;
+    }
+    final totalModalPart = value('modal_part_cents');
+    final totalModalJasa = value('modal_jasa_cents');
+    return ReportSummary(
+      transaksi: value('transaksi'),
+      totalJasaCents: value('jasa_cents'),
+      totalPartCents: value('part_cents'),
+      diskonCents: value('diskon_cents'),
+      totalCents: value('omzet_cents'),
+      dibayarCents: value('dibayar_cents'),
+      piutangCents: value('piutang_cents'),
+      totalModalPartCents: totalModalPart,
+      labaKotorPartCents: value('laba_part_cents') != 0
+          ? value('laba_part_cents')
+          : value('part_cents') - totalModalPart,
+      totalModalJasaCents: totalModalJasa,
+      labaKotorJasaCents: value('laba_jasa_cents') != 0
+          ? value('laba_jasa_cents')
+          : value('jasa_cents') - totalModalJasa,
+      komisiCents: value('komisi_cents'),
+      gajiCents: value('gaji_cents'),
+      cashByMethod: intMap(closing['kas_metode_json']),
+      countByType: countByType,
+      totalByType: totalByType,
+      returJasaCents: value('retur_jasa_cents'),
+      returPartCents: value('retur_part_cents'),
+      returModalCents: value('retur_hpp_cents'),
+      returDitagihCents: value('retur_nilai_cents'),
+      totalDppCents: value('dpp_cents'),
+      pajakCents: value('ppn_cents'),
+      pajakDiserapCents: value('ppn_diserap_cents'),
+    );
+  }
+
+  Map<String, Object?> _decodeMap(Object? raw) {
+    try {
+      final decoded = jsonDecode('${raw ?? '{}'}');
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  void _shiftMonth(int delta) {
+    _monthOffset = (_monthOffset + delta).clamp(0, 240);
+    _load();
+  }
+
+  Future<void> _tutupBuku() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked == null || !mounted) return;
+    final periode =
+        '${picked.year}-${picked.month.toString().padLeft(2, '0')}';
+    try {
+      final result = await PeriodClosingService.instance.close(periode);
+      if (!mounted) return;
+      showSnack(context, result.message);
+      _load();
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(context, 'Tutup buku gagal: $error', error: true);
+    }
+  }
+
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
     setState(() => _loadingMore = true);
@@ -127,6 +251,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       to: range.$2,
       limit: _pageSize,
       offset: _rows.length,
+      includeArchived: _preset == _ReportPreset.month && _monthOffset > 0,
     );
     if (!mounted) return;
     setState(() {
@@ -141,10 +266,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text(
-          'Laporan',
-          style: Theme.of(context).textTheme.headlineSmall
-              ?.copyWith(fontWeight: FontWeight.w700),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Laporan',
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            if (AppState.instance.isOwner)
+              OutlinedButton.icon(
+                onPressed: _tutupBuku,
+                icon: const Icon(Icons.event_available_outlined),
+                label: const Text('Tutup buku'),
+              ),
+          ],
         ),
         const SizedBox(height: 12),
         Wrap(
@@ -152,10 +289,36 @@ class _ReportsScreenState extends State<ReportsScreen> {
           children: [
             _chip('Hari ini', _ReportPreset.today),
             _chip('7 hari', _ReportPreset.week),
-            _chip('Bulan ini', _ReportPreset.month),
+            _chip('Per bulan', _ReportPreset.month),
             _chip('Semua', _ReportPreset.all),
           ],
         ),
+        if (_preset == _ReportPreset.month) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Bulan sebelumnya',
+                onPressed: () => _shiftMonth(1),
+                icon: const Icon(Icons.chevron_left),
+              ),
+              Expanded(
+                child: Text(
+                  monthId.format(_monthAnchor),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Bulan berikutnya',
+                onPressed: _monthOffset == 0
+                    ? null
+                    : () => _shiftMonth(-1),
+                icon: const Icon(Icons.chevron_right),
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 16),
         FutureBuilder<ReportSummary>(
           future: _future,
@@ -257,6 +420,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   'tanggal pembayaran.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (_closing != null) ...[
+                  const SizedBox(height: 16),
+                  _ClosingCard(closing: _closing!),
+                ],
                 const SizedBox(height: 16),
                 SectionCard(
                   title: 'Rincian',
@@ -338,7 +505,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                               .toList(),
                         ),
                 ),
-                if (AppState.instance.isOwner) ...[
+                if (AppState.instance.isOwner && !_fromSnapshot) ...[
                   const SizedBox(height: 16),
                   SectionCard(
                     title: 'Penjualan di bawah harga terdaftar',
@@ -357,6 +524,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                       '${row.noNota} · ${row.deskripsi}',
                                     ),
                                     subtitle: Text(
+                                      '${row.labelHarga} · '
                                       '${dateId.format(row.waktu)} · '
                                       'Kasir: ${row.kasir ?? '-'}'
                                       '${row.disetujuiOleh == null ? '' : ' · '
@@ -448,6 +616,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                 .toList(),
                           ),
                   ),
+                ],
+                if (AppState.instance.isOwner) ...[
                   const SizedBox(height: 16),
                   SectionCard(
                     title: 'Nilai persediaan',
@@ -644,6 +814,85 @@ class _ReportsScreenState extends State<ReportsScreen> {
             value,
             style: bold ? const TextStyle(fontWeight: FontWeight.w700) : null,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Ringkasan tutup buku bulanan. Angka berasal dari snapshot yang tidak ikut
+/// dipurge, sehingga laporan periode lama tetap terbaca setelah purge.
+class _ClosingCard extends StatelessWidget {
+  const _ClosingCard({required this.closing});
+
+  final Map<String, Object?> closing;
+
+  int _value(String key) => (closing[key] as num?)?.toInt() ?? 0;
+
+  @override
+  Widget build(BuildContext context) {
+    Map<String, Object?> kas = const {};
+    try {
+      final decoded = jsonDecode('${closing['kas_metode_json'] ?? '{}'}');
+      if (decoded is Map) {
+        kas = decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } catch (_) {}
+    final periode = '${closing['periode'] ?? ''}';
+    final rev = (closing['rev'] as num?)?.toInt() ?? 1;
+    return SectionCard(
+      title: 'Tutup buku $periode · rev $rev',
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_outline, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Snapshot final · ${closing['zona'] ?? ''}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Omzet ${formatRupiah(_value('omzet_cents'))}'),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'DPP ${formatRupiah(_value('dpp_cents'))} · '
+              'PPN ${formatRupiah(_value('ppn_cents'))}',
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'HPP ${formatRupiah(_value('hpp_cents'))} · '
+              'Komisi ${formatRupiah(_value('komisi_cents'))}',
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Retur ${formatRupiah(_value('retur_nilai_cents'))} '
+              '(HPP ${formatRupiah(_value('retur_hpp_cents'))})',
+            ),
+          ),
+          if (kas.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Kas: ${kas.entries.map((entry) => '${entry.key} '
+                    '${formatRupiah((entry.value as num?)?.toInt() ?? 0)}').join(' · ')}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
         ],
       ),
     );

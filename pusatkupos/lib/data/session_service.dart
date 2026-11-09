@@ -184,6 +184,16 @@ class SessionService {
     }
   }
 
+  /// Mengakhiri sesi tanpa menghapus PIN perangkat. Dipakai saat pemilik
+  /// keluar: database toko, antrean keluar, dan kunci identitas tetap utuh
+  /// sehingga data yang sama dapat dibuka lagi dengan PIN.
+  Future<void> clearProfile() async {
+    _cached = null;
+    await SecureStore.instance.delete(_profileKey);
+    await AppDatabase.instance.deleteSetting('app.mode');
+    await AppDatabase.instance.deleteSetting('app.role');
+  }
+
   Future<void> clear() async {
     _cached = null;
     await SecureStore.instance.delete(_profileKey);

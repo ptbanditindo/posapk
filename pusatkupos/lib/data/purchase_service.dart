@@ -6,6 +6,7 @@ import '../auth/operator.dart';
 import '../auth/permissions.dart';
 import '../core/dates.dart';
 import '../core/ids.dart';
+import '../sync/crypto.dart';
 import '../sync/sync_conflict_rules.dart';
 import 'app_database.dart';
 import 'feature_flags.dart';
@@ -116,14 +117,48 @@ class PurchaseService {
       throw ArgumentError('Metode pembayaran tidak valid.');
     }
     final requestId = input.requestId ?? newSyncId();
+    final requestHash = sha256Hex(
+      utf8.encode(
+        canonicalJson({
+          'jenis': 'pembelian',
+          'supplier_id': input.supplierId,
+          'tanggal': input.tanggal?.toIso8601String(),
+          'termin_hari': input.terminHari,
+          'jenis_bayar': input.jenisBayar,
+          'diskon': input.diskon,
+          'ongkir': input.ongkir,
+          'ppn': input.ppn,
+          'bayar_awal': input.bayarAwal,
+          'metode': input.metode,
+          'catatan': _clean(input.catatan),
+          'items': [
+            for (final line in input.lines)
+              {
+                'stock_item_id': line.stockItemId,
+                'qty_milli': line.qtyMilli,
+                'harga': line.hargaSatuan,
+              },
+          ],
+        }),
+      ),
+    );
     final existing = await AppDatabase.instance.db.query(
       'supplier_purchases',
-      columns: ['id'],
+      columns: ['id', 'request_payload_hash'],
       where: 'request_id = ?',
       whereArgs: [requestId],
       limit: 1,
     );
-    if (existing.isNotEmpty) return existing.first['id'] as int;
+    if (existing.isNotEmpty) {
+      final stored = existing.first['request_payload_hash'] as String?;
+      if (stored != null && stored != requestHash) {
+        throw StateError(
+          'Permintaan $requestId sudah dipakai untuk pembelian dengan isi '
+          'berbeda. Muat ulang lalu ulangi.',
+        );
+      }
+      return existing.first['id'] as int;
+    }
 
     return AppDatabase.instance.db.transaction((txn) async {
       final supplierRows = await txn.query(
@@ -206,6 +241,7 @@ class PurchaseService {
         'origin_device_id': deviceId,
         'no_pembelian': noPembelian,
         'request_id': requestId,
+        'request_payload_hash': requestHash,
         'supplier_id': input.supplierId,
         'supplier_sync_id': supplier['sync_id'],
         'supplier_nama_snapshot': supplier['nama'],
@@ -562,14 +598,40 @@ class PurchaseService {
       throw ArgumentError('Retur harus memiliki minimal satu baris.');
     }
     final request = requestId ?? newSyncId();
+    final requestHash = sha256Hex(
+      utf8.encode(
+        canonicalJson({
+          'jenis': 'retur_pembelian',
+          'purchase_id': purchaseId,
+          'alasan': cleanReason,
+          'metode_refund': (metodeRefund ?? '').trim(),
+          'lines': [
+            for (final line in lines)
+              {
+                'purchase_item_id': line.purchaseItemId,
+                'qty_milli': line.qtyMilli,
+              },
+          ],
+        }),
+      ),
+    );
     final existing = await AppDatabase.instance.db.query(
       'supplier_purchase_returns',
-      columns: ['id'],
+      columns: ['id', 'request_payload_hash'],
       where: 'request_id = ?',
       whereArgs: [request],
       limit: 1,
     );
-    if (existing.isNotEmpty) return existing.first['id'] as int;
+    if (existing.isNotEmpty) {
+      final stored = existing.first['request_payload_hash'] as String?;
+      if (stored != null && stored != requestHash) {
+        throw StateError(
+          'Permintaan $request sudah dipakai untuk retur pembelian dengan isi '
+          'berbeda. Muat ulang lalu ulangi.',
+        );
+      }
+      return existing.first['id'] as int;
+    }
     return AppDatabase.instance.db.transaction((txn) async {
       final purchaseRows = await txn.query(
         'supplier_purchases',
@@ -667,6 +729,7 @@ class PurchaseService {
         'purchase_sync_id': purchase['sync_id'],
         'no_retur': noRetur,
         'request_id': request,
+        'request_payload_hash': requestHash,
         'status': 'AKTIF',
         'total': totalDitagih,
         'total_modal_kembali': totalDpp,
@@ -1167,8 +1230,8 @@ class PurchaseService {
     DateTime? from,
     DateTime? to,
   }) async {
-    final start = dateOnly.format(from ?? DateTime(2000));
-    final end = dateOnly.format(to ?? DateTime(2100));
+    final start = isoStartOfDay(from ?? DateTime(2000));
+    final end = isoEndOfDay(to ?? DateTime(2100));
     return AppDatabase.instance.db.rawQuery(
       '''
       SELECT
@@ -1176,21 +1239,24 @@ class PurchaseService {
         sp.stock_item_id,
         sp.nama_part,
         SUM(sp.jumlah_milli - sp.qty_retur_milli) AS qty_milli,
-        CAST(ROUND(SUM(
-          (sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_final
-        ) / 1000.0) AS INTEGER) AS pendapatan,
-        CAST(ROUND(SUM(
-          (sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_modal
-        ) / 1000.0) AS INTEGER) AS hpp,
-        CAST(ROUND(SUM(
-          (sp.jumlah_milli - sp.qty_retur_milli) *
-            (sp.harga_final - sp.harga_modal)
-        ) / 1000.0) AS INTEGER) AS margin
+        ${AppDatabase.roundDivideSql(
+          'SUM((sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_final)',
+          '1000',
+        )} AS pendapatan,
+        ${AppDatabase.roundDivideSql(
+          'SUM((sp.jumlah_milli - sp.qty_retur_milli) * sp.harga_modal)',
+          '1000',
+        )} AS hpp,
+        ${AppDatabase.roundDivideSql(
+          'SUM((sp.jumlah_milli - sp.qty_retur_milli) * '
+              '(sp.harga_final - sp.harga_modal))',
+          '1000',
+        )} AS margin
       FROM service_parts sp
       JOIN service_records r ON r.id = sp.service_record_id
       WHERE r.deleted_at IS NULL AND r.status = 'AKTIF'
         AND sp.deleted_at IS NULL
-        AND date(r.waktu_service) BETWEEN ? AND ?
+        AND r.waktu_service BETWEEN ? AND ?
       GROUP BY sp.stock_sync_id, sp.stock_item_id, sp.nama_part
       ORDER BY margin DESC
       ''',
@@ -1203,9 +1269,10 @@ class PurchaseService {
       '''
       SELECT s.id, s.nama, s.satuan, s.jumlah_milli,
         COALESCE(c.hpp_rata_milli, s.harga_modal, 0) AS hpp_satuan,
-        CAST(ROUND(
-          s.jumlah_milli * COALESCE(c.hpp_rata_milli, s.harga_modal, 0) / 1000.0
-        ) AS INTEGER) AS nilai_persediaan
+        ${AppDatabase.roundDivideSql(
+          's.jumlah_milli * COALESCE(c.hpp_rata_milli, s.harga_modal, 0)',
+          '1000',
+        )} AS nilai_persediaan
       FROM stock_items s
       LEFT JOIN stock_cost_state c
         ON c.stock_sync_id = s.sync_id AND c.store_id = ?

@@ -156,6 +156,12 @@ Jangan pernah meneruskan token perangkat lewat URL.
 | Token perangkat | Perangkat hilang/dicuri | `POST /relay/manage/devices/<id>/revoke`. Token perangkat yang dicabut ditolak pada permintaan berikutnya. |
 | Kunci lisensi server | Kunci privat server dicurigai bocor | Ganti kunci di database `server_keys` (hapus baris `name` terkait), jalankan `dart run bin/relay.dart key`, lalu perbarui `PUSATKU_LICENSE_PUBLIC_KEY` pada build aplikasi. Lisensi lama perlu diterbitkan ulang. |
 | Kunci owner | Perangkat owner diganti | Terbitkan `owner_public_key` baru, perbarui owner dengan `--force`, lalu pasangkan ulang perangkat. |
+| Kunci toko (`key_version`) | Perangkat dicabut/dicuri, atau karyawan keluar dengan salinan kunci | Dari layar Premium owner, tekan **Rotasi kunci toko**. Perangkat aktif menerima kunci baru otomatis pada sinkronisasi berikutnya (atau lewat **Selaraskan akses kunci**). Amplop lama tetap memakai versi kuncinya; relay menyimpan `key_version` per amplop dan menolak key-wrap versi lebih lama dengan `stale_key`. |
+
+Kunci toko tidak dapat dipulihkan dari relay. Pemulihan hanya lewat escrow
+owner: frasa 12 kata (Argon2id) dan share admin Shamir 2-dari-3, keduanya
+disimpan terpisah dari database aplikasi. Setelah rotasi, perangkat yang
+dicabut tidak dapat membaca data baru meskipun masih memegang kunci lama.
 
 Selalu rotasi di jendela pemeliharaan, backup sebelum perubahan, dan simpan
 nilai lama sampai semua perangkat terhubung kembali.
@@ -182,3 +188,88 @@ satu kantor dengan banyak perangkat di balik satu IP NAT, naikkan batas di
    yang tidak dikenal.
 5. Setelah insiden, uji restore dari backup terbaru dan catat penyebab serta
    tindakan di log operasional.
+
+## 8. Dua layanan dan dua URL
+
+Sync dan arsip memakai build relay yang sama, tetapi wajib dijalankan sebagai
+dua layanan terpisah agar gangguan arsip tidak menghentikan penjualan:
+
+| Layanan | Endpoint | Variabel aplikasi | Isi |
+|---|---|---|---|
+| Sinkronisasi | `/relay/*` | `PUSATKU_SERVICE_URL` | Amplop, snapshot, lisensi, undangan |
+| Arsip | `/archive/*` | `PUSATKU_ARCHIVE_URL` | Ciphertext nota, token indeks, receipt |
+
+- Keduanya wajib `https://` pada build rilis; token perangkat dikirim lewat
+  header, bukan URL.
+- `PUSATKU_ARCHIVE_URL` boleh menunjuk host/VM berbeda dengan database
+  PostgreSQL sendiri. Jangan arahkan ke host yang sama bila tujuannya
+  memisahkan risiko kegagalan.
+- Relay arsip tidak menyediakan endpoint hapus. Setelah premium berakhir,
+  perangkat menerima token baca-saja dan tetap dapat mencari, membuka, serta
+  mengekspor arsip.
+- Backup arsip terdiri dari dua bagian: baris `archive_documents`/
+  `archive_index_tokens` di PostgreSQL dan ciphertext pada direktori objek.
+  Keduanya harus dipulihkan bersama; ciphertext tanpa metadata tidak dapat
+  dicari, metadata tanpa ciphertext tidak dapat dibuka.
+
+## 9. Snapshot penyedia, offsite, dan RPO/RTO
+
+Durabilitas arsip tidak boleh bergantung pada satu VPS.
+
+1. Aktifkan snapshot harian penyedia untuk VM sync dan VM arsip, retensi
+   minimal 7 hari, dan snapshot sebelum perubahan skema.
+2. Salin dump PostgreSQL dan direktori ciphertext arsip ke penyimpanan offsite
+   (penyedia/region berbeda) minimal sekali sehari.
+3. Uji restore triwulanan: pulihkan dump + ciphertext ke mesin uji, jalankan
+   `dart run bin/relay.dart migrate`, lalu buka satu nota dari layar arsip
+   aplikasi. Catat tanggal, jumlah dokumen, dan hasilnya.
+4. Target pemulihan: **RPO ≤ 24 jam** (kehilangan data maksimal satu siklus
+   backup) dan **RTO ≤ 4 jam** (layanan arsip dapat dibuka kembali).
+5. Simpan salinan kunci lisensi publik dan konfigurasi `.env` di tempat aman
+   terpisah; tanpa kunci tersebut receipt arsip tidak dapat diverifikasi.
+
+## 10. CORS dan kuota arsip
+
+- Relay hanya mengirim `Access-Control-Allow-Origin` untuk origin yang terdaftar
+  di `RELAY_ALLOWED_ORIGINS` (pisahkan dengan koma). Daftar kosong berarti
+  hanya klien native yang dilayani; permintaan preflight dari origin lain
+  dibalas `403` dengan kode `origin_denied`. Jangan memakai `*`; autentikasi
+  tetap memakai header token dan credential browser tidak diizinkan.
+- Kesalahan tak terduga dibalas `500` generik (`internal_error`) tanpa detail
+  internal; detail lengkap hanya masuk log server.
+- Kuota penyimpanan sync memakai `RELAY_STORAGE_LIMIT_BYTES` per toko dan
+  kuota arsip global memakai `RELAY_ARCHIVE_LIMIT_BYTES`. Saat kuota penuh,
+  relay membalas `storage_full`/`archive_full`; unggahan arsip ditahan tetapi
+  penjualan dan sync tetap berjalan.
+- Pantau `envelope_backlog`, ukuran direktori arsip, dan sisa disk VM arsip
+  setiap hari. Naikkan kuota hanya setelah kapasitas disk dan backup offsite
+  ikut dinaikkan.
+
+## 11. Kebocoran metadata dan blind index
+
+Relay tidak dapat membaca isi transaksi, tetapi tetap melihat metadata
+berikut. Anggap semuanya dapat diakses operator relay dan pihak yang
+menguasai database:
+
+- ID owner, ID perangkat, nama perangkat, waktu daftar, waktu sinkronisasi
+  terakhir, dan status aktif/dicabut.
+- `key_version` per perangkat dan per amplop, sehingga relay dapat mengetahui
+  kapan rotasi terjadi dan perangkat mana yang belum menerima kunci baru.
+- Jumlah, ukuran, dan waktu amplop; `seq` kursor; serta kelompok perangkat yang
+  berbagi satu toko. Pola ini dapat memperkirakan volume transaksi per hari.
+- Tabel `device_events` mencatat enroll, klaim undangan, key-wrap, dan
+  pencabutan beserta aktor perangkat.
+- Snapshot dan ciphertext arsip disimpan utuh, termasuk ukurannya.
+
+Arsip memakai blind index: token HMAC-SHA256 dari nilai yang dinormalisasi
+(huruf/angka saja, huruf besar), dipisahkan per jenis (`nota`, `nopol`,
+`nama`). Relay hanya melihat token buram, bukan nomor nota atau nama pelanggan.
+Namun token yang sama selalu menghasilkan nilai yang sama, sehingga relay
+dapat melihat bahwa dua dokumen menyebut pelanggan yang sama atau frekuensi
+sebuah nama. Mitigasi yang sudah berlaku: kunci indeks diturunkan dari kunci
+toko (tidak dikirim ke relay) dan token tidak pernah dikembalikan ke perangkat
+lain. Bila ancaman ini penting, rotasi kunci toko dan pisahkan periode arsip.
+
+Jangan menambahkan kolom pencarian plaintext (nama, nopol, nomor nota) ke
+relay; semua pencarian harus lewat token blind index.
+

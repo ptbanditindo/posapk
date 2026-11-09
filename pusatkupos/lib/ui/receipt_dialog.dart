@@ -4,11 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../data/feature_flags.dart';
+import '../data/print_queue_service.dart';
 import '../data/receipt_service.dart';
 import '../printer/logo_platform.dart';
 import '../printer/printer_config.dart';
-import '../printer/printer_service.dart';
 import '../printer/receipt_builder.dart';
+import 'error_messages.dart';
 import 'widgets.dart';
 
 Future<void> showReceiptPreview(
@@ -24,19 +25,16 @@ Future<void> showReceiptPreview(
 
 Future<bool> printReceiptFor(BuildContext context, int recordId) async {
   final printer = await PrinterStore.instance.primary();
-  final width = printer?.width ?? 32;
-  ReceiptDocument document;
-  try {
-    document = await ReceiptService.instance.build(recordId, width: width);
-  } catch (error) {
-    if (context.mounted) {
-      showSnack(context, 'Gagal menyiapkan struk: $error', error: true);
-    }
-    return false;
-  }
-  final result = await PrinterService.instance.printReceipt(document);
+  final result = await PrintQueueService.instance.printReceipt(
+    recordId,
+    width: printer?.width,
+  );
   if (context.mounted) {
-    showSnack(context, result.message, error: !result.ok);
+    showSnack(
+      context,
+      result.ok ? result.message : friendlyError(result.message),
+      error: !result.ok,
+    );
   }
   return result.ok;
 }
@@ -55,6 +53,7 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
   Future<ReceiptDocument>? _document;
   int _columns = 32;
   bool _printing = false;
+  PrintJob? _printJob;
 
   @override
   void initState() {
@@ -64,9 +63,11 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
 
   Future<void> _init() async {
     final printer = await PrinterStore.instance.primary();
+    final job = await PrintQueueService.instance.latest(widget.recordId);
     if (!mounted) return;
     setState(() {
       _columns = printer?.width ?? 32;
+      _printJob = job;
       _document = _load();
     });
   }
@@ -123,12 +124,23 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
   Future<void> _print(ReceiptDocument document) async {
     setState(() => _printing = true);
     try {
-      final result = await PrinterService.instance.printReceipt(document);
+      final result = await PrintQueueService.instance.printReceipt(
+        widget.recordId,
+        document: document,
+        width: _columns,
+      );
+      final job = await PrintQueueService.instance.latest(widget.recordId);
       if (!mounted) return;
-      showSnack(context, result.message, error: !result.ok);
+      setState(() => _printJob = job);
+      showSnack(
+        context,
+        result.ok ? result.message : friendlyError(result.message),
+        error: !result.ok,
+      );
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mencetak: $error', error: true);
+        showSnack(context, 'Gagal mencetak: ${friendlyError(error)}',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _printing = false);
@@ -164,6 +176,10 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
                 ),
                 const SizedBox(height: 10),
                 _buildContent(snapshot),
+                if (_printJob != null) ...[
+                  const SizedBox(height: 10),
+                  _PrintStatus(job: _printJob!),
+                ],
               ],
             ),
           ),
@@ -183,7 +199,11 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
                   ? null
                   : () => _print(document),
               icon: const Icon(Icons.print_outlined),
-              label: Text(_printing ? 'Mencetak...' : 'Cetak'),
+              label: Text(
+                _printing
+                    ? 'Mencetak...'
+                    : (_printJob?.failed == true ? 'Cetak ulang' : 'Cetak'),
+              ),
             ),
           ],
         );
@@ -227,6 +247,61 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PrintStatus extends StatelessWidget {
+  const _PrintStatus({required this.job});
+
+  final PrintJob job;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final failed = job.failed;
+    final color = failed ? scheme.error : scheme.onSurfaceVariant;
+    final detail = job.lastError.trim().isEmpty
+        ? ''
+        : ' — ${friendlyError(job.lastError)}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: failed ? scheme.errorContainer : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            failed
+                ? Icons.print_disabled_outlined
+                : (job.printed
+                    ? Icons.print_outlined
+                    : Icons.hourglass_empty),
+            size: 18,
+            color: failed ? scheme.onErrorContainer : color,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Cetak: ${job.label}$detail',
+              style: TextStyle(
+                fontSize: 12,
+                color: failed ? scheme.onErrorContainer : color,
+              ),
+            ),
+          ),
+          if (job.attempts > 0)
+            Text(
+              '${job.attempts}x',
+              style: TextStyle(
+                fontSize: 11,
+                color: failed ? scheme.onErrorContainer : color,
+              ),
+            ),
+        ],
       ),
     );
   }

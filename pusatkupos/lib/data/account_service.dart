@@ -11,7 +11,6 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import 'access_control.dart';
 import 'app_database.dart';
-import 'license_service.dart';
 import 'login_guard.dart';
 import 'store_settings.dart';
 
@@ -80,7 +79,7 @@ class AccountService {
   Future<Set<String>> effectivePermissions(Map<String, Object?> account) async {
     final settings = await StoreSettingsService.instance.ensure();
     return settings.accessFor(
-      account['role_base'] as String? ?? 'MEKANIK',
+      employeeRole(account['role_base'] as String? ?? 'MEKANIK'),
       extras: _jsonList(account['extra_permissions_json']),
     );
   }
@@ -169,11 +168,6 @@ class AccountService {
     Future<void> Function(DatabaseExecutor txn, String syncId)? enqueue,
   }) async {
     _requireOwner(actor);
-    if (!await LicenseService.instance.isPremium()) {
-      throw StateError(
-        'Lisensi server yang valid diperlukan untuk membuat akun karyawan.',
-      );
-    }
     final clean = username.trim().toLowerCase();
     if (!RegExp(r'^[a-z0-9][a-z0-9._-]{2,31}$').hasMatch(clean)) {
       throw ArgumentError(
@@ -243,7 +237,7 @@ class AccountService {
     final db = AppDatabase.instance.db;
     final existing = await db.query(
       'employee_accounts',
-      columns: ['id'],
+      columns: ['id', 'role_base'],
       where: 'sync_id = ?',
       whereArgs: [syncId],
       limit: 1,
@@ -256,11 +250,16 @@ class AccountService {
         : _jsonList(rawStores);
     final version =
         (account['permission_version'] as num?)?.toInt() ?? 1;
+    final incomingRole = account['role_base'] as String? ?? 'KASIR';
+    final fallbackRole = existing.isEmpty
+        ? 'VIEWER'
+        : employeeRole(existing.first['role_base'] as String? ?? 'VIEWER');
+    final role = employeeRole(incomingRole, fallback: fallbackRole);
     final values = {
       'sync_id': syncId,
       'username': username,
       'nama': (account['nama'] as String? ?? username).trim(),
-      'role_base': account['role_base'] as String? ?? 'KASIR',
+      'role_base': role,
       'extra_permissions_json': jsonEncode(extras),
       'password_hash': account['password_hash'] as String? ?? '',
       'password_salt': account['password_salt'] as String? ?? '',
@@ -273,6 +272,19 @@ class AccountService {
           account['permissions_explicit'] == true ? 1 : 0,
       'updated_at': now,
     };
+    if (role != canonicalRole(incomingRole)) {
+      await recordAudit(
+        actor: 'relay',
+        targetAccountId: existing.isEmpty ? null : existing.first['id'] as int?,
+        action: 'tolak peran owner',
+        detail: {
+          'username': username,
+          'sync_id': syncId,
+          'role_ditolak': incomingRole,
+          'role_dipakai': role,
+        },
+      );
+    }
     if (existing.isNotEmpty) {
       await db.update(
         'employee_accounts',
@@ -321,7 +333,7 @@ class AccountService {
     if (syncId.isEmpty) return;
     final rows = await AppDatabase.instance.db.query(
       'employee_accounts',
-      columns: ['id', 'permission_version'],
+      columns: ['id', 'permission_version', 'role_base'],
       where: 'sync_id = ?',
       whereArgs: [syncId],
       limit: 1,
@@ -335,7 +347,11 @@ class AccountService {
     final storeIds = rawStores is List
         ? rawStores.map((item) => '$item').toList()
         : _jsonList(rawStores);
-    final role = account['role_base'] as String? ?? 'KASIR';
+    final incomingRole = account['role_base'] as String? ?? 'KASIR';
+    final role = employeeRole(
+      incomingRole,
+      fallback: employeeRole(rows.first['role_base'] as String? ?? 'VIEWER'),
+    );
     final aktif = account['aktif'] != false;
     await AppDatabase.instance.db.update(
       'employee_accounts',
@@ -362,6 +378,18 @@ class AccountService {
       storeIds: storeIds,
       version: incoming,
     );
+    if (role != canonicalRole(incomingRole)) {
+      await recordAudit(
+        actor: 'relay',
+        targetAccountId: rows.first['id'] as int?,
+        action: 'tolak peran owner',
+        detail: {
+          'sync_id': syncId,
+          'role_ditolak': incomingRole,
+          'role_dipakai': role,
+        },
+      );
+    }
   }
 
   Future<Map<String, Object?>> updateAccount(
@@ -688,7 +716,7 @@ class AccountService {
     final storeIds = await storeIdsFor(account['sync_id'] as String? ?? '');
     return Operator(
       kind: 'employee',
-      role: canonicalRole(account['role_base'] as String? ?? 'MEKANIK'),
+      role: employeeRole(account['role_base'] as String? ?? 'MEKANIK'),
       label: account['nama'] as String? ?? 'Karyawan',
       employeeId: account['id'] as int,
       employeeSyncId: account['sync_id'] as String?,

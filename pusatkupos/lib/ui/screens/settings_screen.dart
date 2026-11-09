@@ -11,6 +11,7 @@ import '../entry_gate.dart';
 import '../pin_gate.dart';
 import '../widgets.dart';
 import 'diagnostics_screen.dart';
+import 'escrow_screen.dart';
 import 'followup_settings_screen.dart';
 import 'opening_balance_screen.dart';
 import 'pajak_screen.dart';
@@ -380,8 +381,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showSnack(context, 'Izin restore tidak tersedia.', error: true);
       return;
     }
+    if (!AppState.instance.isOwner) {
+      showSnack(context, 'Hanya pemilik yang boleh memulihkan backup.',
+          error: true);
+      return;
+    }
     final path = await BackupService.instance.pickBackupArchive();
     if (path == null || !mounted) return;
+    if (AppState.instance.pinConfigured) {
+      final pin = await _askOwnerPin(
+        reason: 'Restore mengganti seluruh data lokal. Masukkan PIN pemilik '
+            'untuk melanjutkan.',
+      );
+      if (pin == null || !mounted) return;
+      final verification = await PinService.instance.verifyDetailed(pin);
+      if (!mounted) return;
+      if (verification != PinVerification.ok &&
+          verification != PinVerification.weakLegacyPin) {
+        final message = switch (verification) {
+          PinVerification.locked =>
+            'Terlalu banyak percobaan. Coba lagi nanti.',
+          PinVerification.wrong => 'PIN pemilik salah.',
+          _ => 'PIN pemilik tidak dapat diverifikasi.',
+        };
+        showSnack(context, message, error: true);
+        return;
+      }
+    }
     final ok = await confirmAction(
       context,
       title: 'Pulihkan backup',
@@ -845,6 +871,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
+          title: 'Pemulihan kunci',
+          subtitle:
+              'Escrow frasa 12 kata dan share admin untuk memulihkan kunci '
+              'bila perangkat atau akun Google hilang.',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.key_outlined),
+            title: const Text('Kelola escrow'),
+            subtitle: const Text('Buat, verifikasi, dan pulihkan kunci'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const EscrowScreen()),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SectionCard(
           title: 'Backup lokal',
           subtitle:
               'Menyimpan seluruh database ke berkas ZIP. Restore mengganti data lokal.',
@@ -1108,38 +1151,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
           title: 'Sesi',
           child: Align(
             alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: () async {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Keluar akun?'),
-                    content: Text(
-                      AppState.instance.isOwner
-                          ? 'Database lokal di perangkat ini akan dihapus. '
-                              'Masuk lagi memerlukan akun dan salinan data '
-                              'dari server akun.'
-                          : 'Sesi di perangkat ini akan berakhir. '
-                              'Data toko tetap tersimpan.',
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Keluar akun?'),
+                        content: Text(
+                          AppState.instance.isOwner
+                              ? 'Sesi berakhir, tetapi database, antrean '
+                                  'sinkronisasi, dan PIN pemilik tetap '
+                                  'tersimpan di perangkat ini. Buka kembali '
+                                  'dengan PIN yang sama.'
+                              : 'Sesi karyawan akan berakhir. Data toko dan '
+                                  'antrean tetap tersimpan untuk pemilik.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text('Batal'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text('Keluar'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmed == true && context.mounted) {
+                      await signOutToOnboarding(context);
+                    }
+                  },
+                  icon: const Icon(Icons.logout),
+                  label: const Text('Keluar'),
+                ),
+                if (AppState.instance.isOwner)
+                  OutlinedButton.icon(
+                    onPressed: () => resetDeviceSession(context),
+                    icon: const Icon(Icons.delete_forever_outlined),
+                    label: const Text('Reset perangkat'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.error,
                     ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('Batal'),
-                      ),
-                      FilledButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('Keluar'),
-                      ),
-                    ],
                   ),
-                );
-                if (confirmed == true && context.mounted) {
-                  await signOutToOnboarding(context);
-                }
-              },
-              icon: const Icon(Icons.logout),
-              label: const Text('Keluar'),
+              ],
             ),
           ),
         ),

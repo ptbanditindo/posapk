@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../core/app_config.dart';
 import '../core/relay_url.dart';
 import '../data/license_service.dart';
 
@@ -37,6 +38,7 @@ class RelayClient {
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
+        'X-Protocol-Version': '$protocolVersion',
         if ((deviceToken ?? '').isNotEmpty)
           'X-Device-Token': deviceToken!,
       };
@@ -212,6 +214,7 @@ class RelayClient {
     required String storeId,
     required String deviceId,
     required String wrappedKey,
+    required int keyVersion,
     required String signature,
   }) async {
     final response = await _post(
@@ -221,6 +224,7 @@ class RelayClient {
         'store_id': storeId,
         'device_id': deviceId,
         'wrapped_key': wrappedKey,
+        'key_version': keyVersion,
         'signature': signature,
       }),
     );
@@ -370,8 +374,19 @@ class RelayClient {
     return _json(response);
   }
 
-  Future<List<Map<String, Object?>>> devices() async {
-    final response = await _get(_uri('/relay/devices'), headers: _headers);
+  Future<List<Map<String, Object?>>> devices({
+    int limit = 100,
+    int offset = 0,
+    String? storeId,
+  }) async {
+    final response = await _get(
+      _uri('/relay/devices', {
+        'limit': '$limit',
+        'offset': '$offset',
+        if (storeId != null && storeId.isNotEmpty) 'store_id': storeId,
+      }),
+      headers: _headers,
+    );
     final decoded = jsonDecode(response.body);
     if (response.statusCode >= 400) {
       final detail = decoded is Map ? decoded['detail'] : null;

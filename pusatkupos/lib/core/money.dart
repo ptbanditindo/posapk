@@ -7,6 +7,7 @@ final NumberFormat _rupiahWhole = NumberFormat.currency(
 );
 
 final NumberFormat _rupiahPlain = NumberFormat.decimalPattern('id_ID');
+final NumberFormat _rupiahInput = NumberFormat('###,##0.##', 'id_ID');
 
 class RupiahFormatException implements Exception {
   RupiahFormatException(this.message);
@@ -86,5 +87,9 @@ String formatRupiah(int cents) => _rupiahWhole.format((cents / 100).round());
 
 String formatRupiahPlain(int cents) =>
     _rupiahPlain.format((cents / 100).round());
+
+/// Nilai input yang dapat diparse balik tanpa kehilangan sen. Dipakai tombol
+/// "Bayar penuh" agar total Rp 3.250,01 tidak berubah menjadi Rp 3.250.
+String formatRupiahInput(int cents) => _rupiahInput.format(cents / 100);
 
 int clampNonNegative(int value) => value < 0 ? 0 : value;

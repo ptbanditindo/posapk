@@ -321,13 +321,19 @@ class StockLedger {
     required String updatedAt,
   }) async {
     final current = await _loadState(txn, storeId, stockSyncId);
-    var avg = current?.avgCostMilli ?? masterCostCents;
+    // Saldo kosong/negatif tidak boleh mewarisi rata-rata lama: nilai
+    // persediaan sudah nol, jadi HPP baru mulai dari modal master.
+    final stateAvg = current?.avgCostMilli ?? 0;
+    var avg = beforeMilli <= 0
+        ? masterCostCents
+        : (stateAvg > 0 ? stateAvg : masterCostCents);
     var value = beforeMilli <= 0 ? 0 : (beforeMilli * avg) ~/ 1000;
     var usedUnitCost = 0;
     if (deltaMilli > 0) {
       usedUnitCost = unitCostCents ?? (avg > 0 ? avg : masterCostCents);
       value += (deltaMilli * usedUnitCost) ~/ 1000;
     } else if (deltaMilli < 0) {
+      usedUnitCost = avg;
       value -= ((-deltaMilli) * avg) ~/ 1000;
     }
     var afterQty = beforeMilli + deltaMilli;

@@ -13,9 +13,11 @@ import '../../data/price_rules.dart';
 import '../../data/sale_return_service.dart';
 import '../../data/store_settings.dart';
 import '../../state/app_state.dart';
+import '../../sync/archive_service.dart';
 import '../../sync/sync_service.dart';
 import '../receipt_dialog.dart';
 import '../widgets.dart';
+import 'archive_search_screen.dart';
 
 const _jenisLabels = {
   'jual_sparepart': 'Jual sparepart',
@@ -32,33 +34,86 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
+  static const _pageSize = 50;
+
   final _search = TextEditingController();
-  Future<List<ServiceRecordSummary>>? _future;
+  final List<ServiceRecordSummary> _rows = [];
+  DateTimeRange? _range;
   bool _onlyReceivable = false;
+  bool _loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = false;
+  String? _error;
+  int _loadToken = 0;
 
   @override
   void initState() {
     super.initState();
-    _load();
-    AppState.instance.addListener(_load);
+    _reload();
+    AppState.instance.addListener(_reload);
   }
 
   @override
   void dispose() {
-    AppState.instance.removeListener(_load);
+    AppState.instance.removeListener(_reload);
     _search.dispose();
     super.dispose();
   }
 
-  void _load() {
+  void _reload() {
     if (!mounted) return;
-    setState(() {
-      _future = AppDatabase.instance.listRecords(
+    _load();
+  }
+
+  Future<void> _load({bool append = false}) async {
+    final token = ++_loadToken;
+    if (append) {
+      setState(() => _loadingMore = true);
+    } else {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final rows = await AppDatabase.instance.listRecords(
+        from: _range?.start,
+        to: _range?.end,
         query: _search.text,
-        limit: 200,
+        limit: _pageSize,
+        offset: append ? _rows.length : 0,
         onlyReceivable: _onlyReceivable,
       );
-    });
+      if (!mounted || token != _loadToken) return;
+      setState(() {
+        if (!append) _rows.clear();
+        _rows.addAll(rows);
+        _hasMore = rows.length == _pageSize;
+        _loading = false;
+        _loadingMore = false;
+        _error = null;
+      });
+    } catch (error) {
+      if (!mounted || token != _loadToken) return;
+      setState(() {
+        _loading = false;
+        _loadingMore = false;
+        _error = '$error';
+      });
+    }
+  }
+
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(now.year + 1, 12, 31),
+      initialDateRange: _range,
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _range = picked);
+    _reload();
   }
 
   @override
@@ -84,22 +139,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ),
                   const SizedBox(width: 10),
                   IconButton.filledTonal(
-                    onPressed: _load,
+                    onPressed: _reload,
                     icon: const Icon(Icons.refresh),
                     tooltip: 'Muat ulang',
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton.filledTonal(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ArchiveSearchScreen(),
+                      ),
+                    ),
+                    icon: const Icon(Icons.manage_search),
+                    tooltip: 'Cari di server',
                   ),
                 ],
               ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
+                runSpacing: 8,
                 children: [
                   ChoiceChip(
                     label: const Text('Semua'),
                     selected: !_onlyReceivable,
                     onSelected: (_) {
                       setState(() => _onlyReceivable = false);
-                      _load();
+                      _reload();
                     },
                   ),
                   ChoiceChip(
@@ -107,98 +173,203 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     selected: _onlyReceivable,
                     onSelected: (_) {
                       setState(() => _onlyReceivable = true);
-                      _load();
+                      _reload();
                     },
+                  ),
+                  FilterChip(
+                    avatar: const Icon(Icons.date_range_outlined, size: 18),
+                    label: Text(
+                      _range == null
+                          ? 'Rentang tanggal'
+                          : '${dateId.format(_range!.start)} – '
+                              '${dateId.format(_range!.end)}',
+                    ),
+                    selected: _range != null,
+                    onSelected: (_) => _pickRange(),
+                    onDeleted: _range == null
+                        ? null
+                        : () {
+                            setState(() => _range = null);
+                            _reload();
+                          },
                   ),
                 ],
               ),
             ],
           ),
         ),
-        Expanded(
-          child: FutureBuilder<List<ServiceRecordSummary>>(
-            future: _future,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return EmptyState(
-                  title: 'Riwayat gagal dimuat',
-                  subtitle: '${snapshot.error}',
-                  icon: Icons.error_outline,
-                );
-              }
-              final rows = snapshot.data ?? const [];
-              if (rows.isEmpty) {
-                return const EmptyState(
-                  title: 'Belum ada riwayat',
-                  subtitle: 'Nota yang tersimpan akan tampil di sini.',
-                  icon: Icons.history,
-                );
-              }
-              return RefreshIndicator(
-                onRefresh: () async => _load(),
-                child: ListView.separated(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: rows.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  itemBuilder: (context, index) {
-                    final row = rows[index];
-                    return Card(
-                      clipBehavior: Clip.antiAlias,
-                      child: ListTile(
-                        onTap: () => _openDetail(row.id),
-                        leading: CircleAvatar(
-                          backgroundColor: row.isVoid
-                              ? Theme.of(context).colorScheme.errorContainer
-                              : null,
-                          child: Icon(
-                            row.isVoid
-                                ? Icons.block_outlined
-                                : Icons.receipt_long_outlined,
-                          ),
-                        ),
-                        title: Text(
-                          row.customerNama.isEmpty
-                              ? row.noNota
-                              : row.customerNama,
-                        ),
-                        subtitle: Text(
-                          '${row.noNota} · '
-                          '${_jenisLabels[row.jenisTransaksi] ?? row.jenisTransaksi}'
-                          '${row.unitLabel.isEmpty ? '' : ' · ${row.unitLabel}'}\n'
-                          '${dateTimeId.format(row.waktu)}'
-                          '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}'
-                          '${row.jatuhTempoLewat ? ' · JATUH TEMPO' : ''}',
-                        ),
-                        isThreeLine: true,
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              formatRupiah(row.totalCents),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            Text(
-                              row.isVoid ? 'VOID' : row.statusBayar,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
-          ),
-        ),
+        Expanded(child: _buildBody()),
       ],
     );
+  }
+
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null && _rows.isEmpty) {
+      return EmptyState(
+        title: 'Riwayat gagal dimuat',
+        subtitle: _error!,
+        icon: Icons.error_outline,
+      );
+    }
+    if (_rows.isEmpty) {
+      return const EmptyState(
+        title: 'Belum ada riwayat',
+        subtitle: 'Nota yang tersimpan akan tampil di sini.',
+        icon: Icons.history,
+      );
+    }
+    final itemCount = _rows.length + (_hasMore || _loadingMore ? 1 : 0);
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: itemCount,
+        separatorBuilder: (_, _) => const SizedBox(height: 10),
+        itemBuilder: (context, index) {
+          if (index >= _rows.length) {
+            return Center(
+              child: _loadingMore
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: CircularProgressIndicator(),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: () => _load(append: true),
+                      icon: const Icon(Icons.expand_more),
+                      label: const Text('Muat lebih banyak'),
+                    ),
+            );
+          }
+          final row = _rows[index];
+          return Card(
+            clipBehavior: Clip.antiAlias,
+            child: ListTile(
+              onTap: () => _openRow(row),
+              leading: CircleAvatar(
+                backgroundColor: row.isVoid
+                    ? Theme.of(context).colorScheme.errorContainer
+                    : row.purged
+                        ? Theme.of(context).colorScheme.secondaryContainer
+                        : null,
+                child: Icon(
+                  row.isVoid
+                      ? Icons.block_outlined
+                      : row.purged
+                          ? Icons.inventory_2_outlined
+                          : Icons.receipt_long_outlined,
+                ),
+              ),
+              title: Text(
+                row.customerNama.isEmpty ? row.noNota : row.customerNama,
+              ),
+              subtitle: Text(
+                row.purged
+                    ? '${row.noNota} · Ada di arsip\n'
+                        '${dateTimeId.format(row.waktu)}'
+                    : '${row.noNota} · '
+                        '${_jenisLabels[row.jenisTransaksi] ?? row.jenisTransaksi}'
+                        '${row.unitLabel.isEmpty ? '' : ' · ${row.unitLabel}'}\n'
+                        '${dateTimeId.format(row.waktu)}'
+                        '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}'
+                        '${row.jatuhTempoLewat ? ' · JATUH TEMPO' : ''}',
+              ),
+              isThreeLine: true,
+              trailing: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    formatRupiah(row.totalCents),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  if (row.purged)
+                    Text(
+                      'ARSIP',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    )
+                  else if (row.isVoid)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'VOID',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onErrorContainer,
+                        ),
+                      ),
+                    )
+                  else
+                    Text(
+                      row.statusBayar,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  if (row.syncStatus.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    _SyncStatusBadge(status: row.syncStatus),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _openRow(ServiceRecordSummary row) async {
+    if (row.purged) {
+      await _openArchived(row);
+      return;
+    }
+    await _openDetail(row.id);
+  }
+
+  Future<void> _openArchived(ServiceRecordSummary row) async {
+    if (row.archiveDocId.isEmpty) {
+      showSnack(context, 'Nota ini tidak memiliki arsip.', error: true);
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final payload = await ArchiveService.instance.open(
+        docId: row.archiveDocId,
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      await showArchivedDocument(
+        context,
+        payload: payload,
+        metadata: {
+          'doc_id': row.archiveDocId,
+          'doc_type': 'nota',
+          'no_nota': row.noNota,
+          'tanggal': row.waktu.toIso8601String(),
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      showSnack(context, 'Gagal membuka arsip: $error', error: true);
+    }
   }
 
   Future<void> _openDetail(int id) async {
@@ -1386,6 +1557,43 @@ class _ReturnRequest {
   final String alasan;
   final String requestId;
   final String metodeRefund;
+}
+
+class _SyncStatusBadge extends StatelessWidget {
+  const _SyncStatusBadge({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (label, background, foreground) = switch (status) {
+      'pending' => ('Menunggu', scheme.secondaryContainer, scheme.onSecondaryContainer),
+      'sent' => ('Tersinkron', scheme.primaryContainer, scheme.onPrimaryContainer),
+      'failed' => ('Gagal', scheme.errorContainer, scheme.onErrorContainer),
+      'dead_letter' => (
+        'Gagal permanen',
+        scheme.errorContainer,
+        scheme.onErrorContainer,
+      ),
+      _ => (status, scheme.surfaceContainerHighest, scheme.onSurfaceVariant),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: foreground,
+        ),
+      ),
+    );
+  }
 }
 
 class _ReturnLineState {

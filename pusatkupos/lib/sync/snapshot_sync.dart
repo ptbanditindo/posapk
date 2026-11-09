@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/app_config.dart';
 import '../core/dates.dart';
+import '../data/access_control.dart';
 import '../data/app_database.dart';
 import 'crypto.dart';
 import 'snapshot_platform_stub.dart'
@@ -26,6 +27,7 @@ const snapshotLocalTables = [
   'sync_inbox',
   'sync_cursor',
   'applied_deltas',
+  'sync_compensations',
   'sync_conflicts',
   'device_sync_status',
 ];
@@ -110,14 +112,18 @@ extension SnapshotDatabase on AppDatabase {
     );
     final checksum = sha256Hex(raw);
     final (ciphertext, nonce) = await encryptPayload(storeKey, raw);
-    final wall = DateTime.now().millisecondsSinceEpoch;
+    // Snapshot memakai HLC baru yang tidak lebih tua dari lantai HLC lokal,
+    // sehingga penerima dapat menolak snapshot basi (aturan §3.5 no. 5).
+    final hlc = await nextSyncHlc(db);
+    final wall = hlc.wall;
+    final counter = hlc.counter;
     final canonical = canonicalJson({
       'store_id': storeId,
       'device_id': deviceId,
       'checksum': checksum,
       'store_seq': storeSeq,
       'hlc_wall': wall,
-      'hlc_counter': 0,
+      'hlc_counter': counter,
       'schema_version': AppDatabase.schemaVersion,
       'schema_contract_version': AppDatabase.schemaContractVersion,
       'app_version': appVersion,
@@ -135,7 +141,7 @@ extension SnapshotDatabase on AppDatabase {
       'signature': signature,
       'checksum': checksum,
       'hlc_wall': wall,
-      'hlc_counter': 0,
+      'hlc_counter': counter,
       'schema_version': AppDatabase.schemaVersion,
       'schema_contract_version': AppDatabase.schemaContractVersion,
       'app_version': appVersion,
@@ -148,6 +154,7 @@ extension SnapshotDatabase on AppDatabase {
     required List<int> storeKey,
     required String storeId,
     required String deviceId,
+    List<String> activeDeviceIds = const [],
   }) async {
     final nested = snapshot['snapshot'];
     final data = nested is Map
@@ -184,6 +191,62 @@ extension SnapshotDatabase on AppDatabase {
     }
     if (snapshotStore.isNotEmpty && snapshotStore != storeId) {
       throw StateError('Snapshot milik toko lain.');
+    }
+    if (data['complete'] == false) {
+      throw StateError(
+        'Snapshot ditandai belum lengkap oleh relay. Minta pemilik membuat '
+        'snapshot baru.',
+      );
+    }
+    if (hlcWall <= 0) {
+      throw StateError(
+        'Snapshot tidak memuat HLC. Minta pemilik mengunggah snapshot baru.',
+      );
+    }
+    final floorRows = await db.query(
+      'app_meta',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['sync.hlc_floor'],
+      limit: 1,
+    );
+    var floorWall = 0;
+    var floorCounter = 0;
+    if (floorRows.isNotEmpty) {
+      final parts = '${floorRows.first['value'] ?? ''}'.split(':');
+      if (parts.length == 2) {
+        floorWall = int.tryParse(parts[0]) ?? 0;
+        floorCounter = int.tryParse(parts[1]) ?? 0;
+      }
+    }
+    if (hlcWall < floorWall ||
+        (hlcWall == floorWall && hlcCounter < floorCounter)) {
+      throw StateError(
+        'Snapshot lebih tua dari data yang sudah diterapkan di perangkat '
+        'ini. Minta pemilik membuat snapshot baru.',
+      );
+    }
+    final manifest = data['device_manifest'];
+    final manifestIds = <String>{
+      if (manifest is List)
+        for (final item in manifest)
+          if (item is Map && '${item['id'] ?? ''}'.trim().isNotEmpty)
+            '${item['id']}'.trim(),
+    };
+    if (activeDeviceIds.isNotEmpty) {
+      final missing = [
+        for (final id in activeDeviceIds)
+          if (id.trim().isNotEmpty &&
+              id.trim() != deviceId &&
+              !manifestIds.contains(id.trim()))
+            id.trim(),
+      ];
+      if (missing.isNotEmpty) {
+        throw StateError(
+          'Snapshot tidak mencakup semua perangkat aktif '
+          '(${missing.length} perangkat). Minta pemilik membuat snapshot baru.',
+        );
+      }
     }
     final marker = 'snapshot:$snapshotId';
     final existing = await db.query(
@@ -262,6 +325,7 @@ extension SnapshotDatabase on AppDatabase {
         'pin_hash',
         'pin_salt',
         'pin_iterations',
+        'role_base',
       ],
     );
     final tableOrder = await snapshotSharedTableOrder(db);
@@ -274,9 +338,9 @@ extension SnapshotDatabase on AppDatabase {
         await _preserveLocalCounters(txn, localCounters);
         await _preserveLocalCredentials(txn, localAccounts);
         await _remapAccountReferences(txn, localAccounts);
-        // Snapshot adalah titik awal baru: kunci idempotensi lama tidak boleh
-        // menahan amplop yang tidak lagi termuat di dalam snapshot.
-        await txn.delete('applied_deltas');
+        await _sanitizeImportedRoles(txn, localAccounts);
+        // `applied_deltas` tidak dihapus: riwayat kunci idempotensi tetap
+        // permanen walau relay memangkas atau snapshot menetapkan baseline.
         await txn.insert(
           'sync_cursor',
           {
@@ -377,6 +441,35 @@ Future<void> _preserveLocalCredentials(
       },
       where: 'id = ?',
       whereArgs: [imported.first['id']],
+    );
+  }
+}
+
+/// Snapshot membawa data akun dari perangkat lain. `owner` tidak pernah sah
+/// sebagai peran akun karyawan; bila snapshot memuatnya, pulihkan peran lokal
+/// sebelumnya atau turunkan ke VIEWER.
+Future<void> _sanitizeImportedRoles(
+  DatabaseExecutor txn,
+  List<Map<String, Object?>> localAccounts,
+) async {
+  final previous = <String, String>{};
+  for (final row in localAccounts) {
+    final syncId = '${row['sync_id'] ?? ''}'.trim();
+    if (syncId.isEmpty) continue;
+    previous[syncId] = employeeRole('${row['role_base'] ?? ''}');
+  }
+  final rows = await txn.query(
+    'employee_accounts',
+    columns: ['id', 'sync_id', 'role_base'],
+  );
+  for (final row in rows) {
+    if (canonicalRole('${row['role_base'] ?? ''}') != 'owner') continue;
+    final syncId = '${row['sync_id'] ?? ''}'.trim();
+    await txn.update(
+      'employee_accounts',
+      {'role_base': previous[syncId] ?? 'VIEWER'},
+      where: 'id = ?',
+      whereArgs: [row['id']],
     );
   }
 }

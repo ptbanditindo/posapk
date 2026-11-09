@@ -818,26 +818,51 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
                       for (final row in rows)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 3),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Icon(
-                                Icons.circle,
-                                size: 8,
-                                color: _statusColor(context, row.status),
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.circle,
+                                    size: 8,
+                                    color: _statusColor(context, row.status),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _statusLabel(row.status) +
+                                          (row.pembuat == null
+                                              ? ''
+                                              : ' · ${row.pembuat}'),
+                                    ),
+                                  ),
+                                  Text(
+                                    dateTimeId.format(localTime(row.waktu)),
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  _statusLabel(row.status) +
-                                      (row.pembuat == null
-                                          ? ''
-                                          : ' · ${row.pembuat}'),
+                              if (row.hlcWall > 0)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    left: 16,
+                                    top: 2,
+                                  ),
+                                  child: Text(
+                                    'Perangkat ${row.perangkat ?? '-'} · '
+                                    'HLC ${row.hlcWall}:${row.hlcCounter}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
+                                  ),
                                 ),
-                              ),
-                              Text(
-                                dateTimeId.format(localTime(row.waktu)),
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
                             ],
                           ),
                         ),

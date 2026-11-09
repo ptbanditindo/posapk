@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/money.dart';
+import '../../sync/sync_conflict_rules.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
@@ -29,6 +30,9 @@ const _reasonLabels = {
   'koreksi_pada_nota_void': 'Koreksi pada nota VOID',
   'koreksi_di_bawah_batas': 'Koreksi di bawah batas',
   'void_setelah_retur': 'Void setelah retur aktif',
+  'void_menang': 'Void menang atas retur',
+  'kompensasi_dibutuhkan': 'Kompensasi diperlukan',
+  'kompensasi_gagal': 'Kompensasi gagal',
   'pengirim_dicabut': 'Perangkat pengirim sudah dicabut',
   'akun_pengirim_nonaktif': 'Akun pengirim tidak aktif',
   'peran_viewer_hanya_baca': 'Peran viewer hanya baca',
@@ -79,6 +83,12 @@ const _detailLabels = {
   'sender_device_id': 'Perangkat pengirim',
   'sender_account': 'Akun pengirim',
   'sender_kind': 'Jenis pengirim',
+  'pemenang': 'Pemenang',
+  'butuh_bantuan_owner': 'Butuh bantuan owner',
+  'kompensasi_status': 'Status kompensasi',
+  'kompensasi_error': 'Kesalahan kompensasi',
+  'return_sync_ids': 'Retur yang dikompensasi',
+  'void_hlc': 'HLC void',
 };
 
 bool _isMoneyKey(String key) =>
@@ -164,21 +174,37 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     }
   }
 
-  Future<void> _ignore(Map<String, Object?> row) async {
+  Future<void> _ignore(
+    Map<String, Object?> row, {
+    String resolution = 'abaikan',
+  }) async {
+    final ownerHelp = resolution == 'bantuan_owner';
     final ok = await confirmAction(
       context,
-      title: 'Abaikan konflik',
-      message:
-          'Perubahan ini tidak akan diterapkan di perangkat ini dan akan '
-          'ditandai selesai. Konflik tetap tercatat dan tidak dihapus.',
-      confirmLabel: 'Abaikan',
+      title: ownerHelp ? 'Selesaikan sebagai owner' : 'Abaikan konflik',
+      message: ownerHelp
+          ? 'Perubahan ini ditandai selesai atas bantuan owner dan dicatat '
+              'di audit. Dokumen bisnis yang sudah ada tidak diubah.'
+          : 'Perubahan ini tidak akan diterapkan di perangkat ini dan akan '
+              'ditandai selesai. Konflik tetap tercatat dan tidak dihapus.',
+      confirmLabel: ownerHelp ? 'Selesaikan' : 'Abaikan',
     );
     if (!ok) return;
     setState(() => _busy = true);
     try {
-      await SyncService.instance.ignoreConflict(row['id'] as int);
+      await SyncService.instance.ignoreConflict(
+        row['id'] as int,
+        resolution: resolution,
+      );
       await _load();
-      if (mounted) showSnack(context, 'Konflik ditandai diabaikan.');
+      if (mounted) {
+        showSnack(
+          context,
+          ownerHelp
+              ? 'Konflik diselesaikan sebagai bantuan owner.'
+              : 'Konflik ditandai diabaikan.',
+        );
+      }
     } catch (error) {
       if (mounted) {
         showSnack(context, 'Gagal menandai konflik: $error', error: true);
@@ -261,23 +287,50 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final created = DateTime.tryParse('${row['created_at'] ?? ''}');
     final detail = _detail(row);
     final canRetry = !resolved && row['inbox_id'] != null;
+    final retryCount = (row['retry_count'] as num?)?.toInt() ?? 0;
+    final deadLetter = !resolved &&
+        (retryCount >= SyncConflictRules.maxRetries ||
+            SyncConflictRules.permanentReasons.contains(reason));
+    final ownerHelpDue = !resolved &&
+        SyncConflictRules.ownerHelpReasons.contains(reason) &&
+        created != null &&
+        DateTime.now().difference(created.toLocal()) >=
+            SyncConflictRules.ownerHelpAfter;
+    final kompensasi = '${detail?['kompensasi_status'] ?? ''}';
+    final needsOwner = detail?['butuh_bantuan_owner'] == true ||
+        kompensasi == 'gagal' ||
+        ownerHelpDue;
+    final suggestion = needsOwner || deadLetter
+        ? _suggestion(reason, deadLetter: deadLetter)
+        : '';
+    final scheme = Theme.of(context).colorScheme;
     return SectionCard(
       title: _reasonLabel(reason),
-      subtitle:
-          '${row['entity'] ?? ''} ${row['entity_id'] ?? ''} · ${_statusLabel(row)}',
+      subtitle: '${row['entity'] ?? ''} ${row['entity_id'] ?? ''} · '
+          '${_statusLabel(row)}'
+          '${needsOwner ? ' · Perlu bantuan owner' : ''}',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (created != null)
             _line('Waktu', _dateFormat.format(created.toLocal())),
-          if (((row['retry_count'] as num?)?.toInt() ?? 0) > 0)
-            _line('Percobaan', '${row['retry_count']}'),
+          if (retryCount > 0) _line('Percobaan', '$retryCount'),
+          if (kompensasi.isNotEmpty)
+            _line('Kompensasi', _kompensasiLabel(kompensasi)),
           if (('${row['last_error'] ?? ''}').isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 '${row['last_error']}',
                 style: const TextStyle(fontSize: 12),
+              ),
+            ),
+          if (suggestion.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                suggestion,
+                style: TextStyle(fontSize: 12, color: scheme.primary),
               ),
             ),
           if (detail != null)
@@ -304,11 +357,19 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
           if (!resolved)
             Wrap(
               spacing: 8,
+              runSpacing: 8,
               children: [
                 if (canRetry)
                   FilledButton.tonal(
                     onPressed: _busy ? null : () => _retry(row),
                     child: const Text('Coba lagi'),
+                  ),
+                if (needsOwner)
+                  FilledButton(
+                    onPressed: _busy
+                        ? null
+                        : () => _ignore(row, resolution: 'bantuan_owner'),
+                    child: const Text('Selesaikan (owner)'),
                   ),
                 OutlinedButton(
                   onPressed: _busy ? null : () => _ignore(row),
@@ -320,6 +381,21 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
       ),
     );
   }
+
+  String _suggestion(String reason, {required bool deadLetter}) {
+    final text = SyncConflictRules.suggestionForReason(reason);
+    if (text.isNotEmpty) return text;
+    if (!deadLetter) return '';
+    return 'Amplop ini tidak dapat dipulihkan. Minta perangkat pengirim '
+        'mengirim ulang dokumennya, lalu sinkronkan ulang.';
+  }
+
+  String _kompensasiLabel(String status) => switch (status) {
+        'selesai' => 'Selesai',
+        'gagal' => 'Gagal — perlu bantuan owner',
+        'pending' => 'Menunggu perangkat asal',
+        _ => status,
+      };
 
   Map<String, Object?>? _detail(Map<String, Object?> row) {
     final raw = row['detail_json'] as String? ?? '';

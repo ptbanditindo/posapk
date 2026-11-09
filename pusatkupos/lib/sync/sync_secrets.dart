@@ -16,6 +16,9 @@ class SyncSecrets {
     'sync.relay_device_token',
     'sync.store_key',
     'device.current_token',
+    'recovery.escrow_bundle',
+    'recovery.escrow_phrase',
+    'recovery.escrow_shares',
   };
 
   String _scope() {
@@ -23,13 +26,15 @@ class SyncSecrets {
     return id == null || id.isEmpty ? 'utama' : id;
   }
 
-  String _scopedKey(String key) => '$key@${_scope()}';
+  String _scopedKey(String key, String? scope) =>
+      '$key@${scope ?? _scope()}';
 
-  Future<String?> read(String key) async {
+  Future<String?> read(String key, {String? storeId}) async {
     if (!_scopedKeys.contains(key)) return SecureStore.instance.read(key);
-    final scoped = _scopedKey(key);
+    final scoped = _scopedKey(key, storeId);
     final value = await SecureStore.instance.read(scoped);
     if (value != null && value.isNotEmpty) return value;
+    if (storeId != null) return null;
     // Rahasia global lama selalu milik toko yang terakhir aktif, jadi aman
     // dipindahkan ke namespace toko yang sedang aktif saat ini.
     final legacy = await SecureStore.instance.read(key);
@@ -39,20 +44,20 @@ class SyncSecrets {
     return legacy;
   }
 
-  Future<void> write(String key, String value) async {
+  Future<void> write(String key, String value, {String? storeId}) async {
     if (!_scopedKeys.contains(key)) {
       return SecureStore.instance.write(key, value);
     }
-    await SecureStore.instance.write(_scopedKey(key), value);
+    await SecureStore.instance.write(_scopedKey(key, storeId), value);
   }
 
-  Future<void> delete(String key) async {
+  Future<void> delete(String key, {String? storeId}) async {
     if (!_scopedKeys.contains(key)) {
       return SecureStore.instance.delete(key);
     }
     // Hapus juga salinan global lama agar tidak ikut termigrasi ke toko lain
     // pada pembukaan berikutnya.
-    await SecureStore.instance.delete(_scopedKey(key));
-    await SecureStore.instance.delete(key);
+    await SecureStore.instance.delete(_scopedKey(key, storeId));
+    if (storeId == null) await SecureStore.instance.delete(key);
   }
 }

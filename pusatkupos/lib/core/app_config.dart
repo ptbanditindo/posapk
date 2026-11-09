@@ -13,7 +13,18 @@ const String appVersion = String.fromEnvironment(
   defaultValue: '1.0.0+1',
 );
 
+/// Versi protokol sinkronisasi lokal. Dinaikkan hanya saat format envelope
+/// berubah dan relay menolak versi lama (D26). v2 menambahkan `key_version`
+/// agar rotasi kunci dapat memilih kunci yang benar.
+const int protocolVersion = 2;
+
 bool get serviceConfigured => serviceBaseUrl.trim().isNotEmpty;
+
+/// Alamat VPS arsip terpisah. Bila kosong, arsip memakai relay yang sama.
+const String archiveBaseUrl = String.fromEnvironment(
+  'PUSATKU_ARCHIVE_URL',
+  defaultValue: '',
+);
 
 String get normalizedServiceUrl {
   final raw = serviceBaseUrl.trim();

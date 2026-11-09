@@ -7,6 +7,7 @@ import '../core/ids.dart';
 import '../sync/crypto.dart';
 import '../sync/sync_secrets.dart';
 import 'app_database.dart';
+import 'audit_service.dart';
 import 'license_service.dart';
 import 'secure_store.dart';
 
@@ -93,6 +94,13 @@ class DeviceService {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await AuditService.instance.recordNow(
+      aksi: 'device.revoke',
+      entity: 'device',
+      entityId: id,
+      aktor: 'pemilik',
+      alasan: reason,
+    );
     if (await AppDatabase.instance.getSetting('device.current_id') != id) {
       return;
     }
@@ -109,6 +117,7 @@ class DeviceService {
     await SecureStore.instance.delete('device.$id.token');
     await SyncSecrets.instance.delete('sync.relay_device_token');
     await SyncSecrets.instance.delete('sync.store_key');
+    await SyncSecrets.instance.delete('sync.store_key_ring');
     await db.db.delete(
       'sync_cursor',
       where: 'device_id IN (?, ?)',

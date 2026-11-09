@@ -15,13 +15,16 @@ import '../core/dates.dart';
 import '../core/ids.dart';
 import '../sync/sync_scheduler.dart';
 import 'app_database.dart';
+import 'audit_service.dart';
 import 'backup_manifest.dart';
 import 'backup_platform_stub.dart'
     if (dart.library.io) 'backup_platform_io.dart'
     as platform;
 import 'backup_scheduler.dart';
+import 'license_service.dart';
 import 'restore_lock.dart';
 import 'secure_store.dart';
+import 'session_service.dart';
 import 'store_registry.dart';
 
 const int _maxRestoredDatabaseBytes = 512 * 1024 * 1024;
@@ -380,6 +383,7 @@ class BackupService {
         createdAt: nowIso(),
         activeStoreId: db.activeStoreId ?? stores.first.storeId,
         stores: manifestStores,
+        ownerId: await LicenseService.instance.ownerId() ?? '',
       ),
     );
     final manifestBytes = utf8.encode(manifest);
@@ -826,7 +830,12 @@ class BackupService {
       // Jangan menukar berkas selama sync/backup masih menulis.
       await syncScheduler.whenIdle();
       await backupScheduler.whenIdle();
-      return await _restoreBackupNow(path: path, passphrase: passphrase);
+      final result = await _restoreBackupNow(
+        path: path,
+        passphrase: passphrase,
+      );
+      if (result.ok) await _recordRestoreAudit(path ?? '');
+      return result;
     } finally {
       if (!kIsWeb) {
         syncScheduler.start();
@@ -880,6 +889,14 @@ class BackupService {
       );
       if (manifestError != null) {
         return BackupResult(ok: false, message: manifestError);
+      }
+      final ownerError = await _validateRestoreOwner(manifest);
+      if (ownerError != null) {
+        return BackupResult(ok: false, message: ownerError);
+      }
+      final outboxError = await _restoreOutboxGuard(manifest);
+      if (outboxError != null) {
+        return BackupResult(ok: false, message: outboxError);
       }
       if (format == _backupFormat) {
         return await _restoreMultiStore(archive, manifest, passphrase);
@@ -1088,6 +1105,76 @@ class BackupService {
         }
       }
       return BackupResult(ok: false, message: 'Restore gagal: $error');
+    }
+  }
+
+  /// Restore lokal hanya boleh menggantikan data milik akun yang sama.
+  /// Backup lama tanpa `owner_id` tetap diterima, tetapi tidak pernah
+  /// menimpa identitas owner yang sudah ada di perangkat.
+  Future<String?> _validateRestoreOwner(
+    Map<String, dynamic> manifest,
+  ) async {
+    final manifestOwner = '${manifest['owner_id'] ?? ''}'.trim();
+    if (manifestOwner.isEmpty) return null;
+    final localOwner = (await LicenseService.instance.ownerId() ?? '').trim();
+    if (localOwner.isEmpty || localOwner == manifestOwner) return null;
+    return 'Backup ini milik akun pemilik lain. Restore ditolak agar data '
+        'akun yang aktif di perangkat ini tidak tertimpa.';
+  }
+
+  /// Menahan restore bila antrean lokal memuat dokumen yang dibuat setelah
+  /// backup. Mengganti database akan menghapus dokumen itu sebelum sempat
+  /// terkirim (F0-4).
+  Future<String?> _restoreOutboxGuard(
+    Map<String, dynamic> manifest,
+  ) async {
+    final createdAt = DateTime.tryParse('${manifest['created_at'] ?? ''}');
+    if (createdAt == null) return null;
+    final db = AppDatabase.instance;
+    if (!db.isOpen) return null;
+    final rows = await db.db.rawQuery(
+      "SELECT COUNT(*) AS total FROM sync_outbox "
+      "WHERE status IN ('pending', 'failed') AND created_at > ?",
+      [createdAt.toUtc().toIso8601String()],
+    );
+    final total = (rows.first['total'] as num?)?.toInt() ?? 0;
+    if (total <= 0) return null;
+    return 'Restore ditahan: ada $total dokumen antrean di perangkat yang '
+        'lebih baru daripada backup (${manifest['created_at']}). Sinkronkan '
+        'atau ekspor antrean terlebih dahulu agar dokumen tidak hilang.';
+  }
+
+  Future<void> _recordRestoreAudit(String path) async {
+    try {
+      final profile = await SessionService.instance.load();
+      final actor = profile != null && profile.nama.trim().isNotEmpty
+          ? profile.nama
+          : 'Pemilik';
+      var deviceId = '';
+      try {
+        deviceId = await AppDatabase.instance.deviceCode(
+          AppDatabase.instance.db,
+        );
+      } catch (_) {
+        // Kode perangkat hanya pelengkap audit.
+      }
+      await AuditService.instance.recordNow(
+        aksi: 'restore_backup',
+        entity: 'database',
+        entityId: deviceId,
+        aktor: actor,
+        aktorEmployeeSyncId: profile?.employeeSyncId,
+        alasan: 'Pemulihan backup lokal',
+        after: {
+          'file': path.isEmpty ? '(arsip dipilih)' : p.basename(path),
+        },
+      );
+    } catch (error) {
+      AppLog.instance.event(
+        LogCategory.backup,
+        'restore.audit.fail',
+        error: error,
+      );
     }
   }
 

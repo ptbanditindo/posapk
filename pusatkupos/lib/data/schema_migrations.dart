@@ -37,6 +37,15 @@ const Map<int, SchemaMigration> schemaMigrations = {
   8: _migratePayrollActorV8,
   9: _migrateOpeningStockCostV9,
   10: _migrateCustomerCreditV10,
+  11: _migrateIntegrityBaselineV11,
+  12: _migratePurchaseIdempotencyV12,
+  13: _migrateAdjustmentTaxV13,
+  14: _migrateSyncCompensationsV14,
+  15: _migrateArchiveV15,
+  16: _migrateArchiveReturnV16,
+  17: _migrateKeyVersionV17,
+  18: _migratePrintQueueV18,
+  19: _migratePerformanceIndexesV19,
 };
 
 Future<bool> _tableExists(DatabaseExecutor db, String table) async {
@@ -1138,6 +1147,169 @@ Future<void> _migrateCustomerCreditV10(DatabaseExecutor db) async {
   if (await _tableExists(db, 'service_records')) {
     await _addColumn(db, 'service_records', 'kredit_disetujui_oleh', 'TEXT');
   }
+}
+
+/// v11: baseline tabel integritas F1. Tidak mengubah data lama; hanya
+/// menambah stub purge, tutup buku, receipt arsip, dan versi protokol.
+Future<void> _migrateIntegrityBaselineV11(DatabaseExecutor db) =>
+    createIntegrityBaseline(db);
+
+/// v12: hash payload idempotensi pembelian dan retur pembelian. Baris lama
+/// dibiarkan `NULL` dan tetap dianggap cocok dengan request_id yang sama.
+Future<void> _migratePurchaseIdempotencyV12(DatabaseExecutor db) async {
+  await _addColumn(db, 'supplier_purchases', 'request_payload_hash', 'TEXT');
+  await _addColumn(
+    db,
+    'supplier_purchase_returns',
+    'request_payload_hash',
+    'TEXT',
+  );
+}
+
+/// v13: snapshot pajak pada koreksi nota dan zona waktu toko.
+///
+/// Koreksi nota mengubah DPP/PPN efektif; nilai pajak hasil skala disimpan
+/// eksplisit agar laporan tidak menebak saat tarif atau mode pajak berubah.
+/// Baris lama dibiarkan `NULL` dan laporan memakai kolom nota aslinya.
+Future<void> _migrateAdjustmentTaxV13(DatabaseExecutor db) async {
+  if (await _tableExists(db, 'nota_adjustments')) {
+    await _addColumn(db, 'nota_adjustments', 'dpp_cents', 'INTEGER');
+    await _addColumn(db, 'nota_adjustments', 'ppn_cents', 'INTEGER');
+    await _addColumn(
+      db,
+      'nota_adjustments',
+      'pajak_diserap_cents',
+      'INTEGER',
+    );
+  }
+  if (await _tableExists(db, 'store_settings')) {
+    await _addColumn(
+      db,
+      'store_settings',
+      'zona_waktu',
+      "TEXT NOT NULL DEFAULT 'Asia/Jakarta'",
+    );
+  }
+}
+
+/// v14: antrean kompensasi D25 untuk dokumen yang kalah HLC.
+///
+/// Tabel ini lokal per perangkat dan tidak ikut snapshot; isinya hanya
+/// dokumen baru yang dibuat oleh perangkat asal dokumen kalah.
+Future<void> _migrateSyncCompensationsV14(DatabaseExecutor db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS sync_compensations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      nota_sync_id TEXT NOT NULL,
+      return_sync_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_sync_compensations_status '
+    'ON sync_compensations(status, id)',
+  );
+}
+
+/// v15: arsip lokal. `archive_documents` menyimpan bundel terenkripsi yang
+/// menunggu/berhasil diunggah; tidak ada kolom plaintext bisnis di sini selain
+/// nomor/tanggal metadata untuk tampilan daftar.
+Future<void> _migrateArchiveV15(DatabaseExecutor db) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_documents (
+      store_id TEXT NOT NULL DEFAULT '',
+      doc_type TEXT NOT NULL DEFAULT 'nota',
+      doc_id TEXT NOT NULL,
+      no_nota TEXT NOT NULL DEFAULT '',
+      tanggal TEXT NOT NULL DEFAULT '',
+      schema_version INTEGER NOT NULL DEFAULT 0,
+      key_id TEXT NOT NULL DEFAULT '',
+      content_hash TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      receipt_json TEXT NOT NULL DEFAULT '',
+      receipt_signature TEXT NOT NULL DEFAULT '',
+      archived_at TEXT,
+      upload_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_id, doc_type, doc_id, content_hash)
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS archive_index_tokens (
+      store_id TEXT NOT NULL DEFAULT '',
+      doc_type TEXT NOT NULL DEFAULT 'nota',
+      doc_id TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      token TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (store_id, doc_type, doc_id, content_hash, token)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_archive_tokens_search '
+    'ON archive_index_tokens(store_id, token)',
+  );
+}
+
+/// v16: retur atas nota terpurge. Dokumen baru merujuk `ref_doc_id` arsip dan
+/// tidak menulis ulang tabel nota yang sudah dipurge. Kolom agregat laporan
+/// ditambahkan ke `period_closings` agar laporan periode lama dapat dibaca
+/// langsung dari snapshot setelah purge.
+Future<void> _migrateArchiveReturnV16(DatabaseExecutor db) async {
+  await createArchiveReturnSchema(db);
+  if (!await _tableExists(db, 'period_closings')) return;
+  const columns = <List<String>>[
+    ['transaksi', 'INTEGER NOT NULL DEFAULT 0'],
+    ['jasa_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['part_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['diskon_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['dibayar_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['piutang_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['modal_part_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['modal_jasa_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['laba_part_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['laba_jasa_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['ppn_diserap_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['gaji_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['retur_jasa_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['retur_part_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['jenis_json', "TEXT NOT NULL DEFAULT '{}'"],
+  ];
+  for (final column in columns) {
+    await _addColumn(db, 'period_closings', column[0], column[1]);
+  }
+}
+
+/// v17: arsip menyimpan versi kunci agar rotasi dapat dipilih saat membuka
+/// dokumen lama. Kunci lama tetap disimpan di key ring perangkat.
+Future<void> _migrateKeyVersionV17(DatabaseExecutor db) async {
+  if (await _tableExists(db, 'archive_documents')) {
+    await _addColumn(
+      db,
+      'archive_documents',
+      'key_version',
+      'INTEGER NOT NULL DEFAULT 1',
+    );
+  }
+}
+
+/// v18: antrean cetak lokal agar kegagalan printer tidak menghilangkan struk.
+Future<void> _migratePrintQueueV18(DatabaseExecutor db) async {
+  await createPrintQueueSchema(db);
+}
+
+/// v19: indeks riwayat/pencarian dan antrean sinkronisasi untuk data dua tahun.
+Future<void> _migratePerformanceIndexesV19(DatabaseExecutor db) async {
+  await createPerformanceIndexes(db);
 }
 
 Future<void> runSchemaMigrations(

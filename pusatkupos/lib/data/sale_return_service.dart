@@ -35,6 +35,18 @@ class SaleReturnService {
 
   static final SaleReturnService instance = SaleReturnService._();
 
+  Future<String> _localDeviceId(DatabaseExecutor txn) async {
+    final rows = await txn.query(
+      'app_meta',
+      columns: ['key', 'value'],
+      where: "key IN ('sync.relay_device_id', 'device.current_id')",
+    );
+    final values = {
+      for (final row in rows) '${row['key']}': '${row['value']}',
+    };
+    return values['sync.relay_device_id'] ?? values['device.current_id'] ?? '';
+  }
+
   Future<int> createReturn({
     required int recordId,
     required List<ReturnLineInput> items,
@@ -225,8 +237,10 @@ class SaleReturnService {
         prefix: 'R',
       );
       final returnSyncId = newSyncId();
+      final returnDevice = await _localDeviceId(txn);
       final returnId = await txn.insert('sale_returns', {
         'sync_id': returnSyncId,
+        'device_id': returnDevice,
         'service_record_id': recordId,
         'nota_sync_id': notaSyncId,
         'no_nota': noNota,
@@ -429,6 +443,7 @@ class SaleReturnService {
     required String alasan,
     required Operator actor,
     String? requestId,
+    bool automatic = false,
     Future<void> Function(Transaction txn, int recordId)? enqueueNote,
     Future<void> Function(DatabaseExecutor txn, int commissionId)?
     enqueueCommission,
@@ -437,10 +452,12 @@ class SaleReturnService {
     if (cleanReason.isEmpty) {
       throw ArgumentError('Alasan reversal retur wajib diisi.');
     }
-    if (!actor.isOwner) {
-      throw StateError('Reversal retur hanya boleh dilakukan pemilik.');
+    if (!automatic) {
+      if (!actor.isOwner) {
+        throw StateError('Reversal retur hanya boleh dilakukan pemilik.');
+      }
+      Permissions.require(actor, permissionRetur);
     }
-    Permissions.require(actor, permissionRetur);
     final request = (requestId ?? newSyncId()).trim();
     return AppDatabase.instance.db.transaction((txn) async {
       final existing = await txn.query(
@@ -499,6 +516,36 @@ class SaleReturnService {
         where: 'return_id = ? AND deleted_at IS NULL',
         whereArgs: [returnId],
       );
+      // Pembatalan retur mengeluarkan lagi barang yang sudah diretur. Bila
+      // barang itu sudah terjual lagi, pembatalan ditolak agar stok tidak
+      // menjadi negatif; kasus ini tampil sebagai konflik untuk owner.
+      for (final item in items) {
+        if ('${item['line_type'] ?? 'part'}' != 'part') continue;
+        final stockItemId = item['stock_item_id'] as int?;
+        if (stockItemId == null) continue;
+        final qtyMilli =
+            (item['jumlah_milli'] as num?)?.toInt() ??
+            ((item['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        if (qtyMilli <= 0) continue;
+        final stockRows = await txn.query(
+          'stock_items',
+          columns: ['nama', 'jumlah_milli'],
+          where: 'id = ?',
+          whereArgs: [stockItemId],
+          limit: 1,
+        );
+        if (stockRows.isEmpty) continue;
+        final available =
+            (stockRows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
+        if (available < qtyMilli) {
+          throw StateError(
+            'Pembatalan retur ditolak: stok '
+            '"${stockRows.first['nama'] ?? ''}" tinggal '
+            '$available milli, sedangkan retur mengembalikan $qtyMilli milli. '
+            'Barang mungkin sudah terjual lagi.',
+          );
+        }
+      }
       for (final item in items) {
         final lineType = item['line_type'] as String? ?? 'part';
         final lineSyncId = item['line_sync_id'] as String? ?? '';
@@ -681,7 +728,12 @@ class SaleReturnService {
       SELECT p.sync_id, 'part' AS line_type, p.nama_part AS deskripsi,
         p.jumlah, COALESCE(p.jumlah_milli, p.jumlah * 1000) AS qty_milli,
         p.subtotal, p.diskon_alokasi,
-        p.harga_batas_saat_transaksi AS modal,
+        COALESCE((SELECT m.harga_pokok_satuan_cents
+          FROM stock_movements m
+          WHERE m.sumber_entity = 'service_part'
+            AND m.sumber_sync_id = p.sync_id AND m.deleted_at IS NULL
+          ORDER BY m.id LIMIT 1),
+          p.harga_modal, p.harga_batas_saat_transaksi) AS modal,
         p.stock_item_id,
         COALESCE((SELECT SUM(COALESCE(ri.jumlah_milli, ri.jumlah * 1000))
           FROM sale_return_items ri

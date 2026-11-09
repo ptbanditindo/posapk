@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../auth/operator.dart';
+import '../data/access_control.dart';
 import '../data/app_database.dart';
 import '../data/pin_service.dart';
 import '../data/session_service.dart';
@@ -41,12 +42,7 @@ class _PinGateState extends State<PinGate> {
     if (widget.profile.isOwner) {
       return widget.profile.mode == 'premium' ? 'Pemilik premium' : 'Pemilik';
     }
-    return switch (widget.profile.role) {
-      'KASIR' => 'Kasir',
-      'MEKANIK' => 'Mekanik',
-      'KEDUANYA' => 'Kasir & mekanik',
-      _ => 'Karyawan',
-    };
+    return roleDisplayName(widget.profile.role);
   }
 
   @override
@@ -247,10 +243,11 @@ class _PinGateState extends State<PinGate> {
         title: const Text('Keluar dari akun ini?'),
         content: Text(
           widget.profile.isOwner
-              ? 'PIN dan sesi dihapus. Database lokal di perangkat ini juga '
-                  'dihapus; masuk lagi memerlukan salinan dari server akun.'
-              : 'PIN dan sesi di perangkat ini akan dihapus. '
-                  'Data transaksi tetap tersimpan.',
+              ? 'Sesi berakhir, tetapi database, antrean sinkronisasi, dan '
+                  'PIN pemilik tetap tersimpan. Buka kembali dengan PIN yang '
+                  'sama. Reset perangkat tersedia terpisah di Pengaturan.'
+              : 'PIN dan sesi karyawan di perangkat ini akan dihapus. '
+                  'Data transaksi dan antrean tetap tersimpan untuk pemilik.',
         ),
         actions: [
           TextButton(

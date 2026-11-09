@@ -231,12 +231,16 @@ class ReceiptService {
       void line(
         String nama,
         int jumlah,
+        int acuan,
         int harga,
         int subtotal,
         int diskon, {
         String? qtyLabel,
       }) {
         builder.item(nama, jumlah, harga, subtotal, qtyLabel: qtyLabel);
+        if (acuan > 0 && acuan != harga) {
+          builder.amount('  Harga acuan', acuan);
+        }
         if (!template.showLineDiscount || diskon <= 0) return;
         builder.amount('  ${template.label('diskon')}', -diskon);
       }
@@ -248,6 +252,7 @@ class ReceiptService {
             job.deskripsi,
             job.jumlah,
             job.hargaTerdaftarCents,
+            job.hargaCents,
             job.subtotalCents,
             job.diskonAlokasiCents,
           );
@@ -262,6 +267,7 @@ class ReceiptService {
             part.nama,
             part.jumlah,
             part.hargaTerdaftarCents,
+            part.hargaCents,
             part.subtotalCents,
             part.diskonAlokasiCents,
             qtyLabel: part.qtyLabel,
@@ -337,15 +343,22 @@ class ReceiptService {
         );
       }
       if (on('bayar')) {
-        builder.amount(template.label('bayar'), detail.totalDibayarCents);
+        // Tunai menampilkan nominal mentah yang tersimpan (`bayar`), sedangkan
+        // total dibayar yang ter-clamp tetap terlihat dari total dan kembalian.
+        builder.amount(
+          template.label('bayar'),
+          record.metodeBayar == 'CASH'
+              ? record.bayarCents
+              : detail.totalDibayarCents,
+        );
       }
       if (on('kembalian') && !tampilkanRiwayat) {
-        // Kembalian hanya dari uang tunai yang benar-benar diterima pada nota,
-        // bukan dari nominal pembayaran yang sudah dibatasi tagihan. Bila nota
-        // punya riwayat pembayaran, kembalian dicetak per pembayaran.
+        // Angka diambil dari kolom tersimpan agar struk dan database sama.
         final kasDiterima =
             record.metodeBayar == 'CASH' ? record.bayarCents : 0;
-        final change = kasDiterima > record.totalCents
+        final change = record.kembalianCents > 0
+            ? record.kembalianCents
+            : kasDiterima > record.totalCents
             ? kasDiterima - record.totalCents
             : 0;
         builder.amount(template.label('kembalian'), change);

@@ -179,6 +179,7 @@ class ServiceRecordSummary {
     required this.bayarCents,
     required this.statusBayar,
     required this.metodeBayar,
+    this.kembalianCents = 0,
     required this.voidedAt,
     this.bergaransi = false,
     this.garansiSampai,
@@ -197,6 +198,9 @@ class ServiceRecordSummary {
     this.pajakMode = 'TANPA',
     this.pajakPersenBp = 0,
     this.pajakPenanggung = 'PEMBELI',
+    this.syncStatus = '',
+    this.purged = false,
+    this.archiveDocId = '',
   });
 
   final int id;
@@ -217,6 +221,7 @@ class ServiceRecordSummary {
   final int totalReturCents;
   final int totalKoreksiCents;
   final int bayarCents;
+  final int kembalianCents;
   final String statusBayar;
   final String metodeBayar;
   final DateTime? voidedAt;
@@ -235,6 +240,15 @@ class ServiceRecordSummary {
   final String pajakMode;
   final int pajakPersenBp;
   final String pajakPenanggung;
+
+  /// Status kirim nota terakhir: `pending`, `sent`, `failed`, `dead_letter`.
+  /// Kosong berarti nota belum pernah masuk antrean sinkronisasi.
+  final String syncStatus;
+
+  /// Baris stub dari `purged_documents`: nota sudah dihapus lokal dan hanya
+  /// tersisa di arsip server. `id` bernilai nol dan detail dibuka dari arsip.
+  final bool purged;
+  final String archiveDocId;
 
   bool get pajakAktif => pajakMode != 'TANPA' && pajakPersenBp > 0;
 
@@ -308,6 +322,7 @@ class ServiceRecordSummary {
         totalReturCents: (row['total_retur'] as num?)?.toInt() ?? 0,
         totalKoreksiCents: (row['total_koreksi'] as num?)?.toInt() ?? 0,
         bayarCents: row['bayar'] as int? ?? 0,
+        kembalianCents: row['kembalian'] as int? ?? 0,
         statusBayar: (row['status_bayar'] as String?) ?? 'LUNAS',
         metodeBayar: (row['metode_bayar'] as String?) ?? 'CASH',
         voidedAt: row['voided_at'] == null
@@ -337,6 +352,30 @@ class ServiceRecordSummary {
         pajakMode: row['pajak_mode'] as String? ?? 'TANPA',
         pajakPersenBp: (row['pajak_persen_bp'] as num?)?.toInt() ?? 0,
         pajakPenanggung: row['pajak_penanggung'] as String? ?? 'PEMBELI',
+        syncStatus: row['sync_status'] as String? ?? '',
+      );
+
+  /// Ringkasan nota yang sudah dipurge; hanya metadata stub yang tersedia,
+  /// isi lengkap dibuka dari arsip server.
+  factory ServiceRecordSummary.archived(Map<String, Object?> row) =>
+      ServiceRecordSummary(
+        id: 0,
+        noNota: row['no_nota'] as String? ?? '',
+        waktu: localTime(row['tanggal']),
+        customerNama: '',
+        unitLabel: '',
+        keluhan: '',
+        biayaJasaCents: 0,
+        totalPartCents: 0,
+        diskonCents: 0,
+        totalCents: (row['total_cents'] as num?)?.toInt() ?? 0,
+        bayarCents: 0,
+        statusBayar: row['status'] as String? ?? 'ARSIP',
+        metodeBayar: '',
+        voidedAt: null,
+        syncStatus: '',
+        purged: true,
+        archiveDocId: row['doc_id'] as String? ?? '',
       );
 }
 
@@ -658,6 +697,18 @@ class BelowPriceSale {
   String get qtyLabel => formatQuantity(milli, 3);
   int get selisihCents =>
       ((hargaFinalCents - hargaTerdaftarCents) * milli / 1000).round();
+
+  /// Baris tanpa harga acuan dan tanpa tagihan: memang gratis.
+  bool get gratis => hargaTerdaftarCents == 0 && hargaFinalCents == 0;
+
+  /// Baris berharga acuan yang ditagih nol: diskon 100%.
+  bool get diskonPenuh => hargaTerdaftarCents > 0 && hargaFinalCents == 0;
+
+  String get labelHarga => gratis
+      ? 'Gratis'
+      : diskonPenuh
+      ? 'Diskon 100%'
+      : 'Harga nego/diskon';
 }
 
 class CorrectionEntry {
