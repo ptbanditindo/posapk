@@ -70,6 +70,7 @@ class StoreService {
   Future<StoreRecord> createStore({
     required String nama,
     String alamat = '',
+    Map<String, bool> features = const {},
   }) async {
     if (kIsWeb) {
       throw StateError('Multi-toko tersedia di Android/desktop.');
@@ -116,6 +117,7 @@ class StoreService {
         'bengkel.alamat': alamat.trim(),
         'sync.store_id': storeId,
       },
+      features: features,
       copyOwner: true,
       copyLicense: true,
       copyAccounts: true,

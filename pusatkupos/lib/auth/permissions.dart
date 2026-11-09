@@ -11,6 +11,9 @@ const permissionDiscount = 'diskon';
 const permissionViewReport = 'lihat_laporan';
 const permissionPrintReport = 'cetak_laporan';
 const permissionBackup = 'backup';
+const permissionViewPurchase = 'lihat_pembelian';
+const permissionCreatePurchase = 'buat_pembelian';
+const permissionPayDebt = 'bayar_utang';
 
 class Permissions {
   Permissions._();

@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../../core/money.dart';
 import '../../core/quantity.dart';
 import '../../data/app_database.dart';
+import '../../data/feature_flags.dart';
 import '../../data/models.dart';
+import '../../data/opname_service.dart';
 import '../../data/supplier_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -19,6 +21,7 @@ class StockScreen extends StatefulWidget {
 class _StockScreenState extends State<StockScreen> {
   final _search = TextEditingController();
   Future<List<StockItem>>? _future;
+  Future<List<OpnameHoldView>>? _holds;
 
   @override
   void initState() {
@@ -38,6 +41,7 @@ class _StockScreenState extends State<StockScreen> {
     if (!mounted) return;
     setState(() {
       _future = AppDatabase.instance.listStock(query: _search.text);
+      _holds = OpnameService.instance.pendingHolds();
     });
   }
 
@@ -54,9 +58,7 @@ class _StockScreenState extends State<StockScreen> {
       );
       return;
     }
-    final supplierEnabled =
-        (await AppDatabase.instance.getSetting('fitur.supplier') ?? '1') ==
-            '1';
+    final supplierEnabled = FeatureFlagsService.instance.supplierHubEnabled;
     final suppliers = supplierEnabled
         ? await SupplierService.instance.listSuppliers(activeOnly: true)
         : <Map<String, Object?>>[];
@@ -169,16 +171,27 @@ class _StockScreenState extends State<StockScreen> {
     );
     if (input == null) return;
     try {
-      await AppDatabase.instance.opname(
-        item: item,
+      final gate = await OpnameService.instance.record(
+        itemId: item.id,
+        namaItem: item.nama,
         jumlahFisikMilli: input.qtyMilli,
         alasan: input.alasan,
-        actor: AppState.instance.operator,
+        actor: AppState.instance.requireOperator,
         enqueueMovement: (txn, movementId) =>
             SyncService.instance.enqueueStockMovement(movementId, txn: txn),
       );
       AppState.instance.touch();
       _load();
+      if (!mounted) return;
+      if (gate.held) {
+        showSnack(
+          context,
+          'Opname ditahan sampai perangkat sinkron: '
+          '${gate.missing.join(', ')}.',
+        );
+      } else {
+        showSnack(context, 'Opname tersimpan.');
+      }
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal opname: $error', error: true);
     }
@@ -214,6 +227,67 @@ class _StockScreenState extends State<StockScreen> {
               ),
             ],
           ),
+        ),
+        FutureBuilder<List<OpnameHoldView>>(
+          future: _holds,
+          builder: (context, snapshot) {
+            final holds = snapshot.data ?? const [];
+            if (holds.isEmpty) return const SizedBox.shrink();
+            final warning = holds.any((hold) => hold.warnOffline);
+            return Card(
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              color: warning
+                  ? Theme.of(context).colorScheme.errorContainer
+                  : Theme.of(context).colorScheme.secondaryContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      warning
+                          ? Icons.warning_amber_outlined
+                          : Icons.hourglass_top,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Opname menunggu sinkron (${holds.length})',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            warning
+                                ? 'Ada perangkat yang belum sinkron lebih dari '
+                                      '24 jam. Opname diterapkan sementara '
+                                      'setelah 7 hari bila belum kembali.'
+                                : 'Hasil opname akan diterapkan setelah semua '
+                                      'perangkat menyelesaikan sinkronisasi.',
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            holds
+                                .map(
+                                  (hold) =>
+                                      '${hold.namaItem} → '
+                                      '${(hold.jumlahFisikMilli / 1000).toStringAsFixed(hold.jumlahFisikMilli % 1000 == 0 ? 0 : 3)}'
+                                      '${hold.provisional ? ' (sementara)' : ''}',
+                                )
+                                .join(' · '),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
         Expanded(
           child: FutureBuilder<List<StockItem>>(

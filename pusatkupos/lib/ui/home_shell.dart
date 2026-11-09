@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../auth/operator.dart';
+import '../auth/permissions.dart';
 import '../data/app_database.dart';
+import '../data/feature_flags.dart';
+import '../data/purchase_service.dart';
 import '../data/session_service.dart';
 import '../data/store_registry.dart';
 import '../data/store_service.dart';
@@ -128,6 +131,59 @@ class _HomeShellState extends State<HomeShell>
     } catch (_) {
       // Registry toko belum siap; menu ganti toko tetap tersembunyi.
     }
+    await _checkDebtReminders();
+  }
+
+  /// Pengingat jatuh tempo H-3 dan lewat jatuh tempo (BD-21). Ditampilkan
+  /// sekali per hari per nota; log disimpan di `debt_reminder_logs`.
+  Future<void> _checkDebtReminders() async {
+    if (!FeatureFlagsService.instance.purchaseDebtEnabled) return;
+    final operator = _operator;
+    if (!operator.isOwner && !operator.can(permissionViewPurchase)) return;
+    try {
+      final reminders = await PurchaseService.instance.dueReminders();
+      if (!mounted || reminders.isEmpty) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Pengingat utang supplier'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final row in reminders)
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      row['level'] == 'LEWAT'
+                          ? Icons.error_outline
+                          : Icons.schedule_outlined,
+                      color: row['level'] == 'LEWAT'
+                          ? Theme.of(context).colorScheme.error
+                          : null,
+                    ),
+                    title: Text('${row['no_pembelian']}'),
+                    subtitle: Text(
+                      '${row['supplier_nama_snapshot']} · jatuh tempo '
+                      '${row['jatuh_tempo']}',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Mengerti'),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      // Pengingat tidak boleh menghalangi pembukaan aplikasi.
+    }
   }
 
   String _activeStoreName() {
@@ -177,7 +233,7 @@ class _HomeShellState extends State<HomeShell>
     'Order',
     'Jasa',
     'Laporan',
-    'Supplier',
+    'Supplier & Reseller',
     'Follow up',
     'Karyawan',
     'Pengaturan',
@@ -218,14 +274,30 @@ class _HomeShellState extends State<HomeShell>
 
   Operator get _operator => AppState.instance.operator ?? Operator.owner;
 
+  /// Menu opsional disembunyikan mengikuti saklar fitur per toko. Fitur wajib
+  /// tetap tampil walau data historis berasal dari masa fitur aktif.
+  bool _featureAllows(int index) {
+    final flags = FeatureFlagsService.instance;
+    return switch (index) {
+      5 => flags.isEnabled(featureOrderKerja),
+      8 => flags.supplierHubEnabled,
+      9 => flags.isEnabled(featureFollowup),
+      _ => true,
+    };
+  }
+
   List<int> get _visible {
     final operator = _operator;
     if (operator.isOwner) {
-      return List.generate(_allLabels.length, (index) => index);
+      return [
+        for (var index = 0; index < _allLabels.length; index++)
+          if (_featureAllows(index)) index,
+      ];
     }
     return [
       for (var index = 0; index < _screenAccess.length; index++)
-        if (operator.can(_screenAccess[index])) index,
+        if (operator.can(_screenAccess[index]) && _featureAllows(index))
+          index,
     ];
   }
 

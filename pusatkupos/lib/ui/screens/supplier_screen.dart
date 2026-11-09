@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../../auth/permissions.dart';
 import '../../core/quantity.dart';
-import '../../data/app_database.dart';
+import '../../data/feature_flags.dart';
 import '../../data/license_service.dart';
 import '../../data/supplier_service.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
 import '../widgets.dart';
+import 'purchase_screen.dart';
 
 class SupplierScreen extends StatefulWidget {
   const SupplierScreen({super.key});
@@ -30,8 +32,8 @@ class _SupplierScreenState extends State<SupplierScreen> {
 
   Future<void> _load() async {
     final premium = await LicenseService.instance.isPremium();
-    final enabled =
-        (await AppDatabase.instance.getSetting('fitur.supplier') ?? '1') == '1';
+    await FeatureFlagsService.instance.load();
+    final enabled = FeatureFlagsService.instance.supplierHubEnabled;
     final suppliers = await SupplierService.instance.listSuppliers();
     final lowStock = await SupplierService.instance.lowStockItems();
     if (!mounted) return;
@@ -149,28 +151,34 @@ class _SupplierScreenState extends State<SupplierScreen> {
             icon: Icons.local_shipping_outlined,
             title: 'Fitur supplier dimatikan',
             subtitle:
-                'Aktifkan kembali melalui Pengaturan › Supplier.',
+                'Aktifkan kembali melalui Pengaturan › Fitur dan data toko.',
           ),
         ],
       );
     }
+    final purchaseEnabled = FeatureFlagsService.instance.purchaseDebtEnabled;
+    final followupEnabled =
+        FeatureFlagsService.instance.isEnabled(featureFollowup);
+    final canSeePurchase = AppState.instance.isOwner ||
+        AppState.instance.can(permissionViewPurchase);
+    final showPurchase = purchaseEnabled && canSeePurchase;
+    final tabs = <Widget>[
+      const Tab(text: 'Supplier'),
+      if (followupEnabled) const Tab(text: 'Follow up Reseller'),
+      if (showPurchase) const Tab(text: 'Pembelian & Utang'),
+    ];
+    final views = <Widget>[
+      _supplierTab(),
+      if (followupEnabled) _followupTab(),
+      if (showPurchase) const PurchaseDebtTab(),
+    ];
     return DefaultTabController(
-      length: 2,
+      length: tabs.length,
       child: Column(
         children: [
-          const TabBar(
-            tabs: [
-              Tab(text: 'Supplier'),
-              Tab(text: 'Follow up Reseller'),
-            ],
-          ),
+          TabBar(tabs: tabs),
           Expanded(
-            child: TabBarView(
-              children: [
-                _supplierTab(),
-                _followupTab(),
-              ],
-            ),
+            child: TabBarView(children: views),
           ),
         ],
       ),

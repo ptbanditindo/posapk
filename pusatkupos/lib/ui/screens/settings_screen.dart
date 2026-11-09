@@ -10,9 +10,12 @@ import '../../state/app_state.dart';
 import '../entry_gate.dart';
 import '../pin_gate.dart';
 import '../widgets.dart';
+import 'diagnostics_screen.dart';
 import 'followup_settings_screen.dart';
+import 'opening_balance_screen.dart';
 import 'printer_settings_screen.dart';
 import 'receipt_settings_screen.dart';
+import 'store_features_screen.dart';
 import 'store_settings_screen.dart';
 import 'stores_screen.dart';
 
@@ -33,7 +36,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _backupPassphrase = TextEditingController();
   bool _backupPassphraseConfigured = false;
   bool _fiturKaryawan = true;
-  bool _fiturSupplier = true;
   bool _busy = false;
   bool _backupAuto = true;
   String _backupJam = '02:00';
@@ -150,13 +152,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final bulan = await db.getSetting('garansi.default_bulan') ?? '1';
     final syarat = await db.getSetting('garansi.syarat') ?? '';
     final karyawan = await db.getSetting('fitur.karyawan') ?? '1';
-    final supplier = await db.getSetting('fitur.supplier') ?? '1';
     if (!mounted) return;
     _garansiBulan.text = bulan;
     _garansiSyarat.text = syarat;
     setState(() {
       _fiturKaryawan = karyawan == '1';
-      _fiturSupplier = supplier == '1';
     });
   }
 
@@ -649,19 +649,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Supplier',
+          title: 'Fitur dan data toko',
           subtitle:
-              'Jika dimatikan, pencatatan supplier dan follow up reseller '
-              'disembunyikan.',
-          child: SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Aktifkan fitur supplier'),
-            value: _fiturSupplier,
-            onChanged: (value) async {
-              setState(() => _fiturSupplier = value);
-              await AppDatabase.instance
-                  .setSetting('fitur.supplier', value ? '1' : '0');
-            },
+              'Saklar modul opsional per toko dan saldo awal usaha. '
+              'Data lama tidak dihapus saat modul dimatikan.',
+          child: Column(
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.toggle_on_outlined),
+                title: const Text('Fitur toko'),
+                subtitle: const Text(
+                  'Estimasi, order kerja, supplier, follow up, unit, WhatsApp',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const StoreFeaturesScreen(),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.account_balance_outlined),
+                title: const Text('Saldo awal toko'),
+                subtitle: const Text('Stok, utang supplier, piutang pelanggan'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const OpeningBalanceScreen(),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.monitor_heart_outlined),
+                title: const Text('Diagnostik perangkat'),
+                subtitle: const Text(
+                  'Integritas database, antrean sinkron, ekspor log',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const DiagnosticsScreen(),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),

@@ -43,6 +43,13 @@ Future<void> main(List<String> arguments) async {
     ..addCommand(
       'token',
       ArgParser()..addOption('owner-id', mandatory: true),
+    )
+    ..addCommand(
+      'maintenance',
+      ArgParser()
+        ..addOption('days', defaultsTo: '90')
+        ..addFlag('dry-run', defaultsTo: false)
+        ..addFlag('vacuum', defaultsTo: false),
     );
   final result = parser.parse(arguments);
   final command = result.command;
@@ -90,11 +97,15 @@ Future<void> main(List<String> arguments) async {
         break;
       case 'identity':
         await _bindIdentity(db, command);
-        break;      case 'license':
+        break;
+      case 'license':
         await _printLicense(db, command);
         break;
       case 'token':
         await _printToken(db, command);
+        break;
+      case 'maintenance':
+        await _maintenance(db, command);
         break;
       case 'serve':
         await _serve(db, config);
@@ -352,6 +363,52 @@ Future<void> _printToken(Database db, ArgResults args) async {
     },
   );
   print(jsonEncode({'owner_id': ownerId, 'enroll_token': token}));
+}
+
+Future<void> _maintenance(Database db, ArgResults args) async {
+  final days = int.tryParse(args['days'] as String) ?? 90;
+  final dryRun = args['dry-run'] == true;
+  final vacuum = args['vacuum'] == true;
+  final cutoff = "now() - make_interval(days => @days)";
+  final report = <String, Object?>{'days': days, 'dry_run': dryRun};
+
+  Future<void> prune(String name, String table, String where) async {
+    final count = await db.one(
+      'SELECT COUNT(*) AS total FROM $table WHERE $where',
+      {'days': days},
+    );
+    final total = (count?['total'] as num?)?.toInt() ?? 0;
+    report[name] = total;
+    if (dryRun || total == 0) return;
+    await db.execute('DELETE FROM $table WHERE $where', {'days': days});
+  }
+
+  await prune(
+    'expired_enroll_tokens',
+    'enroll_tokens',
+    'expires_at < $cutoff',
+  );
+  await prune(
+    'expired_invites',
+    'invites',
+    'expires_at < $cutoff OR (claimed_at IS NOT NULL AND claimed_at < $cutoff)',
+  );
+  await prune(
+    'completed_sync_rounds',
+    'sync_rounds',
+    "status <> 'open' AND COALESCE(completed_at, created_at) < $cutoff",
+  );
+
+  final backlog = await db.one('SELECT COUNT(*) AS total FROM envelopes');
+  report['envelope_backlog'] = (backlog?['total'] as num?)?.toInt() ?? 0;
+  report['retention_note'] =
+      'Amplop hanya dipangkas otomatis saat semua perangkat mengakui antrean.';
+
+  if (vacuum && !dryRun) {
+    await db.execute('VACUUM ANALYZE');
+    report['vacuum'] = true;
+  }
+  print(jsonEncode({'ok': true, ...report}));
 }
 
 Future<String> _licenseToken(Database db, Map<String, Object?> owner) {

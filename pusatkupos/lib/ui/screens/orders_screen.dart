@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/dates.dart';
 import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
+import '../../data/feature_flags.dart';
 import '../../data/models.dart';
 import '../../data/order_service.dart';
 import '../../data/store_settings.dart';
@@ -177,16 +178,18 @@ class _OrdersScreenState extends State<OrdersScreen> {
                       ],
                     ),
                   ),
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const EstimatesScreen(),
+                  if (FeatureFlagsService.instance.isEnabled(featureEstimasi))
+                    OutlinedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const EstimatesScreen(),
+                        ),
                       ),
+                      icon: const Icon(Icons.request_quote_outlined),
+                      label: const Text('Estimasi'),
                     ),
-                    icon: const Icon(Icons.request_quote_outlined),
-                    label: const Text('Estimasi'),
-                  ),
-                  const SizedBox(width: 8),
+                  if (FeatureFlagsService.instance.isEnabled(featureEstimasi))
+                    const SizedBox(width: 8),
                   FilledButton.icon(
                     onPressed: canCreate ? () => _create(data) : null,
                     icon: const Icon(Icons.add),

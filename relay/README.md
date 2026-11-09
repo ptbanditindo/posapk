@@ -1,8 +1,9 @@
 # Relay uji PusatkuPOS
 
 Server relay lokal berbasis **Dart + PostgreSQL** untuk menguji sinkronisasi
-dua aplikasi PusatkuPOS. Ini bukan relay produksi: tidak ada TLS, pembatasan
-rate, atau rotasi kunci otomatis.
+dua aplikasi PusatkuPOS. Relay ini belum menangani TLS sendiri; untuk akses
+jaringan, letakkan di belakang reverse proxy TLS. Panduan produksi, backup,
+pemantauan, dan rotasi kredensial ada di [OPS.md](OPS.md).
 
 ## Prasyarat
 
@@ -259,4 +260,8 @@ dicabut, data yang belum terkirim dari perangkat itu tidak akan masuk.
   baru masih bisa dipasangkan. Endpoint pengelolaan tidak lagi menerima token
   ini. Setelah kedaluwarsa, pengguna harus memilih Login Google lagi; data
   lokal tidak hilang.
-- Relay uji ini belum menangani TLS, rate limit menyeluruh, atau rotasi kunci.
+- Relay tidak menangani TLS sendiri dan belum memiliki pembatasan laju global.
+  Endpoint login dan undangan sudah dibatasi per alamat IP (lihat
+  [OPS.md](OPS.md)). Pasang reverse proxy TLS dan batasi akses jaringan.
+- pemangkasan amplop bergantung pada ack semua perangkat. Perangkat yang hilang
+  harus dicabut agar antrean dapat dipangkas.

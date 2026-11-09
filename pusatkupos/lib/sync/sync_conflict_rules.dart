@@ -130,11 +130,23 @@ class SyncConflictRules {
     'komisi_tanpa_snapshot',
     'kode_barang_bentrok',
     'kode_barang_kosong',
+    'pembelian_void_final',
+    'pembelian_tanpa_supplier',
+    'no_pembelian_bentrok',
+    'pembayaran_melebihi_sisa',
+    'pembayaran_pada_pembelian_void',
+    'retur_pembelian_melebihi_qty',
+    'retur_pembelian_void',
+    'saldo_awal_ganda',
+    'saldo_awal_stok_berubah',
+    'fitur_nonaktif',
   };
 
   static const Set<String> priceEntities = {'harga_jasa'};
   static const Set<String> ownerOnlyEntities = {
     'store_settings',
+    'store_feature',
+    'opening_balance',
     'data_request',
   };
 
@@ -167,6 +179,9 @@ class SyncConflictRules {
     'nota_adjustment',
     'day_digest',
     'data_response',
+    'supplier_purchase',
+    'supplier_payment',
+    'supplier_purchase_return',
   };
 
   static const Map<String, String> employeeExtraPermission = {
@@ -176,6 +191,9 @@ class SyncConflictRules {
     'nota_adjustment': 'koreksi',
     'stock': 'ubah_stok',
     'stock_movement': 'ubah_stok',
+    'supplier_purchase': 'buat_pembelian',
+    'supplier_payment': 'bayar_utang',
+    'supplier_purchase_return': 'buat_pembelian',
   };
 
   /// Alasan konflik bila peran pengirim tidak berhak, atau `null` bila boleh.

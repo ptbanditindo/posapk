@@ -23,6 +23,7 @@ import 'backup_platform_stub.dart'
 import 'models.dart';
 import 'price_rules.dart';
 import 'schema.dart';
+import 'schema_migrations.dart';
 import 'secure_store.dart';
 import 'store_settings.dart';
 import 'store_registry.dart';
@@ -152,6 +153,7 @@ class AppDatabase {
   Future<void> createDatabaseAt(
     String path, {
     Map<String, String> settings = const {},
+    Map<String, bool> features = const {},
     bool copyOwner = false,
     bool copyLicense = false,
     bool copyAccounts = false,
@@ -195,6 +197,23 @@ class AppDatabase {
         await fresh.insert('license', licenseRow);
       }
       final storeId = settings['sync.store_id'] ?? '';
+      for (final entry in features.entries) {
+        if (storeId.isEmpty) break;
+        final now = nowIso();
+        await fresh.insert('store_features', {
+          'store_id': storeId,
+          'feature_key': entry.key,
+          'sync_id': newSyncId(),
+          'device_id': '',
+          'enabled': entry.value ? 1 : 0,
+          'version': 1,
+          'updated_by': 'pemilik',
+          'sync_hlc_wall': DateTime.now().millisecondsSinceEpoch,
+          'sync_hlc_counter': 0,
+          'created_at': now,
+          'updated_at': now,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
       for (final row in accountRows) {
         final now = nowIso();
         final account = Map<String, Object?>.of(row)
@@ -265,8 +284,8 @@ class AppDatabase {
     await db.execute('PRAGMA foreign_keys = ON');
   }
 
-  /// Skema bersih v1 tidak punya jalur migrasi; versi lain ditolak agar
-  /// aplikasi tidak berjalan di atas tabel yang tidak lengkap.
+  /// Database dari versi aplikasi yang lebih baru tidak dibuka agar tabel
+  /// yang belum dikenal tidak ditimpa oleh kode lama.
   Future<void> _rejectIncompatibleVersion(
     Database db,
     int oldVersion,
@@ -279,6 +298,7 @@ class AppDatabase {
   }
 
   Future<void> _open() async {
+    await _prepareSchemaUpgrade();
     if (!kIsWeb) {
       // Pulihkan sisa restore yang terputus sebelum database dibuka.
       try {
@@ -297,8 +317,11 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
+        onOpen: createOperationalSchema,
+        onUpgrade: _upgradeSchema,
         onDowngrade: _rejectIncompatibleVersion,
       );
+      await _recordSchemaVersion();
       return;
     }
     _db = await databaseFactory.openDatabase(
@@ -307,9 +330,61 @@ class AppDatabase {
         version: schemaVersion,
         onConfigure: _configure,
         onCreate: _createSchema,
+        onOpen: createOperationalSchema,
+        onUpgrade: _upgradeSchema,
         onDowngrade: _rejectIncompatibleVersion,
       ),
     );
+    await _recordSchemaVersion();
+  }
+
+  /// Versi skema terakhir disimpan di berkas penanda di samping database.
+  /// Penanda dibaca sebelum database dibuka agar salinan pengaman dapat dibuat
+  /// sebelum migrasi berjalan.
+  Future<void> _prepareSchemaUpgrade() async {
+    if (kIsWeb) return;
+    final path = _path;
+    if (path == null) return;
+    final marker = '$path.schema_version';
+    int? stored;
+    try {
+      if (await backup_platform.fileExists(marker)) {
+        final bytes = await backup_platform.readFile(marker);
+        stored = int.tryParse(utf8.decode(bytes).trim());
+      }
+    } catch (_) {
+      stored = null;
+    }
+    if (stored != null && stored > schemaVersion) {
+      throw StateError(
+        'Database dibuat oleh aplikasi versi lebih baru (skema v$stored). '
+        'Perbarui aplikasi sebelum membuka data ini.',
+      );
+    }
+    if (stored != null &&
+        stored < schemaVersion &&
+        await backup_platform.fileExists(path)) {
+      await backup_platform.backupExistingDatabase(path);
+    }
+  }
+
+  Future<void> _recordSchemaVersion() async {
+    if (kIsWeb) return;
+    final path = _path;
+    if (path == null) return;
+    await backup_platform.writeDatabase(
+      '$path.schema_version',
+      utf8.encode('$schemaVersion'),
+    );
+  }
+
+  Future<void> _upgradeSchema(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    await runSchemaMigrations(db, from: oldVersion, to: newVersion);
+    await createOperationalSchema(db);
   }
 
   Future<void> close() async {
@@ -508,6 +583,15 @@ class AppDatabase {
     'service_record_commissions',
     'employee_debts',
     'salary_payments',
+    'store_features',
+    'opname_holds',
+    'supplier_purchases',
+    'supplier_purchase_items',
+    'supplier_payments',
+    'supplier_purchase_returns',
+    'supplier_purchase_return_items',
+    'opening_balances',
+    'opening_balance_items',
   ];
 
   /// HLC baru selalu lebih besar dari antrean keluar, data master yang sudah
@@ -1122,66 +1206,96 @@ class AppDatabase {
     required int jumlahFisikMilli,
     String? alasan,
     Operator? actor,
-    Future<void> Function(Transaction txn, int id)? enqueue,
-    Future<void> Function(Transaction txn, int movementId)? enqueueMovement,
+    Future<void> Function(DatabaseExecutor txn, int id)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, int movementId)?
+    enqueueMovement,
   }) async {
     _requireActor(actor);
     if (actor != null) Permissions.require(actor, permissionOpname);
     if (jumlahFisikMilli < 0) {
       throw ArgumentError('Jumlah fisik tidak boleh negatif.');
     }
-    await db.transaction((txn) async {
-      final rows = await txn.query(
-        'stock_items',
-        where: 'id = ?',
-        whereArgs: [item.id],
-        limit: 1,
-      );
-      if (rows.isEmpty || rows.first['deleted_at'] != null) {
-        throw StateError('Barang tidak ditemukan.');
-      }
-      final before = StockItem.fromRow(rows.first);
-      final stockSyncId = rows.first['sync_id'] as String;
-      final delta = jumlahFisikMilli - before.jumlahMilli;
-      final hlc = await nextSyncHlc(txn);
-      await txn.update(
-        'stock_items',
-        {
-          'jumlah': wholeQuantity(jumlahFisikMilli),
-          'jumlah_milli': jumlahFisikMilli,
-          'sync_hlc_wall': hlc.wall,
-          'sync_hlc_counter': hlc.counter,
-          'updated_at': nowIso(),
-        },
-        where: 'id = ?',
-        whereArgs: [item.id],
-      );
-      final movementSyncId = newSyncId();
-      final movementId = await txn.insert('stock_movements', {
-        'sync_id': movementSyncId,
-        'stock_item_id': item.id,
-        'stock_sync_id': stockSyncId,
-        'nama_item': item.nama,
-        'jenis': 'KOREKSI',
-        'jumlah': wholeQuantity(delta),
-        'jumlah_milli': delta,
-        'stok_sebelum_milli': before.jumlahMilli,
-        'stok_sesudah_milli': jumlahFisikMilli,
-        'opname_absolut_milli': jumlahFisikMilli,
-        'sumber_entity': 'opname',
-        'sumber_sync_id': movementSyncId,
-        'operator': actor?.label,
-        'alasan': (alasan ?? '').trim().isEmpty
-            ? 'Opname stok'
-            : alasan!.trim(),
+    await db.transaction(
+      (txn) => applyOpnameTx(
+        txn,
+        itemId: item.id,
+        namaItem: item.nama,
+        jumlahFisikMilli: jumlahFisikMilli,
+        alasan: alasan,
+        actor: actor,
+        enqueue: enqueue,
+        enqueueMovement: enqueueMovement,
+      ),
+    );
+  }
+
+  /// Penerapan opname tanpa membuka transaksi sendiri; dipakai gerbang
+  /// opname menunggu sinkron (BD-03) agar penerapan akhir tetap atomik.
+  Future<void> applyOpnameTx(
+    DatabaseExecutor txn, {
+    required int itemId,
+    required String namaItem,
+    required int jumlahFisikMilli,
+    String? alasan,
+    String sumberEntity = 'opname',
+    Operator? actor,
+    Future<void> Function(DatabaseExecutor txn, int id)? enqueue,
+    Future<void> Function(DatabaseExecutor txn, int movementId)?
+    enqueueMovement,
+  }) async {
+    if (jumlahFisikMilli < 0) {
+      throw ArgumentError('Jumlah fisik tidak boleh negatif.');
+    }
+    final rows = await txn.query(
+      'stock_items',
+      where: 'id = ?',
+      whereArgs: [itemId],
+      limit: 1,
+    );
+    if (rows.isEmpty || rows.first['deleted_at'] != null) {
+      throw StateError('Barang tidak ditemukan.');
+    }
+    final before = StockItem.fromRow(rows.first);
+    final stockSyncId = rows.first['sync_id'] as String;
+    final delta = jumlahFisikMilli - before.jumlahMilli;
+    final hlc = await nextSyncHlc(txn);
+    await txn.update(
+      'stock_items',
+      {
+        'jumlah': wholeQuantity(jumlahFisikMilli),
+        'jumlah_milli': jumlahFisikMilli,
         'sync_hlc_wall': hlc.wall,
         'sync_hlc_counter': hlc.counter,
-        'created_at': nowIso(),
         'updated_at': nowIso(),
-      });
-      if (enqueue != null) await enqueue(txn, item.id);
-      if (enqueueMovement != null) await enqueueMovement(txn, movementId);
+      },
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
+    final movementSyncId = newSyncId();
+    final movementId = await txn.insert('stock_movements', {
+      'sync_id': movementSyncId,
+      'stock_item_id': itemId,
+      'stock_sync_id': stockSyncId,
+      'nama_item': namaItem,
+      'jenis': 'KOREKSI',
+      'jumlah': wholeQuantity(delta),
+      'jumlah_milli': delta,
+      'stok_sebelum_milli': before.jumlahMilli,
+      'stok_sesudah_milli': jumlahFisikMilli,
+      'opname_absolut_milli': jumlahFisikMilli,
+      'sumber_entity': sumberEntity,
+      'sumber_sync_id': movementSyncId,
+      'operator': actor?.label,
+      'alasan': (alasan ?? '').trim().isEmpty
+          ? 'Opname stok'
+          : alasan!.trim(),
+      'sync_hlc_wall': hlc.wall,
+      'sync_hlc_counter': hlc.counter,
+      'created_at': nowIso(),
+      'updated_at': nowIso(),
     });
+    if (enqueue != null) await enqueue(txn, itemId);
+    if (enqueueMovement != null) await enqueueMovement(txn, movementId);
   }
 
   Future<void> _adjustStock({

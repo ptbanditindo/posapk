@@ -40,6 +40,9 @@ const _reasonLabels = {
   'kode_barang_kosong': 'Barang tanpa kode',
   'no_nota_bentrok': 'Nomor nota bentrok',
   'rekonsiliasi_beda': 'Rekonsiliasi berbeda',
+  'pembelian_tanpa_supplier': 'Pembelian tanpa supplier',
+  'no_pembelian_bentrok': 'Nomor pembelian bentrok',
+  'saldo_awal_stok_berubah': 'Stok berubah setelah saldo awal',
 };
 
 String _reasonLabel(String reason) {

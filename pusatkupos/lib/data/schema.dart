@@ -1585,4 +1585,394 @@ Future<void> createCleanSchema(Database db) async {
       PRIMARY KEY (source_device_id, tanggal, data_type)
     )
   ''');
+
+  await createOperationalSchema(db);
+}
+
+/// Tabel modul operasional yang ditambahkan setelah skema inti.
+///
+/// Fungsi ini idempoten dan dipanggil saat database dibuka agar instalasi
+/// lama pada masa pengembangan tetap mendapatkan tabel baru tanpa migrasi
+/// data. Tabel transaksi tetap append-only dan memakai HLC yang sama.
+Future<void> createOperationalSchema(Database db) async {
+  // ---------------------------------------------------------------------------
+  // Fitur opsional per toko
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS store_features (
+      store_id TEXT NOT NULL,
+      feature_key TEXT NOT NULL,
+      sync_id TEXT NOT NULL UNIQUE,
+      device_id TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_by TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      PRIMARY KEY (store_id, feature_key)
+    )
+  ''');
+
+  // ---------------------------------------------------------------------------
+  // Penahanan opname (BD-03)
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS opname_holds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      stock_item_id INTEGER NOT NULL,
+      stock_sync_id TEXT NOT NULL,
+      nama_item TEXT NOT NULL DEFAULT '',
+      jumlah_fisik_milli INTEGER NOT NULL,
+      alasan TEXT,
+      status TEXT NOT NULL DEFAULT 'TERTUNDA',
+      missing_devices_json TEXT NOT NULL DEFAULT '[]',
+      provisional INTEGER NOT NULL DEFAULT 0,
+      movement_sync_id TEXT,
+      applied_at TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('TERTUNDA', 'SEMENTARA', 'DITERAPKAN', 'BATAL')),
+      CHECK (jumlah_fisik_milli >= 0)
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_opname_holds_status '
+    'ON opname_holds(store_id, status)',
+  );
+
+  // ---------------------------------------------------------------------------
+  // Pembelian dan utang supplier (BD-12)
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS supplier_purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      origin_device_id TEXT NOT NULL DEFAULT '',
+      no_pembelian TEXT NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      supplier_id INTEGER NOT NULL,
+      supplier_sync_id TEXT NOT NULL DEFAULT '',
+      supplier_nama_snapshot TEXT NOT NULL DEFAULT '',
+      tanggal TEXT NOT NULL,
+      jatuh_tempo TEXT,
+      termin_hari INTEGER NOT NULL DEFAULT 0,
+      jenis_bayar TEXT NOT NULL DEFAULT 'KREDIT',
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      diskon INTEGER NOT NULL DEFAULT 0,
+      ongkir INTEGER NOT NULL DEFAULT 0,
+      ppn INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      total_dibayar INTEGER NOT NULL DEFAULT 0,
+      sisa_utang INTEGER NOT NULL DEFAULT 0,
+      catatan TEXT,
+      created_by TEXT,
+      void_reason TEXT,
+      voided_at TEXT,
+      voided_by TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jenis_bayar IN ('TUNAI', 'KREDIT')),
+      CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (subtotal >= 0),
+      CHECK (diskon >= 0),
+      CHECK (ongkir >= 0),
+      CHECK (ppn >= 0),
+      CHECK (total >= 0),
+      CHECK (total_dibayar >= 0),
+      CHECK (total_dibayar <= total),
+      CHECK (sisa_utang >= 0),
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_no_aktif '
+    'ON supplier_purchases(store_id, no_pembelian) WHERE deleted_at IS NULL',
+  );
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_purchases_supplier '
+    'ON supplier_purchases(supplier_id, tanggal)',
+  );
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_purchases_due '
+    'ON supplier_purchases(store_id, sisa_utang, jatuh_tempo)',
+  );
+  await db.execute('''
+    CREATE TRIGGER IF NOT EXISTS trg_purchase_void_final
+    BEFORE UPDATE ON supplier_purchases
+    FOR EACH ROW
+    WHEN OLD.status = 'VOID' AND (
+      NEW.status IS NOT 'VOID'
+      OR NEW.total IS NOT OLD.total
+      OR NEW.sisa_utang IS NOT OLD.sisa_utang
+      OR NEW.total_dibayar IS NOT OLD.total_dibayar
+      OR NEW.voided_at IS NOT OLD.voided_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'pembelian VOID bersifat final');
+    END
+  ''');
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS supplier_purchase_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      purchase_id INTEGER NOT NULL,
+      stock_item_id INTEGER NOT NULL,
+      stock_sync_id TEXT NOT NULL DEFAULT '',
+      nama_snapshot TEXT NOT NULL DEFAULT '',
+      satuan TEXT NOT NULL DEFAULT 'pcs',
+      jumlah_milli INTEGER NOT NULL,
+      harga_satuan INTEGER NOT NULL DEFAULT 0,
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      diskon_alokasi INTEGER NOT NULL DEFAULT 0,
+      ongkir_alokasi INTEGER NOT NULL DEFAULT 0,
+      harga_pokok_satuan INTEGER NOT NULL DEFAULT 0,
+      qty_retur_milli INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jumlah_milli > 0),
+      CHECK (harga_satuan >= 0),
+      CHECK (subtotal >= 0),
+      CHECK (diskon_alokasi >= 0),
+      CHECK (ongkir_alokasi >= 0),
+      CHECK (harga_pokok_satuan >= 0),
+      CHECK (qty_retur_milli >= 0),
+      CHECK (qty_retur_milli <= jumlah_milli),
+      FOREIGN KEY (purchase_id) REFERENCES supplier_purchases(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_item_barang '
+    'ON supplier_purchase_items(purchase_id, stock_sync_id)',
+  );
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      purchase_id INTEGER NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      jenis TEXT NOT NULL DEFAULT 'PELUNASAN',
+      metode TEXT NOT NULL DEFAULT 'CASH',
+      nominal INTEGER NOT NULL,
+      waktu TEXT NOT NULL,
+      operator TEXT,
+      catatan TEXT,
+      cash_sync_id TEXT,
+      voided_at TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jenis IN ('DP', 'PELUNASAN')),
+      CHECK (metode IN ('CASH', 'TRANSFER')),
+      CHECK (nominal > 0),
+      FOREIGN KEY (purchase_id) REFERENCES supplier_purchases(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_supplier_payments_purchase '
+    'ON supplier_payments(purchase_id, waktu)',
+  );
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS supplier_purchase_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      origin_device_id TEXT NOT NULL DEFAULT '',
+      purchase_id INTEGER NOT NULL,
+      purchase_sync_id TEXT NOT NULL DEFAULT '',
+      no_retur TEXT NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      total INTEGER NOT NULL DEFAULT 0,
+      total_modal_kembali INTEGER NOT NULL DEFAULT 0,
+      total_kas_kembali INTEGER NOT NULL DEFAULT 0,
+      alasan TEXT NOT NULL,
+      dibuat_oleh TEXT,
+      voided_at TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'VOID')),
+      CHECK (total >= 0),
+      CHECK (total_modal_kembali >= 0),
+      CHECK (total_kas_kembali >= 0),
+      FOREIGN KEY (purchase_id) REFERENCES supplier_purchases(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_return_no '
+    'ON supplier_purchase_returns(store_id, no_retur) '
+    'WHERE deleted_at IS NULL',
+  );
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS supplier_purchase_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      return_id INTEGER NOT NULL,
+      purchase_item_id INTEGER NOT NULL,
+      purchase_item_sync_id TEXT NOT NULL DEFAULT '',
+      nama_snapshot TEXT NOT NULL DEFAULT '',
+      jumlah_milli INTEGER NOT NULL,
+      harga_satuan INTEGER NOT NULL DEFAULT 0,
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      modal_satuan INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jumlah_milli > 0),
+      CHECK (harga_satuan >= 0),
+      CHECK (subtotal >= 0),
+      CHECK (modal_satuan >= 0),
+      FOREIGN KEY (return_id) REFERENCES supplier_purchase_returns(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_return_line '
+    'ON supplier_purchase_return_items(return_id, purchase_item_sync_id)',
+  );
+  await db.execute('''
+    CREATE TRIGGER IF NOT EXISTS trg_purchase_return_batas
+    BEFORE INSERT ON supplier_purchase_return_items
+    FOR EACH ROW
+    BEGIN
+      SELECT RAISE(ABORT, 'qty retur pembelian melebihi qty dibeli')
+      WHERE NEW.jumlah_milli + COALESCE((
+        SELECT SUM(ri.jumlah_milli)
+        FROM supplier_purchase_return_items ri
+        JOIN supplier_purchase_returns rr ON rr.id = ri.return_id
+        WHERE rr.deleted_at IS NULL AND rr.status = 'AKTIF'
+          AND ri.deleted_at IS NULL
+          AND ri.purchase_item_id = NEW.purchase_item_id
+      ), 0) > COALESCE((
+        SELECT jumlah_milli FROM supplier_purchase_items
+        WHERE id = NEW.purchase_item_id
+      ), 0);
+    END
+  ''');
+
+  // Saldo HPP rata-rata bergerak per toko/barang (BD-15).
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS stock_cost_state (
+      store_id TEXT NOT NULL DEFAULT '',
+      stock_sync_id TEXT NOT NULL,
+      qty_milli INTEGER NOT NULL DEFAULT 0,
+      hpp_rata_milli INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_id, stock_sync_id)
+    )
+  ''');
+
+  // ---------------------------------------------------------------------------
+  // Saldo awal toko (BD-22)
+  // ---------------------------------------------------------------------------
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS opening_balances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      origin_device_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'AKTIF',
+      posted_at TEXT NOT NULL,
+      posted_by TEXT,
+      catatan TEXT,
+      void_reason TEXT,
+      voided_at TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (status IN ('AKTIF', 'VOID'))
+    )
+  ''');
+  await db.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS ux_opening_aktif '
+    'ON opening_balances(store_id) '
+    "WHERE status = 'AKTIF' AND deleted_at IS NULL",
+  );
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS opening_balance_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL UNIQUE,
+      store_id TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      opening_id INTEGER NOT NULL,
+      jenis TEXT NOT NULL,
+      ref_sync_id TEXT NOT NULL DEFAULT '',
+      ref_nama_snapshot TEXT NOT NULL DEFAULT '',
+      jumlah_milli INTEGER NOT NULL DEFAULT 0,
+      nominal INTEGER NOT NULL DEFAULT 0,
+      catatan TEXT,
+      sync_hlc_wall INTEGER NOT NULL DEFAULT 0,
+      sync_hlc_counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      CHECK (jenis IN ('STOK', 'UTANG_SUPPLIER', 'PIUTANG_PELANGGAN')),
+      CHECK (jumlah_milli >= 0),
+      CHECK (nominal >= 0),
+      CHECK (
+        (jenis = 'STOK' AND jumlah_milli > 0)
+        OR (jenis <> 'STOK' AND nominal > 0)
+      ),
+      FOREIGN KEY (opening_id) REFERENCES opening_balances(id)
+        ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX IF NOT EXISTS ix_opening_items '
+    'ON opening_balance_items(opening_id, jenis)',
+  );
+
+  // Pengingat jatuh tempo yang sudah ditampilkan (BD-21).
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS debt_reminder_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_sync_id TEXT NOT NULL,
+      level TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      shown_at TEXT NOT NULL,
+      UNIQUE (purchase_sync_id, level, due_date)
+    )
+  ''');
 }

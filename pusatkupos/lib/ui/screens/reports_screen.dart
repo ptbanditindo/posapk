@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../core/dates.dart';
 import '../../core/money.dart';
+import '../../core/quantity.dart';
 import '../../data/app_database.dart';
 import '../../data/models.dart';
+import '../../data/opening_balance_service.dart';
+import '../../data/purchase_service.dart';
 import '../../state/app_state.dart';
 import '../widgets.dart';
 
@@ -26,6 +29,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
   List<BelowPriceSale> _below = [];
   List<CorrectionEntry> _corrections = [];
   List<EstimateAgingRow> _estimates = [];
+  List<Map<String, Object?>> _margin = const [];
+  List<Map<String, Object?>> _valuation = const [];
+  Map<String, Object?>? _opening;
   bool _hasMore = false;
   bool _loadingMore = false;
 
@@ -82,6 +88,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final summary = results[0] as ReportSummary;
     final rows = results[1] as List<ServiceRecordSummary>;
     final owner = AppState.instance.isOwner;
+    final margin = owner
+        ? await PurchaseService.instance.marginReport(from: from, to: to)
+        : const <Map<String, Object?>>[];
+    final valuation = owner
+        ? await PurchaseService.instance.stockValuation()
+        : const <Map<String, Object?>>[];
+    final opening =
+        owner ? await OpeningBalanceService.instance.active() : null;
     if (mounted) {
       setState(() {
         _summary = summary;
@@ -95,6 +109,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
         _estimates = owner
             ? results[4] as List<EstimateAgingRow>
             : const <EstimateAgingRow>[];
+        _margin = margin;
+        _valuation = valuation;
+        _opening = opening;
         _hasMore = rows.length == _pageSize;
       });
     }
@@ -402,6 +419,85 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     subtitle: 'Tidak dihitung sebagai penjualan.',
                     child: _estimateSummary(context),
                   ),
+                  const SizedBox(height: 16),
+                  SectionCard(
+                    title: 'Margin per barang',
+                    subtitle:
+                        'Memakai harga modal yang tersimpan pada baris nota.',
+                    child: _margin.isEmpty
+                        ? const Text('Belum ada penjualan part pada periode ini.')
+                        : Column(
+                            children: _margin
+                                .map(
+                                  (row) => ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    dense: true,
+                                    title: Text('${row['nama_part']}'),
+                                    subtitle: Text(
+                                      'Qty ${formatQuantity((row['qty_milli'] as num).toInt(), 0)} · '
+                                      'HPP ${formatRupiah((row['hpp'] as num).toInt())}',
+                                    ),
+                                    trailing: Text(
+                                      formatRupiah((row['margin'] as num).toInt()),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                  ),
+                  const SizedBox(height: 16),
+                  SectionCard(
+                    title: 'Nilai persediaan',
+                    subtitle: 'HPP rata-rata bergerak per barang',
+                    child: _valuation.isEmpty
+                        ? const Text('Belum ada barang.')
+                        : Column(
+                            children: [
+                              for (final row in _valuation.take(50))
+                                ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  dense: true,
+                                  title: Text('${row['nama']}'),
+                                  subtitle: Text(
+                                    '${formatQuantity((row['jumlah_milli'] as num).toInt(), 0, satuan: '${row['satuan'] ?? ''}')} · '
+                                    'HPP ${formatRupiah((row['hpp_satuan'] as num).toInt())}',
+                                  ),
+                                  trailing: Text(
+                                    formatRupiah(
+                                      (row['nilai_persediaan'] as num).toInt(),
+                                    ),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              _line(
+                                'Total nilai persediaan',
+                                formatRupiah(
+                                  _valuation.fold<int>(
+                                    0,
+                                    (sum, row) =>
+                                        sum +
+                                        (row['nilai_persediaan'] as num)
+                                            .toInt(),
+                                  ),
+                                ),
+                                bold: true,
+                              ),
+                            ],
+                          ),
+                  ),
+                  if (_opening != null) ...[
+                    const SizedBox(height: 16),
+                    SectionCard(
+                      title: 'Saldo awal toko',
+                      subtitle: 'Tercatat sebelum transaksi berjalan',
+                      child: _openingSummary(context),
+                    ),
+                  ],
                 ],
                 const SizedBox(height: 16),
                 SectionCard(
@@ -496,6 +592,31 @@ class _ReportsScreenState extends State<ReportsScreen> {
             (entry) => _line('Belum konversi · ${entry.key}', '${entry.value}'),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _openingSummary(BuildContext context) {
+    final items =
+        _opening?['items'] as List<Map<String, Object?>>? ?? const [];
+    var stockQty = 0;
+    var debt = 0;
+    var receivable = 0;
+    for (final item in items) {
+      if (item['jenis'] == 'STOK') {
+        stockQty += (item['jumlah_milli'] as num?)?.toInt() ?? 0;
+      } else if (item['jenis'] == 'UTANG_SUPPLIER') {
+        debt += (item['nominal'] as num?)?.toInt() ?? 0;
+      } else if (item['jenis'] == 'PIUTANG_PELANGGAN') {
+        receivable += (item['nominal'] as num?)?.toInt() ?? 0;
+      }
+    }
+    return Column(
+      children: [
+        _line('Stok awal', formatQuantity(stockQty, 0)),
+        _line('Utang supplier awal', formatRupiah(debt)),
+        _line('Piutang pelanggan awal', formatRupiah(receivable)),
+        _line('Jumlah baris', '${items.length}'),
       ],
     );
   }

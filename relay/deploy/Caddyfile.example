@@ -1,0 +1,23 @@
+# Contoh Caddy untuk relay PusatkuPOS.
+# Ganti domain dan path sertifikat sesuai server Anda.
+relay.contoh.id {
+    encode gzip
+    request_body {
+        max_size 320MB
+    }
+    reverse_proxy 127.0.0.1:8787 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Real-IP {remote_host}
+        transport http {
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+    log {
+        output file C:\logs\relay-access.log {
+            roll_size 100MB
+            roll_keep 10
+        }
+        format console
+    }
+}

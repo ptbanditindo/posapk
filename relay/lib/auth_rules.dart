@@ -73,6 +73,12 @@ bool employeeEntityAllowed({
       (!explicit &&
           (baseRolePermissions[roleBase]?.contains(permission) ?? false));
   if (entity == 'supplier_followup') return allowed('followup');
+  if (entity == 'supplier_purchase' || entity == 'supplier_purchase_return') {
+    return allowed('buat_pembelian');
+  }
+  if (entity == 'supplier_payment') return allowed('bayar_utang');
+  // Saklar fitur dan saldo awal hanya boleh berasal dari perangkat pemilik.
+  if (entity == 'store_feature' || entity == 'opening_balance') return false;
   if (entity == 'nota') {
     if (action == 'retur') return allowed('retur');
     if (action == 'void') return allowed('void');

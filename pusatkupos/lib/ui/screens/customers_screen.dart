@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/app_database.dart';
+import '../../data/feature_flags.dart';
 import '../../data/models.dart';
 import '../../state/app_state.dart';
 import '../../sync/sync_service.dart';
@@ -317,6 +318,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> _openUnits(Customer customer) async {
+    if (!FeatureFlagsService.instance.isEnabled(featureUnitKendaraan)) {
+      showSnack(
+        context,
+        'Fitur unit/kendaraan dinonaktifkan pemilik.',
+        error: true,
+      );
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,

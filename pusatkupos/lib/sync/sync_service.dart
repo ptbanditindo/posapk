@@ -11,11 +11,15 @@ import '../core/relay_url.dart';
 import '../data/account_service.dart';
 import '../data/app_database.dart';
 import '../data/device_service.dart';
+import '../data/feature_flags.dart';
 import '../data/license_service.dart';
 import '../data/license_verifier.dart';
 import '../data/models.dart';
 import '../data/note_sync.dart';
 import '../data/nota_adjustment_service.dart';
+import '../data/opname_service.dart';
+import '../data/opening_balance_service.dart';
+import '../data/purchase_service.dart';
 import '../data/store_settings.dart';
 import '../data/secure_store.dart';
 import 'crypto.dart';
@@ -1690,6 +1694,285 @@ class SyncService {
     );
   }
 
+  Future<void> enqueuePurchase(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'supplier_purchases',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    if (row['deleted_at'] != null) return;
+    final items = await executor.query(
+      'supplier_purchase_items',
+      where: 'purchase_id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      orderBy: 'id',
+    );
+    final payments = await executor.query(
+      'supplier_payments',
+      where: 'purchase_id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      orderBy: 'id',
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'supplier_purchase',
+      action: '${row['status']}' == 'VOID' ? 'void' : 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'origin_device_id': row['origin_device_id'],
+        'no_pembelian': row['no_pembelian'],
+        'request_id': row['request_id'],
+        'supplier_sync_id': row['supplier_sync_id'],
+        'supplier_nama_snapshot': row['supplier_nama_snapshot'],
+        'tanggal': row['tanggal'],
+        'jatuh_tempo': row['jatuh_tempo'],
+        'termin_hari': row['termin_hari'],
+        'jenis_bayar': row['jenis_bayar'],
+        'status': row['status'],
+        'subtotal': row['subtotal'],
+        'diskon': row['diskon'],
+        'ongkir': row['ongkir'],
+        'ppn': row['ppn'],
+        'total': row['total'],
+        'total_dibayar': row['total_dibayar'],
+        'sisa_utang': row['sisa_utang'],
+        'catatan': row['catatan'],
+        'created_by': row['created_by'],
+        'void_reason': row['void_reason'],
+        'voided_at': row['voided_at'],
+        'voided_by': row['voided_by'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'items': items
+            .map(
+              (item) => {
+                'sync_id': item['sync_id'],
+                'stock_sync_id': item['stock_sync_id'],
+                'nama_snapshot': item['nama_snapshot'],
+                'satuan': item['satuan'],
+                'jumlah_milli': item['jumlah_milli'],
+                'harga_satuan': item['harga_satuan'],
+                'subtotal': item['subtotal'],
+                'diskon_alokasi': item['diskon_alokasi'],
+                'ongkir_alokasi': item['ongkir_alokasi'],
+                'harga_pokok_satuan': item['harga_pokok_satuan'],
+              },
+            )
+            .toList(),
+        'payments': payments
+            .map(
+              (payment) => {
+                'sync_id': payment['sync_id'],
+                'store_id': payment['store_id'],
+                'device_id': payment['device_id'],
+                'request_id': payment['request_id'],
+                'jenis': payment['jenis'],
+                'metode': payment['metode'],
+                'nominal': payment['nominal'],
+                'waktu': payment['waktu'],
+                'operator': payment['operator'],
+                'catatan': payment['catatan'],
+                'created_at': payment['created_at'],
+              },
+            )
+            .toList(),
+      },
+    );
+  }
+
+  Future<void> enqueuePurchasePayment(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'supplier_payments',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final purchase = await executor.query(
+      'supplier_purchases',
+      columns: ['sync_id'],
+      where: 'id = ?',
+      whereArgs: [row['purchase_id']],
+      limit: 1,
+    );
+    if (purchase.isEmpty) return;
+    await enqueue(
+      txn: txn,
+      entity: 'supplier_payment',
+      action: 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'purchase_sync_id': purchase.first['sync_id'],
+        'request_id': row['request_id'],
+        'jenis': row['jenis'],
+        'metode': row['metode'],
+        'nominal': row['nominal'],
+        'waktu': row['waktu'],
+        'operator': row['operator'],
+        'catatan': row['catatan'],
+        'created_at': row['created_at'],
+      },
+    );
+  }
+
+  Future<void> enqueuePurchaseReturn(int id, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'supplier_purchase_returns',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final items = await executor.query(
+      'supplier_purchase_return_items',
+      where: 'return_id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      orderBy: 'id',
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'supplier_purchase_return',
+      action: 'upsert',
+      entityId: row['sync_id'] as String,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'origin_device_id': row['origin_device_id'],
+        'purchase_sync_id': row['purchase_sync_id'],
+        'no_retur': row['no_retur'],
+        'request_id': row['request_id'],
+        'status': row['status'],
+        'total': row['total'],
+        'total_modal_kembali': row['total_modal_kembali'],
+        'total_kas_kembali': row['total_kas_kembali'],
+        'alasan': row['alasan'],
+        'dibuat_oleh': row['dibuat_oleh'],
+        'created_at': row['created_at'],
+        'items': items
+            .map(
+              (item) => {
+                'sync_id': item['sync_id'],
+                'purchase_item_sync_id': item['purchase_item_sync_id'],
+                'nama_snapshot': item['nama_snapshot'],
+                'jumlah_milli': item['jumlah_milli'],
+                'harga_satuan': item['harga_satuan'],
+                'subtotal': item['subtotal'],
+                'modal_satuan': item['modal_satuan'],
+              },
+            )
+            .toList(),
+      },
+    );
+  }
+
+  Future<void> enqueueOpeningBalance(String syncId, {DatabaseExecutor? txn}) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final rows = await executor.query(
+      'opening_balances',
+      where: 'sync_id = ?',
+      whereArgs: [syncId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final items = await executor.query(
+      'opening_balance_items',
+      where: 'opening_id = ? AND deleted_at IS NULL',
+      whereArgs: [row['id']],
+      orderBy: 'id',
+    );
+    await enqueue(
+      txn: txn,
+      entity: 'opening_balance',
+      action: '${row['status']}' == 'VOID' ? 'void' : 'upsert',
+      entityId: syncId,
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': syncId,
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'origin_device_id': row['origin_device_id'],
+        'status': row['status'],
+        'posted_at': row['posted_at'],
+        'posted_by': row['posted_by'],
+        'catatan': row['catatan'],
+        'void_reason': row['void_reason'],
+        'voided_at': row['voided_at'],
+        'created_at': row['created_at'],
+        'items': items
+            .map(
+              (item) => {
+                'sync_id': item['sync_id'],
+                'jenis': item['jenis'],
+                'ref_sync_id': item['ref_sync_id'],
+                'ref_nama_snapshot': item['ref_nama_snapshot'],
+                'jumlah_milli': item['jumlah_milli'],
+                'nominal': item['nominal'],
+                'catatan': item['catatan'],
+              },
+            )
+            .toList(),
+      },
+    );
+  }
+
+  Future<void> enqueueStoreFeature(
+    String featureKey, {
+    DatabaseExecutor? txn,
+  }) async {
+    final executor = txn ?? AppDatabase.instance.db;
+    final storeId = AppDatabase.instance.activeStoreId ?? 'utama';
+    final rows = await executor.query(
+      'store_features',
+      where: 'store_id = ? AND feature_key = ?',
+      whereArgs: [storeId, featureKey],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    await enqueue(
+      txn: txn,
+      entity: 'store_feature',
+      action: 'upsert',
+      entityId: '${row['sync_id']}',
+      hlcWall: (row['sync_hlc_wall'] as num?)?.toInt(),
+      hlcCounter: (row['sync_hlc_counter'] as num?)?.toInt(),
+      payload: {
+        'sync_id': row['sync_id'],
+        'store_id': row['store_id'],
+        'device_id': row['device_id'],
+        'feature_key': row['feature_key'],
+        'enabled': (row['enabled'] as num?)?.toInt() == 1,
+        'version': row['version'],
+        'updated_by': row['updated_by'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+      },
+    );
+  }
+
   Future<void> enqueueDataRequest({
     required String tanggal,
     required String dataType,
@@ -2075,6 +2358,10 @@ class SyncService {
         'Perangkat lain tidak kehilangan data; percobaan ulang dijadwalkan.',
       );
     }
+    await OpnameService.instance.processPending(
+      enqueueMovement: (txn, movementId) =>
+          enqueueStockMovement(movementId, txn: txn),
+    );
     return {
       'sent': sent,
       'applied': applied,
@@ -3878,17 +4165,20 @@ class SyncService {
         'SELECT COALESCE(MAX(id), 0) AS max_id FROM sync_conflicts',
       );
       final conflictFloor = (conflictRows.first['max_id'] as num?)?.toInt() ?? 0;
-      await AppDatabase.instance.applyNotePayloadTx(
+      final noteResult = await AppDatabase.instance.applyNotePayloadTx(
         txn,
         payload,
         action: action,
         enqueueCommission: (txn2, commissionId) =>
             enqueueCommission(commissionId, txn: txn2),
       );
+      final autoCancelled = noteResult == 'auto_cancelled';
       final record = payload['record'] as Map<String, Object?>? ?? const {};
       final recordSync = '${record['sync_id'] ?? ''}';
       final estimateSync = '${record['estimate_sync_id'] ?? ''}'.trim();
-      if (recordSync.isNotEmpty && estimateSync.isNotEmpty) {
+      if (!autoCancelled &&
+          recordSync.isNotEmpty &&
+          estimateSync.isNotEmpty) {
         await txn.update(
           'estimates',
           {
@@ -3903,7 +4193,7 @@ class SyncService {
         );
       }
       final orderSync = '${record['work_order_sync_id'] ?? ''}'.trim();
-      if (recordSync.isNotEmpty && orderSync.isNotEmpty) {
+      if (!autoCancelled && recordSync.isNotEmpty && orderSync.isNotEmpty) {
         await txn.update(
           'work_orders',
           {'nota_sync_id': recordSync, 'updated_at': nowIso()},
@@ -3912,31 +4202,33 @@ class SyncService {
         );
       }
       if (recordSync.isNotEmpty) {
-        for (final key in const ['jobs', 'parts']) {
-          for (final raw in (payload[key] as List? ?? const [])) {
-            if (raw is! Map) continue;
-            final finalPrice = (raw['harga_final'] as num?)?.toInt() ??
-                (raw['harga'] as num?)?.toInt() ??
-                0;
-            final batas =
-                (raw['harga_batas_saat_transaksi'] as num?)?.toInt() ?? 0;
-            if (finalPrice >= batas) continue;
-            final approver = '${raw['disetujui_oleh'] ?? ''}'.trim();
-            if (approver.isNotEmpty) continue;
-            await _recordConflict(
-              txn,
-              entity: 'nota',
-              entityId: recordSync,
-              reason: 'harga_di_bawah_batas',
-              detail: {
-                'baris': key,
-                'deskripsi': raw['deskripsi'],
-                'harga_final': finalPrice,
-                'harga_batas': batas,
-                'error': '',
-              },
-              status: 'review',
-            );
+        if (!autoCancelled) {
+          for (final key in const ['jobs', 'parts']) {
+            for (final raw in (payload[key] as List? ?? const [])) {
+              if (raw is! Map) continue;
+              final finalPrice = (raw['harga_final'] as num?)?.toInt() ??
+                  (raw['harga'] as num?)?.toInt() ??
+                  0;
+              final batas =
+                  (raw['harga_batas_saat_transaksi'] as num?)?.toInt() ?? 0;
+              if (finalPrice >= batas) continue;
+              final approver = '${raw['disetujui_oleh'] ?? ''}'.trim();
+              if (approver.isNotEmpty) continue;
+              await _recordConflict(
+                txn,
+                entity: 'nota',
+                entityId: recordSync,
+                reason: 'harga_di_bawah_batas',
+                detail: {
+                  'baris': key,
+                  'deskripsi': raw['deskripsi'],
+                  'harga_final': finalPrice,
+                  'harga_batas': batas,
+                  'error': '',
+                },
+                status: 'review',
+              );
+            }
           }
         }
         final renumbered = await txn.query(
@@ -3974,6 +4266,115 @@ class SyncService {
           }
         }
       }
+    } else if (entity == 'supplier_purchase') {
+      final createdAt = '${payload['created_at'] ?? ''}';
+      final allowed =
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featureSupplierHub,
+            createdAt,
+          ) &&
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featurePurchaseDebt,
+            createdAt,
+          );
+      if (!allowed) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: '${payload['sync_id'] ?? ''}',
+          reason: 'fitur_nonaktif',
+          detail: {
+            'no_pembelian': payload['no_pembelian'],
+            'created_at': createdAt,
+          },
+          status: 'review',
+        );
+        return;
+      }
+      await PurchaseService.instance.applyPurchaseRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+        action: action,
+      );
+    } else if (entity == 'supplier_payment') {
+      final createdAt = '${payload['created_at'] ?? ''}';
+      final allowed =
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featureSupplierHub,
+            createdAt,
+          ) &&
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featurePurchaseDebt,
+            createdAt,
+          );
+      if (!allowed) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: '${payload['sync_id'] ?? ''}',
+          reason: 'fitur_nonaktif',
+          detail: {'purchase_sync_id': payload['purchase_sync_id']},
+          status: 'review',
+        );
+        return;
+      }
+      await PurchaseService.instance.applyPaymentRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+      );
+    } else if (entity == 'supplier_purchase_return') {
+      final createdAt = '${payload['created_at'] ?? ''}';
+      final allowed =
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featureSupplierHub,
+            createdAt,
+          ) &&
+          await FeatureFlagsService.instance.acceptsRemoteAt(
+            txn,
+            featurePurchaseDebt,
+            createdAt,
+          );
+      if (!allowed) {
+        await _recordConflict(
+          txn,
+          entity: entity,
+          entityId: '${payload['sync_id'] ?? ''}',
+          reason: 'fitur_nonaktif',
+          detail: {'purchase_sync_id': payload['purchase_sync_id']},
+          status: 'review',
+        );
+        return;
+      }
+      await PurchaseService.instance.applyReturnRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+      );
+    } else if (entity == 'opening_balance') {
+      await OpeningBalanceService.instance.applyRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+        action: action,
+      );
+    } else if (entity == 'store_feature') {
+      await FeatureFlagsService.instance.applyRemote(
+        txn,
+        payload,
+        wall: wall,
+        counter: counter,
+      );
     } else if (entity == 'store_settings') {
       await StoreSettingsService.instance.applyRemote(
         txn,

@@ -41,6 +41,17 @@ const List<String> _requiredRestoreTables = [
   'vehicle_or_units',
   'stock_items',
   'service_records',
+  'store_features',
+  'opname_holds',
+  'supplier_purchases',
+  'supplier_purchase_items',
+  'supplier_payments',
+  'supplier_purchase_returns',
+  'supplier_purchase_return_items',
+  'stock_cost_state',
+  'opening_balances',
+  'opening_balance_items',
+  'debt_reminder_logs',
 ];
 
 class BackupResult {

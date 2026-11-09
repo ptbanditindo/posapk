@@ -8,6 +8,7 @@ import '../../core/quantity.dart';
 import '../../data/account_service.dart';
 import '../../data/app_database.dart';
 import '../../data/employee_service.dart';
+import '../../data/feature_flags.dart';
 import '../../data/followup_service.dart';
 import '../../data/models.dart';
 import '../../data/order_service.dart';
@@ -164,7 +165,9 @@ class _PosScreenState extends State<PosScreen> {
       return const [];
     }
     final canEstimasi =
-        AppState.instance.isOwner || AppState.instance.can('buat_estimasi');
+        FeatureFlagsService.instance.isEnabled(featureEstimasi) &&
+        (AppState.instance.isOwner ||
+            AppState.instance.can('buat_estimasi'));
     final role = _actor?.role ?? 'owner';
     return [
       transactionJualSparepart,
@@ -393,7 +396,9 @@ class _PosScreenState extends State<PosScreen> {
       showSnack(context, 'Pilih pelanggan.', error: true);
       return;
     }
-    final unitRequired = (_settings?.vehicleRequired ?? true) &&
+    final unitRequired =
+        FeatureFlagsService.instance.isEnabled(featureUnitKendaraan) &&
+        (_settings?.vehicleRequired ?? true) &&
         _jenis != transactionJualSparepart;
     if (unitRequired && _unitId == null) {
       showSnack(context, 'Pilih unit kendaraan.', error: true);

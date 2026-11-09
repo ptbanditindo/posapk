@@ -8,17 +8,17 @@
 
 ## STATUS PROGRES
 
-Total tugas: 83
+Total tugas: 87
 
-- Selesai: 59
-- Belum selesai: 24
-- Terhambat: 0
+- Selesai: 81
+- Belum selesai: 6
+- Terhambat: 0 (BD-29 dan BD-30 menunggu keputusan; TASK-085–087 memakai default konservatif)
 
-Fase aktif: FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN (FASE 1–6 dan TASK-060 selesai; TASK-033, TASK-064, modul pembelian TASK-065–071, modul tambahan TASK-072–079, fitur opsional TASK-081–083, dan pengujian menunggu pengerjaan; TASK-080 pasca-rilis)
+Fase aktif: FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN (FASE 1–6, TASK-033, TASK-060, TASK-064, modul pembelian TASK-065–071, modul tambahan TASK-072–080, dan fitur opsional TASK-081–084 sudah ditulis; modul PPN TASK-085–087 belum ditulis; TASK-061–063 menunggu izin pengujian)
 
-Tugas terakhir selesai: TASK-060
+Tugas terakhir selesai: TASK-084
 
-Tugas berikutnya: TASK-064 (opname BD-03), TASK-033 (pembatalan penjualan kedua BD-13), modul pembelian TASK-065–071 (BD-12), modul tambahan TASK-072–079, fitur opsional TASK-081–083 (BD-26), lalu TASK-061 (menunggu izin menjalankan pengujian). TASK-080 menunggu setelah rilis.
+Tugas berikutnya: TASK-085 (konfigurasi/sinkronisasi PPN), TASK-086 (perhitungan/snapshot PPN), TASK-087 (UI dan struk PPN), lalu TASK-061 (menunggu izin menjalankan pengujian), TASK-062 (kesiapan rilis/APK), dan TASK-063 (laporan akhir).
 
 ---
 
@@ -72,13 +72,13 @@ Tidak ada.
 - [x] TASK-030 — Void self-contained (BL-15).
 - [x] TASK-031 — Opname absolut lintas perangkat (BL-01).
 - [x] TASK-032 — Stok bersamaan: cegah/konflik (BL-21).
-- [ ] TASK-033 — Kebijakan stok negatif konsisten (BL-24). Keputusan pemilik BD-13 (2026-11-07): penjualan yang tiba belakangan dan membuat stok negatif **dibatalkan otomatis**. Penjualan batal tidak boleh mengurangi stok, menambah piutang/kas, atau memberi komisi; nota asal tetap tersimpan sebagai jejak dan konflik pembatalan dicatat untuk ditinjau. Implementasi belum dikerjakan.
+- [x] TASK-033 — Kebijakan stok negatif konsisten (BL-24). Keputusan pemilik BD-13 (2026-11-07): penjualan yang tiba belakangan dan membuat stok negatif **dibatalkan otomatis**. Penjualan batal tidak boleh mengurangi stok, menambah piutang/kas, atau memberi komisi; nota asal tetap tersimpan sebagai jejak dan konflik pembatalan dicatat untuk ditinjau.
 - [x] TASK-034 — Rekalkulasi komisi memakai snapshot (BL-04).
 - [x] TASK-035 — Penerima retur merekalkulasi komisi (BL-40).
 - [x] TASK-036 — Konflik kode barang tidak memblokir antrean (BL-41).
 - [x] TASK-037 — Merge pelanggan memindahkan semua referensi (BL-16).
 - [x] TASK-038 — Kode perangkat/counter dokumen kuat (BL-33).
-- [ ] TASK-064 — Opname menunggu sinkron (BD-03): tahan opname sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data; tandai opname menunggu; beri peringatan perangkat offline 24 jam; terapkan opname sementara + catatan setelah 7 hari; rekonsiliasi otomatis saat perangkat kembali.
+- [x] TASK-064 — Opname menunggu sinkron (BD-03): tahan opname sampai semua perangkat aktif yang terakhir sinkron sebelum waktu opname sudah mengirim data; tandai opname menunggu; beri peringatan perangkat offline 24 jam; terapkan opname sementara + catatan setelah 7 hari; rekonsiliasi otomatis saat perangkat kembali.
 
 ## FASE 4 — PERHITUNGAN, TAMPILAN, DAN LAPORAN
 
@@ -114,38 +114,49 @@ Tidak ada.
 
 Modul baru di luar 42 temuan audit. Wajib selesai sebelum TASK-061.
 
-- [ ] TASK-065 — Skema `supplier_purchases`, `supplier_purchase_items`, `supplier_payments`; constraint/index, snapshot supplier/barang, HLC; selaras dengan relay dan snapshot.
-- [ ] TASK-066 — Izin `lihat_pembelian`, `buat_pembelian`, `bayar_utang`; operator wajib; **tidak semua role** — default pemilik, izin eksplisit per peran, viewer/kasir/mekanik tidak otomatis; pemetaan peran relay; menu dan aksi sesuai izin.
-- [ ] TASK-067 — Service pembelian: nota + baris, stok masuk lewat ledger, total, diskon/ongkir ke harga pokok, PPN terpisah, tunai/kredit/DP, sumber dana kas/transfer, jatuh tempo, utang awal, audit, idempoten.
-- [ ] TASK-068 — Pembayaran utang supplier: idempoten, tidak melebihi sisa, rekalkulasi, kas keluar tunai/transfer, konflik, VOID ditolak bila sudah dibayar/barang terjual.
-- [ ] TASK-069 — UI pembelian dan utang: daftar nota, form barang/qty/modal, daftar utang + jatuh tempo, dialog pembayaran, laporan.
-- [ ] TASK-070 — Sinkronisasi `supplier_purchase`/`supplier_purchase_item`/`supplier_payment`; validasi izin, ledger stok/kas, rekalkulasi utang, konflik.
-- [ ] TASK-071 — Backup/restore dan snapshot memuat tabel pembelian/utang sebagai tabel wajib.
+- [x] TASK-065 — Skema `supplier_purchases`, `supplier_purchase_items`, `supplier_payments`; constraint/index, snapshot supplier/barang, HLC; selaras dengan relay dan snapshot.
+- [x] TASK-066 — Izin `lihat_pembelian`, `buat_pembelian`, `bayar_utang`; operator wajib; **tidak semua role** — default pemilik, izin eksplisit per peran, viewer/kasir/mekanik tidak otomatis; pemetaan peran relay; menu dan aksi sesuai izin **dan** flag `purchase_debt`.
+- [x] TASK-067 — Service pembelian: nota + baris, stok masuk lewat ledger, total, diskon/ongkir ke harga pokok, PPN terpisah, tunai/kredit/DP, sumber dana kas/transfer, jatuh tempo, utang awal, audit, idempoten; tolak data baru saat `purchase_debt` nonaktif.
+- [x] TASK-068 — Pembayaran utang supplier: idempoten, tidak melebihi sisa, rekalkulasi, kas keluar tunai/transfer, konflik, VOID ditolak bila sudah dibayar/barang terjual; ditolak saat `purchase_debt` nonaktif.
+- [x] TASK-069 — UI pembelian dan utang: daftar nota, form barang/qty/modal, daftar utang + jatuh tempo, dialog pembayaran, laporan; menjadi tab "Pembelian & Utang" di hub Supplier & Reseller.
+- [x] TASK-070 — Sinkronisasi `supplier_purchase`/`supplier_purchase_item`/`supplier_payment`; validasi izin, ledger stok/kas, rekalkulasi utang, konflik; terima data lama, tolak data baru saat flag nonaktif.
+- [x] TASK-071 — Backup/restore dan snapshot memuat tabel pembelian/utang sebagai tabel wajib, termasuk saat `purchase_debt` nonaktif.
 
 ## MODUL TAMBAHAN — SALDO AWAL, VALUASI, RETUR PEMBELIAN, DAN KESIAPAN OPERASIONAL
 
 Modul baru dari analisis celah. TASK-072 sampai TASK-079 wajib selesai sebelum TASK-061. TASK-080 pasca-rilis.
 
-- [ ] TASK-072 — Saldo awal toko: stok awal, utang supplier awal, piutang pelanggan awal; tanpa transaksi palsu; audit, sinkronisasi, backup.
-- [ ] TASK-073 — HPP rata-rata bergerak per toko/barang + laporan margin; snapshot modal per baris tetap.
-- [ ] TASK-074 — Retur pembelian: batas qty, stok/utang/kas, idempoten, VOID, sinkronisasi, backup.
-- [ ] TASK-075 — Aging utang supplier + pengingat jatuh tempo (notifikasi lokal H-3/lewat jatuh tempo).
-- [ ] TASK-076 — Diagnostik perangkat: ekspor log, `PRAGMA integrity_check`, ukuran database/antrean, redaksi rahasia.
-- [ ] TASK-077 — Operasional relay: health endpoint, backup PostgreSQL + uji restore, retensi, monitoring, TLS, rotasi token/kunci, rate limit.
-- [ ] TASK-078 — Upgrade skema pasca-rilis: migrasi berversi, backup sebelum migrasi, rollback, tolak database versi lebih baru.
-- [ ] TASK-079 — Dokumentasi operasional: SOP owner/admin, backup/DR, konflik, privasi/retensi, panduan per peran.
-- [ ] TASK-080 — CI/CD otomatis pasca-rilis (tidak menahan TASK-061).
+- [x] TASK-072 — Saldo awal toko: stok awal, utang supplier awal, piutang pelanggan awal; tanpa transaksi palsu; audit, sinkronisasi, backup.
+- [x] TASK-073 — HPP rata-rata bergerak per toko/barang + laporan margin; snapshot modal per baris tetap.
+- [x] TASK-074 — Retur pembelian: batas qty, stok/utang/kas, idempoten, VOID, sinkronisasi, backup.
+- [x] TASK-075 — Aging utang supplier + pengingat jatuh tempo (notifikasi lokal H-3/lewat jatuh tempo).
+- [x] TASK-076 — Diagnostik perangkat: ekspor log, `PRAGMA integrity_check`, ukuran database/antrean, redaksi rahasia.
+- [x] TASK-077 — Operasional relay: health endpoint, backup PostgreSQL + uji restore, retensi, monitoring, TLS, rotasi token/kunci, rate limit.
+- [x] TASK-078 — Upgrade skema pasca-rilis: migrasi berversi, backup sebelum migrasi, rollback, tolak database versi lebih baru.
+- [x] TASK-079 — Dokumentasi operasional: SOP owner/admin, backup/DR, konflik, privasi/retensi, panduan per peran.
+- [x] TASK-080 — CI/CD otomatis pasca-rilis (tidak menahan TASK-061).
 
 ## FITUR OPSIONAL PER TOKO (BD-26)
 
-- [ ] TASK-081 — Skema `store_features` per toko, default katalog, audit, relay, snapshot, backup.
-- [ ] TASK-082 — Layanan `FeatureFlags`: enforcement service/UI, ketergantungan, owner-only, viewer read-only, data lama tetap diterima.
-- [ ] TASK-083 — UI Fitur Toko + sembunyikan modul opsional; data lama tetap di riwayat/laporan; pilihan saat buat toko.
+- [x] TASK-081 — Skema `store_features` per toko, default katalog, audit, relay, snapshot, backup.
+- [x] TASK-082 — Layanan `FeatureFlags`: enforcement service/UI, ketergantungan, owner-only, viewer read-only, data lama tetap diterima.
+- [x] TASK-083 — UI Fitur Toko + sembunyikan modul opsional; data lama tetap di riwayat/laporan; pilihan saat buat toko.
+- [x] TASK-084 — Integrasi hub Supplier & Reseller (BD-27): satu layar bertab Supplier, Follow Up Reseller, dan Pembelian & Utang; ganti `fitur.supplier` lokal dengan `supplier_hub`/`purchase_debt`; kunci premium; penegakan di service/UI/sync/relay; data lama utuh.
+
+## MODUL PPN / PAJAK PENJUALAN (BD-28)
+
+Fitur opsional per toko: saklar PPN, tarif, dan penanggung `PEMBELI`/`BENGKEL`; tampil di struk; nota lama memakai snapshot. Disimpan di `store_settings`, bukan `store_features`. Wajib selesai sebelum TASK-061. BD-29 dan BD-30 masih BLOCKED; implementasi memakai default konservatif (eksklusif, tarif diisi pemilik, PPN bengkel bukan pendapatan dan belum masuk laporan pajak).
+
+- [ ] TASK-085 — Konfigurasi dan sinkronisasi PPN per toko: kolom `store_settings` (`pajak_aktif`, `pajak_persen_bp`, `pajak_penanggung`, `pajak_inklusif`), default OFF, validasi tarif/penanggung, `StoreSettings`/`modeSnapshot`/`toPayload`/`applyRemote`, HLC, audit owner-only, backup/snapshot; `pajak_inklusif` default 0 dan belum diekspos sampai BD-29 diputuskan.
+- [ ] TASK-086 — Perhitungan dan snapshot PPN: DPP/PPN saat nota dibuat, `PEMBELI` vs `BENGKEL`, isi `pajak` + `pajak_snapshot_json`, total/piutang/kas, komisi memakai DPP, retur/void proporsional, penerima sinkronisasi menyalin `pajak` dan snapshot, konflik snapshot hilang, nota lama tidak berubah.
+- [ ] TASK-087 — UI dan struk PPN: pengaturan owner (saklar/tarif/penanggung/konfirmasi/contoh), ringkasan kasir DPP/PPN/total, baris PPN di struk cetak/share/WhatsApp, keterangan ditanggung bengkel, riwayat memakai snapshot, PPN tersembunyi saat nonaktif.
+
+**Kriteria keluar:** saklar/tarif/penanggung tersimpan, tersinkron, dan ikut backup; hanya pemilik yang mengubah; PPN pembeli menambah tagihan dan PPN bengkel tidak; struk menampilkan PPN dan penanggung; nota lama memakai snapshot; retur/void/piutang/kas/komisi konsisten; fitur nonaktif tidak menghitung PPN baru; analisis statis bersih; pengujian masuk TASK-061.
 
 ## FASE 7 — VERIFIKASI STATIS, PENGUJIAN AKHIR, LAPORAN
 
 - [x] TASK-060 — Sapu konsistensi statis seluruh pemanggil/query.
-- [ ] TASK-061 — Pengujian akhir sesuai teknologi repo: matriks UAT per peran/perangkat, offline 7 hari, dua perangkat, relay mati, restore gagal, lisensi, pembelian/utang, saldo awal, HPP, retur pembelian, aging, toggle fitur per toko (dua perangkat, offline, data lama, re-enable), data besar/performa.
+- [ ] TASK-061 — Pengujian akhir sesuai teknologi repo: matriks UAT per peran/perangkat, offline 7 hari, dua perangkat, relay mati, restore gagal, lisensi, pembelian/utang, saldo awal, HPP, retur pembelian, aging, toggle fitur per toko (dua perangkat, offline, data lama, re-enable), toggle `supplier_hub`/`purchase_debt` (induk mati, sub-fitur tertahan, data lama, perangkat telat sinkron), PPN per toko (aktif/nonaktif, tarif berubah, `PEMBELI`/`BENGKEL`, struk, retur/void, piutang/kas/komisi, dua perangkat, offline, nota lama, backup/restore), data besar/performa.
 - [ ] TASK-062 — Kesiapan rilis dan build APK: keystore/signing, versionCode/versionName, checklist rilis, rollback, distribusi.
 - [ ] TASK-063 — `IMPLEMENTATION_FINAL_REPORT.md` termasuk hasil pengujian, batasan, dan keputusan terbuka.
 
@@ -153,7 +164,7 @@ Modul baru dari analisis celah. TASK-072 sampai TASK-079 wajib selesai sebelum T
 
 ## CATATAN KEPUTUSAN BISNIS
 
-Keputusan pemilik per **2026-11-07**. Rincian ada di **Bagian 5** `IMPLEMENTATION_PLAN.md`.
+Keputusan pemilik per **2026-11-07**, dengan tambahan BD-28 sampai BD-30 pada **2026-11-09**. Rincian ada di **Bagian 5** `IMPLEMENTATION_PLAN.md`.
 
 - **BD-01** dikonfirmasi: retur tidak boleh melebihi qty terjual per baris.
 - **BD-02** dikonfirmasi: nota VOID terminal dan tidak boleh diretur.
@@ -180,7 +191,11 @@ Keputusan pemilik per **2026-11-07**. Rincian ada di **Bagian 5** `IMPLEMENTATIO
 - **BD-23** ditunda: transfer stok antar toko belum diperlukan; tidak ada tugas sampai diputuskan.
 - **BD-24** diputuskan: migrasi skema berversi resmi dari v1 untuk rilis berikutnya, backup sebelum migrasi, rollback, tolak database versi lebih baru. Implementasi: TASK-078.
 - **BD-25** diputuskan: log/diagnostik tidak memuat kredensial, token, passphrase, atau data pribadi lengkap; retensi log dibatasi dan dapat dihapus pemilik; kebijakan privasi/retensi didokumentasikan. Implementasi: TASK-076, TASK-079.
-- **BD-26** diputuskan: pemilik penuh dapat menonaktifkan fitur opsional per toko. Fitur wajib: kasir/nota, stok, pelanggan, pembayaran/piutang, retur/void, laporan, backup/restore, akun/akses, sinkronisasi, lisensi, pengaturan. Fitur opsional default ON: estimasi, antrian/order kerja, supplier, pembelian/utang, follow-up, unit/kendaraan, WhatsApp. Komisi dan gaji tetap wajib pada iterasi ini. Penonaktifan tidak menghapus data; data lama tetap di riwayat/laporan dan ikut backup; fitur nonaktif berlaku untuk semua peran; hanya pemilik penuh yang mengubah (viewer read-only); pembelian membutuhkan supplier; perubahan disinkronkan dan diaudit; data lama dari perangkat yang belum menerima flag tetap diterima. Implementasi: TASK-081 sampai TASK-083.
+- **BD-26** diputuskan: pemilik penuh dapat menonaktifkan fitur opsional per toko. Fitur wajib: kasir/nota, stok, pelanggan, pembayaran/piutang, retur/void, laporan, backup/restore, akun/akses, sinkronisasi, lisensi, pengaturan. Fitur opsional default ON: estimasi, antrian/order kerja, `supplier_hub`, `purchase_debt`, follow-up, unit/kendaraan, WhatsApp. Komisi dan gaji tetap wajib pada iterasi ini. Penonaktifan tidak menghapus data; data lama tetap di riwayat/laporan dan ikut backup; fitur nonaktif berlaku untuk semua peran; hanya pemilik penuh yang mengubah (viewer read-only); `purchase_debt` membutuhkan `supplier_hub`; perubahan disinkronkan dan diaudit; data lama dari perangkat yang belum menerima flag tetap diterima. Implementasi: TASK-081 sampai TASK-084.
+- **BD-27** diputuskan: Supplier, Follow Up Reseller, dan Pembelian & Utang Supplier menjadi satu hub "Supplier & Reseller" dengan tiga tab. `supplier_hub` adalah saklar induk seluruh hub; `purchase_debt` adalah sub-saklar tab Pembelian & Utang yang hanya efektif bila induk aktif, dan pilihannya dipertahankan saat induk dimatikan. Setting lokal lama `fitur.supplier` diganti flag per toko; kunci premium lama tetap berlaku. Izin peran hanya membatasi di dalam fitur aktif dan tidak dapat menghidupkan fitur yang dimatikan pemilik. Data lama tetap tampil dan ikut backup; penegakan dilakukan di service, UI, route/menu, sinkronisasi penerima, dan relay. Implementasi: TASK-069, TASK-081 sampai TASK-084.
+- **BD-28** diputuskan (2026-11-09): PPN penjualan menjadi fitur opsional per toko di `store_settings` (default OFF, owner-only). Pemilik mengisi tarif (basis poin 0–10000) dan memilih penanggung `PEMBELI` atau `BENGKEL`; tidak ada tarif legal otomatis. DPP = jasa + part - diskon; snapshot PPN dibekukan pada nota dan selalu tampil di struk. `PEMBELI` menambah tagihan; `BENGKEL` menyerap tanpa mengubah total pelanggan. PPN bukan pendapatan, retur/void membalik proporsional, nota lama tidak berubah, perangkat offline memakai konfigurasi terakhir, penerima menerima snapshot lama. PPN pembelian tetap terpisah (BD-16). Implementasi: TASK-085 sampai TASK-087.
+- **BD-29** BLOCKED — NEEDS BUSINESS DECISION: harga jual inklusif atau eksklusif, pembulatan legal, dan tarif default. Default sementara: eksklusif dengan tarif diisi pemilik; mode inklusif belum diaktifkan.
+- **BD-30** BLOCKED — NEEDS BUSINESS DECISION: perlakuan PPN ditanggung bengkel pada laporan dan kebutuhan rekap PPN. Default sementara: PPN bengkel hanya informasi pada nota/snapshot, bukan pendapatan, belum menjadi biaya/laporan pajak; estimasi belum menagih PPN.
 
 ---
 
@@ -251,3 +266,11 @@ Keputusan pemilik per **2026-11-07**. Rincian ada di **Bagian 5** `IMPLEMENTATIO
 | 2026-11-07 | BD-12 | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | BD-12 diputuskan: menambahkan modul pembelian bernilai dan utang supplier. Akses tidak untuk semua role: default hanya pemilik, izin diberikan eksplisit per peran, viewer/kasir/mekanik tidak otomatis. Menambahkan TASK-065 sampai TASK-071 (skema, izin, service, pembayaran utang, UI, sinkronisasi, backup) dan memasukkan modul ke syarat TASK-061. Belum ada source code yang diubah. |
 | 2026-11-07 | Analisis celah | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Menambahkan keputusan BD-11 dan BD-14–BD-25, modul tambahan TASK-072–TASK-079 (saldo awal, HPP, retur pembelian, aging/pengingat, diagnostik, operasional relay, upgrade skema, dokumentasi operasional), TASK-080 CI/CD pasca-rilis, perluasan TASK-061/TASK-062/TASK-063, serta syarat TASK-061. Belum ada source code yang diubah. |
 | 2026-11-07 | BD-26 | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Menambahkan fitur opsional per toko: katalog fitur wajib/opsional, default ON, aturan non-destruktif, akses owner-only, ketergantungan supplier–pembelian, sinkronisasi/audit/backup, dan TASK-081–TASK-083. TASK-061 diperluas dengan skenario toggle fitur. Belum ada source code yang diubah. |
+| 2026-11-09 | TASK-033 | `pusatkupos/lib/data/note_sync.dart`, `pusatkupos/lib/sync/sync_service.dart` | Penjualan yang tiba dari perangkat lain dan tidak dapat dipenuhi stoknya kini dicatat sebagai `VOID` otomatis: `total_efektif`, `total_kas_diterima`, dan `sisa_bayar` dikunci nol, baris stok tidak mengurangi persediaan, retur ditolak, serta kas/piutang/komisi tidak bertambah. Nota asal tetap disimpan sebagai jejak dengan alasan pembatalan, dan konflik `stok_negatif` menyimpan `auto_cancelled` beserta daftar kekurangan per barang untuk ditinjau pemilik. Analisis statis: tidak ada issue. |
+| 2026-11-09 | TASK-064 | `pusatkupos/lib/data/opname_service.dart`, `pusatkupos/lib/sync/sync_service.dart`, `pusatkupos/lib/ui/screens/stock_screen.dart`, `pusatkupos/lib/data/schema.dart` | Opname kini ditahan bila ada perangkat aktif yang belum mengirim data: opname masuk `opname_holds` berstatus `TERTUNDA` dengan daftar perangkat yang tertinggal. Setelah 24 jam pengguna mendapat peringatan perangkat offline; setelah 7 hari opname diterapkan sebagai `SEMENTARA` dengan catatan perangkat yang belum sinkron; saat perangkat kembali, `processPending` menerapkan opname penuh dan menandainya selesai. Layar stok menampilkan opname tertunda, dan sinkronisasi memanggil penyelesaian otomatis. Analisis statis: tidak ada issue. |
+| 2026-11-09 | BD-27 | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Merancang hub "Supplier & Reseller" dengan tiga tab. Menetapkan `supplier_hub` sebagai saklar induk dan `purchase_debt` sebagai sub-saklar yang hanya efektif bila induk aktif; nilai sub-saklar dipertahankan saat induk dimatikan. Setting lokal `fitur.supplier` diganti flag per toko, kunci premium tetap. Menambahkan TASK-084, memperbarui TASK-061, TASK-066–071, katalog fitur, BD-26, grafik ketergantungan, dan definisi selesai. Belum ada source code yang diubah. |
+| 2026-11-09 | TASK-065..071 | `pusatkupos/lib/data/schema.dart`, `purchase_service.dart`, `sync/sync_service.dart`, `sync/snapshot_sync.dart`, `data/backup_service.dart`, `ui/screens/purchase_screen.dart`, `ui/screens/supplier_screen.dart`, `relay/lib/auth_rules.dart` | Modul pembelian/utang ditulis lengkap: skema pembelian, baris, pembayaran, dan retur dengan HLC; service idempoten untuk pembelian, pembayaran terbatas sisa, VOID final, dan retur per baris; HPP rata-rata bergerak di `stock_cost_state`; sinkronisasi menerima data lama dan menolak data baru saat `purchase_debt` nonaktif; backup/snapshot mewajibkan seluruh tabel pembelian. UI menjadi tab "Pembelian & Utang" di hub dengan form, pembayaran, retur, VOID, aging, dan total. Relay memetakan `supplier_purchase`/`supplier_payment`/`supplier_purchase_return` ke izin `buat_pembelian`/`bayar_utang`; `store_feature` dan `opening_balance` hanya dari perangkat pemilik. Analisis statis aplikasi dan relay: tidak ada issue; pengujian runtime masuk TASK-061. |
+| 2026-11-09 | TASK-072..076 | `pusatkupos/lib/data/opening_balance_service.dart`, `purchase_service.dart`, `diagnostics_service.dart`, `ui/screens/opening_balance_screen.dart`, `diagnostics_screen.dart`, `ui/screens/reports_screen.dart`, `ui/home_shell.dart` | Saldo awal toko (stok/utang supplier/piutang pelanggan) tanpa transaksi palsu, sekali per toko, koreksi lewat VOID + posting baru, audit dan sinkronisasi; aging utang dan total utang memasukkan saldo awal; pengingat H-3/lewat jatuh tempo muncul sekali per hari; laporan margin per barang, nilai persediaan, dan ringkasan saldo awal tersedia untuk pemilik; diagnostik menampilkan `PRAGMA integrity_check`, ukuran database/WAL/SHM, status antrean, konflik, dan ekspor teredaksi. Analisis statis: tidak ada issue. |
+| 2026-11-09 | TASK-077..080 | `relay/lib/server.dart`, `relay/bin/relay.dart`, `relay/OPS.md`, `relay/scripts/backup.ps1`, `relay/scripts/restore.ps1`, `relay/deploy/*.example`, `DOKUMENTASI_OPERASIONAL.md`, `.github/workflows/ci.yml` | Health relay kini memeriksa database, backlog amplop, putaran terbuka, uptime, dan latensi serta mengembalikan 503 saat database gagal. CLI `maintenance` memangkas token/undangan kedaluwarsa dan putaran selesai (`--dry-run`, `--vacuum`). Backup/restore PostgreSQL memakai dump kustom dengan verifikasi `pg_restore --list`; prosedur uji restore, retensi, monitoring, TLS (Caddy/Nginx), dan rotasi kredensial didokumentasikan. Dokumen operasional mencakup SOP per peran, backup/DR, konflik, privasi/retensi, dan checklist serah terima. Upgrade skema memakai registri migrasi berversi, salinan pengaman sebelum migrasi, penolakan database versi lebih baru, dan rollback lewat berkas `.old`. Workflow CI menyediakan analisis statis; job test/build digerbangi variabel repositori agar tidak berjalan selama larangan pengujian. Analisis statis aplikasi dan relay: tidak ada issue; eksekusi uji restore/migrasi masuk TASK-061. |
+| 2026-11-09 | TASK-081..084 | `pusatkupos/lib/data/feature_flags.dart`, `store_service.dart`, `app_database.dart`, `ui/screens/store_features_screen.dart`, `stores_screen.dart`, `supplier_screen.dart`, `home_shell.dart`, `pos_screen.dart`, `customers_screen.dart`, `receipt_dialog.dart`, `followup_screen.dart`, `orders_screen.dart`, `stock_screen.dart`, `sync/sync_service.dart` | Flag fitur per toko disimpan di `store_features`, disemai saat toko baru dibuat, disinkronkan dengan HLC + audit owner-only, dan diterima penerima hanya untuk data lama. Menu Antrian, Supplier & Reseller, dan Follow Up mengikuti flag; tab Follow up dan Pembelian di hub ikut disembunyikan bila sub-fitur nonaktif; tipe Estimasi, syarat unit kendaraan, akses unit pelanggan, tombol WhatsApp (struk dan follow up), serta pemilih supplier di stok mengikuti flag. Service pembelian menolak transaksi baru saat `purchase_debt` nonaktif; data lama tetap tampil di riwayat/laporan dan ikut backup. Label menu menjadi "Supplier & Reseller"; kunci premium tetap berlaku. Analisis statis: tidak ada issue. |
+| 2026-11-09 | BD-28 | `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PROGRESS.md` | Menambahkan fitur PPN penjualan opsional per toko: saklar di `store_settings` (default OFF, owner-only), tarif basis poin, penanggung `PEMBELI`/`BENGKEL`, DPP jasa + part - diskon, snapshot PPN per nota, tampil di struk, PPN bukan pendapatan, retur/void proporsional, sinkronisasi/backup, nota lama tidak berubah. Menambahkan TASK-085–TASK-087, memperluas TASK-061, grafik ketergantungan, kriteria selesai, serta mencatat BD-29/BD-30 sebagai BLOCKED dengan default konservatif. Belum ada source code yang diubah. |

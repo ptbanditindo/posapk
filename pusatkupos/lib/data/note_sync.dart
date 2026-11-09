@@ -844,6 +844,51 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         },
       );
     }
+    final incomingVoid =
+        record['voided_at'] != null || '${record['status']}' == 'VOID';
+    // BD-13: penjualan yang tiba belakangan dan membuat stok negatif
+    // dibatalkan otomatis. Nota tetap disimpan sebagai jejak, tetapi stok,
+    // kas, piutang, dan komisi tidak boleh terpengaruh.
+    var autoCancel = false;
+    final shortage = <Map<String, Object?>>[];
+    if (!incomingVoid && parts.isNotEmpty) {
+      final needed = <String, int>{};
+      final names = <String, String>{};
+      for (final part in parts) {
+        final stockSync = part['stock_sync_id'] as String? ?? '';
+        if (stockSync.isEmpty) continue;
+        final qtyMilli = (part['jumlah_milli'] as num?)?.toInt() ??
+            ((part['jumlah'] as num?)?.toInt() ?? 0) * 1000;
+        if (qtyMilli <= 0) continue;
+        needed[stockSync] = (needed[stockSync] ?? 0) + qtyMilli;
+        names[stockSync] = '${part['nama_part'] ?? ''}';
+      }
+      for (final entry in needed.entries) {
+        final stockRows = await txn.query(
+          'stock_items',
+          columns: ['jumlah_milli'],
+          where: 'sync_id = ?',
+          whereArgs: [entry.key],
+          limit: 1,
+        );
+        if (stockRows.isEmpty) continue;
+        final available =
+            (stockRows.first['jumlah_milli'] as num?)?.toInt() ?? 0;
+        if (available < entry.value) {
+          shortage.add({
+            'stock_sync_id': entry.key,
+            'nama_item': names[entry.key],
+            'dibutuhkan_milli': entry.value,
+            'tersedia_milli': available,
+          });
+        }
+      }
+      autoCancel = shortage.isNotEmpty;
+    }
+    final autoCancelReason = autoCancel
+        ? 'Dibatalkan otomatis: stok tidak mencukupi saat nota diterima '
+              'dari perangkat lain.'
+        : null;
     final recordId = await txn.insert('service_records', {
       'sync_id': recordSync,
       'unit_id': unitId,
@@ -866,11 +911,14 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'total_servis': record['total_servis'] ?? 0,
       'total_koreksi': record['total_koreksi'] ?? 0,
       'total_retur': record['total_retur'] ?? 0,
-      'total_efektif':
-          record['total_efektif'] ?? record['total_servis'] ?? 0,
-      'total_kas_diterima': record['total_kas_diterima'] ??
-          record['total_dibayar'] ??
-          0,
+      'total_efektif': autoCancel
+          ? 0
+          : record['total_efektif'] ?? record['total_servis'] ?? 0,
+      'total_kas_diterima': autoCancel
+          ? 0
+          : record['total_kas_diterima'] ??
+                record['total_dibayar'] ??
+                0,
       'commission_snapshot_json': record['commission_snapshot_json'] ?? '{}',
       'metode_bayar': record['metode_bayar'] ?? 'CASH',
       'bayar': record['bayar'] ?? 0,
@@ -878,12 +926,12 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
       'status_bayar': record['status_bayar'] ?? 'LUNAS',
       'jenis_bayar': record['jenis_bayar'] ?? 'LUNAS',
       'total_dibayar': record['total_dibayar'] ?? 0,
-      'sisa_bayar': record['sisa_bayar'] ?? 0,
+      'sisa_bayar': autoCancel ? 0 : record['sisa_bayar'] ?? 0,
       'jatuh_tempo': record['jatuh_tempo'],
-      'status': record['status'] ?? 'AKTIF',
-      'void_reason': record['void_reason'],
-      'voided_at': record['voided_at'],
-      'void_refund': record['void_refund'] ?? 0,
+      'status': autoCancel ? 'VOID' : record['status'] ?? 'AKTIF',
+      'void_reason': autoCancel ? autoCancelReason : record['void_reason'],
+      'voided_at': autoCancel ? nowIso() : record['voided_at'],
+      'void_refund': autoCancel ? 0 : record['void_refund'] ?? 0,
       'version': record['version'] ?? 1,
       'bergaransi': record['bergaransi'] ?? 1,
       'garansi_bulan': record['garansi_bulan'] ?? 1,
@@ -933,7 +981,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
           (stock?['sync_id'] as String?) ??
           '';
       int? stockId;
-      if (stockSync.isNotEmpty) {
+      if (!autoCancel && stockSync.isNotEmpty) {
         final stockRows = await txn.query(
           'stock_items',
           where: 'sync_id = ?',
@@ -1057,24 +1105,39 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
     }
     final rejectedReturnSyncs = <String>{};
     var returnAdded = false;
-    for (final retur in returns) {
-      final result = await _upsertReturn(txn, recordId, recordSync, retur);
-      returnAdded = returnAdded || result == 'added';
-      if (result == 'rejected') {
-        rejectedReturnSyncs.add('${retur['sync_id'] ?? ''}');
+    if (autoCancel) {
+      // Nota batal otomatis tidak boleh menambah kas, piutang, atau retur.
+      await _recordPendingConflict(
+        txn,
+        entity: 'nota',
+        entityId: recordSync,
+        reason: 'stok_negatif',
+        detail: {
+          'no_nota': noNota,
+          'auto_cancelled': true,
+          'kekurangan': shortage,
+        },
+      );
+    } else {
+      for (final retur in returns) {
+        final result = await _upsertReturn(txn, recordId, recordSync, retur);
+        returnAdded = returnAdded || result == 'added';
+        if (result == 'rejected') {
+          rejectedReturnSyncs.add('${retur['sync_id'] ?? ''}');
+        }
       }
-    }
-    for (final payment in payments) {
-      final requestId = '${payment['request_id'] ?? ''}';
-      if (requestId.isNotEmpty &&
-          rejectedReturnSyncs.any((sync) => requestId == 'retur-$sync')) {
-        continue;
+      for (final payment in payments) {
+        final requestId = '${payment['request_id'] ?? ''}';
+        if (requestId.isNotEmpty &&
+            rejectedReturnSyncs.any((sync) => requestId == 'retur-$sync')) {
+          continue;
+        }
+        await _upsertPayment(txn, recordId, payment);
       }
-      await _upsertPayment(txn, recordId, payment);
     }
     // Nota baru bisa membawa pembayaran/retur sekaligus; ringkasan harus
     // dihitung dari ledger, bukan dari angka yang dikirim perangkat asal.
-    if (record['voided_at'] != null || '${record['status']}' == 'VOID') {
+    if (autoCancel || incomingVoid) {
       await _syncVoidTotals(txn, recordId);
     } else {
       await _recalculateRecordTotals(txn, recordId);
@@ -1086,7 +1149,7 @@ WHERE sr.service_record_id = ? AND sr.deleted_at IS NULL
         enqueueCommission: enqueueCommission,
       );
     }
-    return 'applied';
+    return autoCancel ? 'auto_cancelled' : 'applied';
   }
 
   /// Mekanik dan snapshot tarif ikut nota agar perangkat lain dapat

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/app_database.dart';
+import '../../data/feature_flags.dart';
 import '../../data/license_service.dart';
 import '../../data/store_registry.dart';
 import '../../data/store_service.dart';
@@ -100,48 +101,74 @@ class _StoresScreenState extends State<StoresScreen> {
     }
     final nama = TextEditingController();
     final alamat = TextEditingController();
+    final features = {
+      for (final feature in storeFeatureCatalog)
+        feature.key: feature.defaultEnabled,
+    };
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Tambah toko'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nama,
-              autofocus: true,
-              decoration: const InputDecoration(labelText: 'Nama toko'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: alamat,
-              maxLines: 2,
-              decoration: const InputDecoration(labelText: 'Alamat'),
-            ),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _premium
-                    ? 'Premium dihitung per toko. Kuota Anda $_storeLimit '
-                        'toko dan saat ini terpakai ${_stores.length}.'
-                    : 'Akun gratis hanya memakai 1 toko. Toko tambahan '
-                        'memerlukan Premium dan login Google pemilik.',
-                style: const TextStyle(fontSize: 12),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('Tambah toko'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nama,
+                    autofocus: true,
+                    decoration: const InputDecoration(labelText: 'Nama toko'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: alamat,
+                    maxLines: 2,
+                    decoration: const InputDecoration(labelText: 'Alamat'),
+                  ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _premium
+                          ? 'Premium dihitung per toko. Kuota Anda $_storeLimit '
+                              'toko dan saat ini terpakai ${_stores.length}.'
+                          : 'Akun gratis hanya memakai 1 toko. Toko tambahan '
+                              'memerlukan Premium dan login Google pemilik.',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const Divider(height: 24),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Fitur opsional'),
+                  ),
+                  for (final feature in storeFeatureCatalog)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: Text(feature.label),
+                      value: features[feature.key] ?? feature.defaultEnabled,
+                      onChanged: (value) => setLocal(
+                        () => features[feature.key] = value,
+                      ),
+                    ),
+                ],
               ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Buat toko'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Batal'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Buat toko'),
-          ),
-        ],
       ),
     );
     final text = nama.text;
@@ -151,7 +178,11 @@ class _StoresScreenState extends State<StoresScreen> {
     if (result != true) return;
     setState(() => _busy = true);
     try {
-      await StoreService.instance.createStore(nama: text, alamat: address);
+      await StoreService.instance.createStore(
+        nama: text,
+        alamat: address,
+        features: features,
+      );
       await _load();
       if (!mounted) return;
       showSnack(context, 'Toko baru dibuat.');

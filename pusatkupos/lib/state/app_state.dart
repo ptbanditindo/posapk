@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../auth/operator.dart';
 import '../data/app_database.dart';
+import '../data/feature_flags.dart';
 import '../data/pin_service.dart';
 import '../data/store_settings.dart';
 
@@ -50,6 +51,7 @@ class AppState extends ChangeNotifier {
       'dark' => ThemeMode.dark,
       _ => ThemeMode.system,
     };
+    await FeatureFlagsService.instance.load();
     notifyListeners();
   }
 

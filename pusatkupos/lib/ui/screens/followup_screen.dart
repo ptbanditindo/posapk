@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/dates.dart';
 import '../../core/money.dart';
+import '../../data/feature_flags.dart';
 import '../../data/followup_service.dart';
 import '../../state/app_state.dart';
 import '../widgets.dart';
@@ -78,6 +79,14 @@ class _FollowupScreenState extends State<FollowupScreen> {
   int get _terlambat => _aktif.where((row) => row.terlambat).length;
 
   Future<void> _remind(FollowupRow row) async {
+    if (!FeatureFlagsService.instance.isEnabled(featureWhatsapp)) {
+      showSnack(
+        context,
+        'Fitur WhatsApp dinonaktifkan pemilik.',
+        error: true,
+      );
+      return;
+    }
     final quota = _quota;
     if (quota != null && quota.locked) {
       await _quotaHabis();
@@ -158,11 +167,12 @@ class _FollowupScreenState extends State<FollowupScreen> {
             onPressed: () => Navigator.pop(context),
             child: const Text('Tutup'),
           ),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(context, 'open'),
-            icon: const Icon(Icons.chat_outlined),
-            label: const Text('Buka WhatsApp'),
-          ),
+          if (FeatureFlagsService.instance.isEnabled(featureWhatsapp))
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, 'open'),
+              icon: const Icon(Icons.chat_outlined),
+              label: const Text('Buka WhatsApp'),
+            ),
         ],
       ),
     );

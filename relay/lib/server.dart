@@ -48,6 +48,7 @@ class RelayServer {
     window: const Duration(minutes: 10),
   );
   final Router _router;
+  final DateTime _startedAt = DateTime.now().toUtc();
   int _activeRequests = 0;
   int _writeQueue = 0;
   int _lastLatencyMs = 0;
@@ -391,11 +392,36 @@ WHERE t.token = @token AND t.owner_id = @owner AND t.revoked = false
   }
 
   Future<Response> _health(Request request) async {
-    return _json(200, {
-      'ok': true,
+    var databaseOk = false;
+    var envelopeBacklog = 0;
+    var openRounds = 0;
+    try {
+      final probe = await db.one('SELECT 1 AS ok');
+      databaseOk = (probe?['ok'] as num?)?.toInt() == 1;
+      final backlog = await db.one(
+        'SELECT COUNT(*) AS total FROM envelopes',
+      );
+      envelopeBacklog = (backlog?['total'] as num?)?.toInt() ?? 0;
+      final rounds = await db.one(
+        "SELECT COUNT(*) AS total FROM sync_rounds WHERE status = 'open'",
+      );
+      openRounds = (rounds?['total'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      databaseOk = false;
+    }
+    return _json(databaseOk ? 200 : 503, {
+      'ok': databaseOk,
+      'database': databaseOk ? 'ok' : 'unavailable',
       'license_public_key': await license.publicKey(),
       'google_login': google != null,
       'server_time': DateTime.now().toUtc().toIso8601String(),
+      'uptime_seconds':
+          DateTime.now().toUtc().difference(_startedAt).inSeconds,
+      'active_requests': _activeRequests,
+      'write_queue': _writeQueue,
+      'last_latency_ms': _lastLatencyMs,
+      'envelope_backlog': envelopeBacklog,
+      'open_sync_rounds': openRounds,
     });
   }
 

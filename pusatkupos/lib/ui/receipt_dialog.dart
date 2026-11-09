@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../data/feature_flags.dart';
 import '../data/receipt_service.dart';
 import '../printer/logo_platform.dart';
 import '../printer/printer_config.dart';
@@ -140,8 +141,11 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
       future: _document,
       builder: (context, snapshot) {
         final document = snapshot.data;
-        final canWhatsApp =
-            document != null && _normalizePhone(document.customerPhone).isNotEmpty;
+        final canWhatsApp = FeatureFlagsService.instance.isEnabled(
+              featureWhatsapp,
+            ) &&
+            document != null &&
+            _normalizePhone(document.customerPhone).isNotEmpty;
         return AlertDialog(
           title: Text(widget.title),
           content: SizedBox(
