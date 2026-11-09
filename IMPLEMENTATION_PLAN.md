@@ -24,11 +24,12 @@ Aturan kerja:
 
 ## 1. Batasan yang Tidak Berubah
 
-- Aplikasi tetap **local-first** agar kasir tidak menunggu jaringan, tetapi
-  target operasional pengguna premium adalah **online dan tersinkron**.
-  Offline adalah pengecualian yang harus pulih cepat, bukan mode normal.
-- **Sync adalah fitur utama premium.** Setiap commit memicu sync, status per
-  dokumen terlihat, dan konflik diselesaikan dekat real-time.
+- Aplikasi tetap **local-first** dan harus mampu beroperasi penuh minimal
+  **24 jam tanpa jaringan**: jual, stok, riwayat, cetak, retur, dan void lokal.
+  Offline bukan mode normal, tetapi harus aman dan tidak memutus kasir.
+- **Sync adalah fitur utama premium, bukan polling terus-menerus.** Sync dipicu
+  commit, reconnect, start/resume, manual, dan fallback ringan; status per
+  dokumen terlihat dan konflik diselesaikan saat sync berjalan.
 - Relay tidak pernah membaca plaintext transaksi. Semua payload tetap E2EE.
 - Satu toko dapat memiliki banyak perangkat; tidak ada batas jumlah login.
   Setiap perangkat tetap harus disetujui owner dan dapat dicabut.
@@ -44,29 +45,33 @@ Aturan kerja:
 
 ### 1.1 Model Operasi Premium
 
-Pengguna premium diasumsikan hampir selalu punya internet. Local-first dipakai
-untuk kecepatan dan ketahanan, bukan karena offline dianggap normal.
+Pengguna premium normalnya online, tetapi aplikasi harus tetap **penuh selama
+minimal 24 jam tanpa jaringan**. Local-first bukan alasan untuk sync terus-
+menerus; sync dipicu oleh peristiwa penting, bukan polling rapat.
 
 | Aturan | Target |
 |---|---|
-| Sync setelah commit | mulai <= 1,5 detik setelah transaksi selesai |
-| Commit → terlihat di perangkat lain | <= 30 detik saat jaringan baik |
-| Fallback periodik saat aplikasi terbuka | setiap 60 detik |
-| Sync saat jaringan kembali | segera setelah event konektivitas |
-| Sync saat aplikasi dibuka/resume | segera |
+| Kemampuan offline | minimal 24 jam penuh: jual, stok, riwayat, cetak, retur/void lokal |
+| Sesi dan lisensi saat offline | tetap berlaku minimal 24 jam; tidak ada logout paksa |
+| Sync setelah commit | mulai setelah debounce 3 detik; beberapa commit dijadikan satu batch |
+| Sync saat reconnect/start/resume | segera |
 | Sync manual | tarik untuk menyegarkan |
-| Ambang status "terlambat" | belum sync sukses > 5 menit saat online |
-| Banner offline | setelah 24 jam tanpa sync sukses (fallback, bukan indikator utama) |
+| Fallback periodik | ringan setiap 15 menit saat foreground, bukan polling 60 detik |
+| Perangkat lain menerima data | pada sync berikutnya; biasanya <= 15 menit, atau segera saat resume/manual |
+| Banner offline | setelah 24 jam tanpa sync sukses; aplikasi tetap dapat dipakai |
+| Keputusan stok | selalu dari ledger lokal; tidak pernah menunggu sync |
+| Beban baterai/jaringan | batch, backoff, dan tanpa sync di background |
 
-Pemicu sync: commit lokal (debounce), konektivitas kembali, resume aplikasi,
-timer 60 detik saat foreground, dan aksi manual. Deteksi konektivitas memakai
-event jaringan + health check relay; event jaringan saja tidak menjamin relay
-hidup.
+Pemicu sync: commit lokal (debounce + batch), konektivitas kembali, start/resume
+aplikasi, timer fallback 15 menit saat foreground, dan aksi manual. Deteksi
+konektivitas memakai event jaringan + health check relay; event jaringan saja
+tidak menjamin relay hidup.
 
-Keputusan stok saat online: jika sync terakhir > 5 menit, coba sync dengan
-batas tunggu 5 detik sebelum transaksi yang bergantung stok. Jika sync gagal,
-perlakukan sebagai offline: pakai ledger lokal dan blokir jika stok kurang.
-Jangan menahan kasir menunggu jaringan tanpa batas.
+Keputusan stok tidak menunggu jaringan. Saat aplikasi terbuka dan online, sync
+berjalan tanpa menahan layar untuk menyegarkan data. Jika stok lokal kurang,
+penjualan diblokir; jika sync belum selesai, kasir tetap dapat menjual selama
+stok lokal cukup. Banner 24 jam adalah peringatan agar data segera dikirim,
+bukan tombol berhenti operasi.
 
 ---
 
@@ -79,9 +84,9 @@ service/UI, bukan arah arsitektur.
 | ID | Keputusan | Sumber | Konsekuensi |
 |---|---|---|---|
 | D1 | Stok adalah agregat seluruh movement, bukan angka yang diketik | Pemilik | `stock_items.jumlah_milli` hanya berubah lewat `StockLedger.apply` |
-| D2 | Hanya kasir yang boleh mencatat barang keluar dan barang masuk | Pemilik | Tablet read-only stok; pembelian dan penjualan dari perangkat kasir |
+| D2 | Izin stok dipisah: `stok_keluar`, `stok_masuk`, `opname`, dan `ubah_stok`; masing-masing dapat diberikan ke peran berbeda | Pemilik | Contoh default: kasir keluar, gudang masuk, supervisor hitung; tablet mekanik tetap read-only |
 | D3 | Saat offline stok lokal kurang, penjualan diblokir | Pemilik | Tidak ada penjualan negatif lokal; pesan menyebut sisa stok |
-| D4 | Saat online, sync dan konvergensi ledger dijalankan sebelum keputusan stok; saat offline, ledger lokal dipakai dan stok kurang diblokir | Pemilik | "Stok server" = hasil konvergensi movement, bukan angka plaintext di relay |
+| D4 | Keputusan stok selalu memakai ledger lokal; sync berjalan di latar belakang dan tidak pernah menahan transaksi | Pemilik | "Stok server" = hasil konvergensi movement, bukan angka plaintext di relay |
 | D5 | Opname adalah koreksi hitung fisik, berbeda dari penambahan barang | Pemilik | Opname disimpan sebagai delta dengan basis absolut; barang masuk lewat pembelian |
 | D6 | Void ditolak selama retur aktif; retur harus dibatalkan lebih dulu | Pemilik | Tidak ada refund ganda lokal/remote |
 | D7 | Logout tidak menghapus data; penghapusan hanya lewat "Reset perangkat" | Pemilik | Logout = tutup sesi; reset = aksi terpisah dengan autentikasi owner |
@@ -94,10 +99,10 @@ service/UI, bukan arah arsitektur.
 | D14 | Harga: acuan + final per baris; nego per item; di bawah modal/negosiasi butuh persetujuan owner | Default kerja | PIN hanya membuka grant; grant dicatat sebagai audit |
 | D15 | Laporan: nilai ditagih untuk penjualan, DPP untuk pajak; koreksi = dokumen negatif | Default kerja | Zona waktu toko; tidak ada recompute snapshot lama |
 | D16 | Platform: Android kasir, Windows owner, tablet Android mekanik | Default kerja | Tanpa batas jumlah perangkat; rilis bertahap F0–F8 |
-| D17 | Status sync langsung di aplikasi + banner offline 24 jam sebagai fallback | Pemilik | Indikator utama adalah status sync; banner 24 jam bukan mekanisme utama |
+| D17 | Status sync selalu terlihat; banner setelah 24 jam tanpa sync sukses adalah peringatan, bukan penghentian operasi | Pemilik | Kasir tetap dapat bekerja; banner mendorong penyelesaian sync |
 | D18 | Schema ditulis ulang sebagai baseline, tanpa rantai migrasi | Pemilik | Database dev lama di-backup lalu dibuat ulang sebelum rilis |
-| D19 | Deteksi konektivitas memakai event jaringan (`connectivity_plus`) + health check relay; timer 60 detik tetap berjalan sebagai fallback | Default kerja | Event jaringan saja tidak dianggap online sampai health check relay berhasil |
-| D20 | Sync premium memakai fallback foreground 60 detik; interval lama 10–20 menit dan setting `sync.interval_minutes` dihapus | Default kerja | Debounce setelah commit mencegah polling berlebihan; timer hanya jaring pengaman |
+| D19 | Deteksi konektivitas memakai event jaringan (`connectivity_plus`) + health check relay; fallback periodik ringan 15 menit | Default kerja | Event jaringan saja tidak dianggap online sampai health check relay berhasil |
+| D20 | Tidak ada polling 60 detik; commit dibatch dengan debounce 3 detik dan sync hanya saat foreground | Default kerja | Offline minimal 24 jam tetap aman; baterai dan relay tidak dibebani sync terus-menerus |
 
 Default D12, D14, D15, D16, D19, dan D20 boleh diubah setelah dokumen ini
 disetujui. Perubahan tersebut tidak membatalkan D1–D11 dan tidak memerlukan
@@ -126,30 +131,54 @@ Sumber movement yang wajib ada:
 | Saldo awal | `opening_balance` | masuk |
 | Penyesuaian manual | `manual` | masuk/keluar, wajib alasan + operator |
 
+**Izin stok terpisah.** Tidak ada satu izin "stok" yang mencakup semuanya:
+
+| Aksi | Izin | Contoh default |
+|---|---|---|
+| Barang keluar / penjualan yang memakai stok | `stok_keluar` | KASIR |
+| Barang masuk / penerimaan | `stok_masuk` | GUDANG |
+| Hitung fisik dan opname | `opname` | SUPERVISOR |
+| Ubah data master stok | `ubah_stok` | owner/supervisor |
+
+Default contoh: KASIR hanya `stok_keluar`; GUDANG hanya `stok_masuk`;
+SUPERVISOR `opname` + `ubah_stok`; MEKANIK dan VIEWER tanpa izin stok; owner
+semua. Owner dapat memberi kombinasi lain ke peran kustom.
+
 Aturan:
 
-1. Penjualan lokal memeriksa saldo sebelum commit. Jika `saldo - qty < 0`,
+1. Setiap aksi memeriksa izinnya sendiri di service dan UI; izin tidak boleh
+   saling menggantikan. Menjual barang yang mengurangi stok memerlukan
+   `stok_keluar`; servis tanpa part tidak memerlukannya.
+2. Penerimaan barang memerlukan `stok_masuk` dan tidak otomatis memerlukan
+   `buat_pembelian`; pencatatan pembelian/utang tetap izin terpisah.
+3. Opname memerlukan `opname`. Operator dengan izin ini boleh menghitung dan
+   menerapkan delta; perubahan master tetap memerlukan `ubah_stok`.
+4. Peran GUDANG ditambahkan sebagai peran bawaan dengan `lihat_stok` dan
+   `stok_masuk`; peran kustom boleh diberi kombinasi izin apa pun oleh owner.
+5. Tablet mekanik tetap read-only karena default-nya tidak memiliki izin stok.
+   Perangkat gudang yang diberi `stok_masuk` boleh menerima barang.
+6. Penjualan lokal memeriksa saldo sebelum commit. Jika `saldo - qty < 0`,
    transaksi ditolak (D3). Tidak ada dialog "lanjutkan".
-2. Penerapan sync boleh menghasilkan saldo negatif karena movement dari
+7. Penerapan sync boleh menghasilkan saldo negatif karena movement dari
    perangkat lain. Saldo negatif tidak diperbaiki otomatis; muncul di laporan
    dan memicu opname.
-3. HPP memakai rata-rata bergerak. Movement keluar menyimpan
+8. HPP memakai rata-rata bergerak. Movement keluar menyimpan
    `harga_pokok_satuan_cents`; movement retur memakai snapshot HPP penjualan,
    bukan harga master saat ini.
-4. Jika saldo sebelum masuk <= 0, pemulihan stok tidak boleh menggelembungkan
+9. Jika saldo sebelum masuk <= 0, pemulihan stok tidak boleh menggelembungkan
    rata-rata. Nilai masuk tetap dipakai, tetapi HPP baris keluar berikutnya
    dihitung dari basis yang sudah dibersihkan; tidak ada HPP negatif.
-5. Opname:
-   - kasir menghitung fisik;
-   - sistem menyimpan `opname_absolut_milli` (hasil hitung) dan
-     `opname_basis_milli` (saldo lokal saat hitung);
-   - movement yang dikirim adalah delta idempoten, bukan angka absolut yang
-     menimpa perangkat lain;
-   - `request_id` wajib; hold yang gagal tidak memblokir hold lain.
-6. Rekonsiliasi harian: saldo vs jumlah movement, saldo negatif, movement tanpa
-   dokumen, dan dokumen tanpa movement. Laporan tidak mengubah data.
-7. Tidak ada `CHECK (jumlah_milli >= 0)` pada saldo, karena sync sah dapat
-   menghasilkan negatif. Yang ditegakkan adalah guard lokal dan laporan.
+10. Opname:
+    - operator dengan izin `opname` (default supervisor) menghitung fisik;
+    - sistem menyimpan `opname_absolut_milli` (hasil hitung) dan
+      `opname_basis_milli` (saldo lokal saat hitung);
+    - movement yang dikirim adalah delta idempoten, bukan angka absolut yang
+      menimpa perangkat lain;
+    - `request_id` wajib; hold yang gagal tidak memblokir hold lain.
+11. Rekonsiliasi harian: saldo vs jumlah movement, saldo negatif, movement
+    tanpa dokumen, dan dokumen tanpa movement. Laporan tidak mengubah data.
+12. Tidak ada `CHECK (jumlah_milli >= 0)` pada saldo, karena sync sah dapat
+    menghasilkan negatif. Yang ditegakkan adalah guard lokal dan laporan.
 
 ### 3.2 Harga dan Persetujuan
 
@@ -241,16 +270,20 @@ Aturan:
    harus re-enroll dan menerima snapshot. Tidak ada batas jumlah perangkat,
    tetapi daftar perangkat harus dapat dipaginasi dan diaudit.
 8. Perubahan status work order dari tablet mencatat aktor, waktu, dan HLC.
-9. Sync dipicu setelah commit (debounce 1,5 detik), saat konektivitas kembali,
-   saat resume, setiap 60 detik selama foreground, dan manual. Event
-   konektivitas diikuti health check relay sebelum dianggap online.
-10. Target: commit → sync mulai <= 1,5 detik; perangkat lain menerima
-    <= 30 detik saat jaringan baik. Jika belum sync sukses > 5 menit saat
-    online, status "terlambat" ditampilkan dan sync dipaksa.
-11. Sebelum transaksi yang bergantung stok, jika data > 5 menit basi dan
-    online, coba sync dengan batas tunggu 5 detik. Gagal sync = perlakukan
-    sebagai offline; jangan menahan kasir tanpa batas.
-12. Arsip diunggah paralel setelah commit dan tidak menunggu sync relay.
+9. Sync dipicu setelah commit (debounce 3 detik + batch), saat konektivitas
+   kembali, start/resume aplikasi, fallback ringan 15 menit saat foreground,
+   dan manual. Tidak ada polling 60 detik dan tidak ada sync di background.
+   Event konektivitas diikuti health check relay sebelum dianggap online.
+10. Aplikasi harus beroperasi penuh minimal 24 jam tanpa jaringan, termasuk
+    jual, stok, riwayat, cetak, retur, dan void lokal. Sesi dan lisensi premium
+    tetap berlaku selama periode itu; tidak ada logout paksa.
+11. Keputusan stok tidak menunggu sync. Ledger lokal dipakai; jika stok lokal
+    kurang, penjualan diblokir. Sync berikutnya mengkonvergensikan movement dan
+    menandai konflik tanpa menghentikan kasir.
+12. Arsip diunggah paralel setelah commit dengan prioritas rendah; arsip tidak
+    menahan sync dan tidak memicu sync tambahan.
+13. Banner muncul setelah 24 jam tanpa sync sukses. Aplikasi tetap dapat
+    dipakai; banner adalah peringatan, bukan batas keras.
 
 ### 3.6 Retensi, Arsip, dan Purge
 
@@ -343,7 +376,8 @@ relay + PostgreSQL operasional    API arsip + object storage
 
 **Penjualan:** kasir membuat nota → SQLite transaction (nota + baris + bayar +
 kas + stok + komisi + audit + outbox) → UI langsung selesai → sync ke relay
-dipicu (debounce 1,5 detik) dan arsip upload berjalan paralel di background.
+dipicu (debounce 3 detik, dibatch) dan arsip upload berjalan paralel dengan
+prioritas rendah.
 
 **Sync:** outbox → envelope terenkripsi + tanda tangan → relay verifikasi →
 feed perangkat lain → dekripsi lokal → apply idempoten → ack → cursor maju.
@@ -427,8 +461,8 @@ Tidak ada kolom plaintext nama, telepon, item, harga, atau nominal.
 | F1 | Baseline schema & integritas | model harga/stok/audit lengkap; duplikat terdeteksi | perilaku UI | bug baru menumpuk di schema lama |
 | F2 | Konsistensi transaksi | satu aturan harga/approval/void | laporan dan arsip | aturan lokal/remote berbeda |
 | F3 | Harga & pembayaran | struk dan total dapat direkonsiliasi | stok dan sync | selisih uang tidak terlacak |
-| F4 | Stok & valuasi | saldo = movement; HPP konsisten; kasir satu-satunya penulis | sync dan arsip | stok negatif/HPP salah menyebar |
-| F5 | Outbox & sync dekat real-time | commit memicu sync; status per dokumen; riwayat dapat dicari | relay dan arsip | transaksi tidak sampai ke perangkat lain |
+| F4 | Stok & valuasi | saldo = movement; HPP konsisten; izin masuk/keluar/opname terpisah | sync dan arsip | stok negatif/HPP salah menyebar |
+| F5 | Offline 24 jam & outbox | operasi penuh tanpa jaringan; sync hemat daya; status per dokumen | relay dan arsip | kasir berhenti saat internet mati |
 | F6 | Sync lanjutan & idempotensi | tidak ada duplikasi/kehilangan lintas perangkat | arsip permanen | konflik menyebar |
 | F7 | Arsip & pencarian | data 2 tahun dapat dicari; purge aman | siklus kunci | purge menghapus satu-satunya salinan |
 | F8 | E2EE & siklus kunci | perangkat dicabut tidak membuka payload baru; recovery | error UI | kunci hilang = riwayat hilang |
@@ -441,9 +475,9 @@ Gate rilis:
   outbox dan autentikasi owner; double refund tidak mungkin.
 - **P1 (F1–F4):** nota nego punya acuan + grant + audit; opname tidak memacetkan
   antrean; laporan dapat direkonsiliasi ke nota.
-- **P2 (F5–F8):** sync dua perangkat selesai <= 30 detik pada jaringan baik;
-  tidak ada duplikasi/kehilangan; arsip 2 tahun berfungsi; perangkat dicabut
-  tidak membuka payload baru.
+- **P2 (F5–F8):** offline 24 jam penuh dan aman; sync event-driven tanpa polling
+  60 detik; tidak ada duplikasi/kehilangan; arsip 2 tahun berfungsi; perangkat
+  dicabut tidak membuka payload baru.
 - **Produksi:** P0–P2 lulus pada salinan data nyata, bukan hanya DB kosong.
 
 ---
@@ -514,31 +548,31 @@ dibuat ulang. Tidak ada `ALTER TABLE` bertahap.
 | F4-4 | Movement masuk/keluar eksplisit (#39) | Nota baru menulis movement masuk; keluar menyimpan unit cost; `rebuild` terkontrol | Saldo = movement; tidak ada saldo tanpa asal | F1 |
 | F4-5 | Retur memakai snapshot modal (#39) | Retur membaca HPP dari movement penjualan, bukan master | Refund modal akurat setelah harga master berubah | F4-4 |
 | F4-6 | Kartu stok + rekonsiliasi (#52) | `stock_screen.dart`: riwayat movement per item, saldo, selisih | Kasir dapat melihat asal saldo dan menandai negatif | F4-4 |
-| F4-7 | Kasir satu-satunya penulis (#41/#42/#43) | Permission tablet read-only; sync sebelum keputusan stok; blokir qty > saldo | Tablet tidak bisa menjual/mengubah stok; offline kurang ditolak | F4-1 |
-| F4-8 | Uji stok kasir/tablet (#44) | Skenario offline, reconnect, opname, retur, void, force close | Tidak ada selisih saldo pada semua skenario | F4-7 |
+| F4-7 | Pemisahan izin stok (#41/#42/#43) | `access_control.dart` + `permissions.dart`: tambah peran GUDANG; tegakkan `stok_keluar`, `stok_masuk`, `opname`, `ubah_stok` terpisah di service dan UI; keputusan stok dari ledger lokal tanpa menunggu sync; blokir qty > saldo | Kasir tidak bisa menerima barang tanpa izin; gudang tidak bisa menjual; supervisor dapat opname; tablet mekanik tetap read-only | F4-1 |
+| F4-8 | Uji stok & matriks izin (#44) | Skenario offline 24 jam, reconnect, opname, retur, void, force close; uji tiap kombinasi izin dan percobaan bypass | Tidak ada selisih saldo; setiap aksi hanya lolos dengan izinnya sendiri | F4-7 |
 
-### F5 — Outbox, Sync Dekat Real-Time, Riwayat
+### F5 — Offline 24 Jam, Outbox, Riwayat
 
-Sync adalah jalur utama pengguna premium. Fase ini memastikan setiap commit
-langsung dikirim, terlihat di perangkat lain dalam hitungan detik, dan setiap
-kegagalan punya status yang dapat dibaca kasir.
+Aplikasi harus tetap penuh saat internet mati minimal 24 jam. Sync adalah fitur
+premium, tetapi dijalankan hemat daya: dipicu peristiwa, dibatch, dan tidak
+memakai polling rapat.
 
 | ID | Task | Perubahan utama | Terima | Dep |
 |---|---|---|---|---|
-| F5-0 | Pemicu sync premium (baru) | `sync_scheduler.dart` + `sync_service.dart`: ganti interval 10–20 menit dengan fallback 60 detik; tambah `connectivity_plus` + health check relay, debounce 1,5 detik setelah commit, resume, tarik manual; satu sync in-flight | Commit terlihat di perangkat lain <= 30 detik; reconnect memicu sync; timer 60 detik bekerja saat foreground | F0-1 |
+| F5-0 | Sync event-driven & offline 24 jam (baru) | `sync_scheduler.dart` + `sync_service.dart`: hapus interval 60 detik; event reconnect/start/resume/manual, debounce 3 detik + batch, fallback ringan 15 menit saat foreground, tanpa sync background; sesi/lisensi offline tetap berlaku 24 jam | 24 jam tanpa jaringan tetap bisa jual/stok/cetak; tidak ada polling 60 detik; reconnect memicu sync | F0-1 |
 | F5-1 | Status sync per dokumen (baru) | `sync_service.dart` + riwayat: badge pending/acked/failed/dead-letter | Kasir tahu dokumen mana yang belum terkirim | F5-0 |
 | F5-2 | Paginasi & filter riwayat (baru) | `listRecords` + `history_screen.dart`: limit/offset, tanggal, nomor, nama | Nota ke-201 dapat dibuka; filter tanggal bekerja | F1 |
-| F5-3 | Panel status sync utama (baru) | HomeShell: waktu sync terakhir, jumlah pending/failed, online/offline relay, aksi sync manual; banner 24 jam dari F0-10 sebagai fallback | Kasir melihat keterlambatan > 5 menit tanpa membuka riwayat; banner hanya muncul saat benar-benar tertinggal | F5-1 |
+| F5-3 | Panel status sync utama (baru) | HomeShell: waktu sync terakhir, jumlah pending/failed, online/offline relay, aksi sync manual; banner 24 jam dari F0-10 sebagai peringatan | Kasir tahu ada data tertunda tanpa melihat alarm palsu saat offline normal; banner muncul setelah 24 jam | F5-1 |
 | F5-4 | Guard logout/restore (#26/#29) | Lihat F0-1/F0-4; tambah uji regresi | Tidak ada jalur kehilangan outbox | F0 |
-| F5-5 | Uji force close (#44) | Matikan proses di setiap titik transaksi/sync/restore | Nota commit bertahan; sync mengulang tanpa duplikasi; pemicu sync pulih setelah restart | F5-0 |
+| F5-5 | Uji force close & offline 24 jam (#44) | Matikan proses di setiap titik transaksi/sync/restore; simulasikan 24 jam tanpa jaringan | Nota commit bertahan; sync mengulang tanpa duplikasi; operasi tetap penuh selama 24 jam | F5-0 |
 | F5-6 | Cakupan laporan & VOID (baru) | Piutang/kas satu definisi; badge VOID; ekspor owner lengkap | Angka antar layar sama; nota VOID terlihat | F3 |
 
 ### F6 — Sync Lanjutan & Idempotensi
 
 Fase ini menangani kasus yang lebih sulit dari sync normal: retry panjang,
 envelope rusak, konflik domain, dan perangkat yang lama tidak aktif. Offline
-tidak dianggap mode normal; setiap kegagalan sync harus terlihat dan pulih
-otomatis saat jaringan kembali.
+harus tetap aman minimal 24 jam, dan setiap kegagalan sync harus terlihat serta
+pulih otomatis saat jaringan kembali—tanpa menuntut sync terus-menerus.
 
 | ID | Task | Perubahan utama | Terima | Dep |
 |---|---|---|---|---|
@@ -547,7 +581,7 @@ otomatis saat jaringan kembali.
 | F6-3 | Konflik domain & feature flag (baru) | `sync_conflict_rules.dart`, `feature_flags.dart`: void/retur/opname/flag; induk mati = anak mati | Tidak ada dua aturan berbeda; flag konsisten | F4 |
 | F6-4 | Idempotensi permanen & snapshot (baru) | `applied_deltas` jangka panjang; verifikasi HLC snapshot | Retry lama tidak menggandakan; snapshot basi ditolak | F6-3 |
 | F6-5 | Audit status tablet (#34) | Status work order mencatat aktor/waktu/HLC | Perubahan tablet dapat diaudit | F6-3 |
-| F6-6 | Uji dua perangkat (baru) | Simulasi commit→sync <= 30 detik, putus-nyambung, retry, perangkat mati, konflik | Tidak ada duplikasi/kehilangan; latensi target terukur | F6-4 |
+| F6-6 | Uji dua perangkat & offline 24 jam (baru) | Simulasi 24 jam tanpa jaringan, putus-nyambung, retry, perangkat mati, konflik | Tidak ada duplikasi/kehilangan; operasi lokal tetap penuh; sync pulih saat reconnect | F6-4 |
 
 ### F7 — Arsip & Pencarian
 
@@ -692,12 +726,12 @@ terlewat.
   tunggal; audit.
 - **F3:** struk vs DB vs laporan; bayar penuh transfer; pajak inklusif/
   eksklusif; penyesuaian.
-- **F4:** opname basi; stok negatif; retur/void; movement sources; tablet
-  read-only; reconnect.
-- **F5:** 50 nota berturut-turut → commit → perangkat lain <= 30 detik; tutup
-  paksa → restart → sync; reconnect; timer 60 detik; riwayat 201+; filter
-  tanggal.
-- **F6:** dua perangkat; commit → sync <= 30 detik; putus-nyambung; retry;
+- **F4:** opname basi; stok negatif; retur/void; movement sources; matriks izin
+  keluar/masuk/opname; percobaan bypass; tablet mekanik read-only; reconnect.
+- **F5:** 24 jam tanpa jaringan (jual, stok, cetak, retur/void) → 50+ nota →
+  tutup paksa → restart → tetap penuh → reconnect → sync; tidak ada polling
+  60 detik; riwayat 201+; filter tanggal.
+- **F6:** dua perangkat; offline 24 jam lalu reconnect; putus-nyambung; retry;
   envelope rusak; perangkat lama; feature flag; konflik.
 - **F7:** upload backlog; duplikat; search 2 tahun; arsip mati; purge tertahan;
   restore arsip.
@@ -724,6 +758,7 @@ terlewat.
 | Transaksi/harga | `lib/data/app_database.dart`, `lib/data/price_rules.dart`, `lib/data/models.dart`, `lib/ui/screens/pos_screen.dart` |
 | Pajak/laporan | `lib/data/pajak.dart`, `lib/data/nota_adjustment_service.dart`, layar laporan |
 | Stok | `lib/data/stock_ledger.dart`, `lib/data/opname_service.dart`, `lib/data/sale_return_service.dart`, `lib/ui/screens/stock_screen.dart` |
+| Izin/peran | `lib/auth/permissions.dart`, `lib/auth/operator.dart`, `lib/data/access_control.dart`, `lib/data/store_settings.dart` |
 | Sync | `lib/sync/sync_service.dart`, `lib/sync/sync_scheduler.dart`, `lib/sync/sync_conflict_rules.dart`, `lib/sync/relay_client.dart`, `lib/sync/crypto.dart` |
 | Offline/backup | `lib/ui/entry_gate.dart`, `lib/data/backup_service.dart`, `lib/ui/home_shell.dart` |
 | E2EE/identitas | `lib/data/google_auth_service.dart`, `lib/data/session_service.dart`, `lib/data/secure_store.dart` |
@@ -736,8 +771,9 @@ terlewat.
 ## 10. Yang Tidak Dilakukan
 
 - Tidak ada rantai migrasi/kolom legacy.
-- Offline tidak dianggap mode normal; tidak ada alur yang membiarkan transaksi
-  menumpuk tanpa status sync dan peringatan.
+- Tidak ada ketergantungan jaringan untuk jual, stok, cetak, retur, void, atau
+  riwayat selama minimal 24 jam.
+- Tidak ada sync otomatis terus-menerus di background atau polling 60 detik.
 - Tidak ada plaintext transaksi di relay atau arsip.
 - Tidak ada perhitungan stok di server.
 - Tidak ada auto-perbaikan data historis.
@@ -757,10 +793,12 @@ terlewat.
 | Satu VPS arsip rusak = arsip hilang | Snapshot + offsite + uji restore (F7-7) |
 | Token arsip dicabut terlambat (24 jam) | TTL pendek, audit, rotasi kunci (F8-2) |
 | Satu perangkat offline lama menahan pruning | Perangkat aktif = heartbeat <= 30 hari; re-enroll + snapshot saat kembali (F6-2) |
-| Sync tertunda tanpa terlihat | Status sync utama + ambang 5 menit + banner 24 jam (F5-0/F5-3) |
-| Keputusan stok memakai data basi | Sync paksa 5 detik bila sync terakhir > 5 menit; gagal = perlakukan sebagai offline dan blokir (F4-7) |
-| Polling 60 detik membebani relay | Debounce, satu sync in-flight, backoff, dan event konektivitas (F5-0/F6-1) |
-| Opname basi jika ada penulis stok lain | Tegakkan kasir satu-satunya penulis (F4-7); jika tidak, ubah ke HLC absolut |
+| Data tertunda tidak terlihat | Status pending langsung + banner setelah 24 jam (F5-1/F5-3) |
+| Offline lebih dari 24 jam | Outbox durable, status terlihat, operasi tetap jalan; uji 24 jam (F5-5) |
+| Sesi/lisensi kedaluwarsa saat offline | Cache sesi dan lisensi minimal 24 jam; tidak ada logout paksa (F5-0/F8) |
+| Sync terlalu sering menguras baterai/relay | Event-driven, batch, fallback 15 menit, tanpa sync background (F5-0) |
+| Stok basi karena perangkat lain menulis | Ledger lokal, konvergensi saat sync, konflik terlihat (F4-7/F6-3) |
+| Opname basi karena izin stok masuk/keluar dipegang peran lain | Opname absolut + HLC + konflik; jangan mengandalkan asumsi satu penulis (F4-1) |
 | Payload arsip tidak lengkap | Kontrak payload + uji komisi/penyesuaian (F7-1) |
 | Storage tumbuh selamanya | Kuota, monitoring, rencana ekspansi (F7-9) |
 | Reset schema menghapus DB dev | Backup wajib sebelum upgrade; hanya selama belum ada pengguna produksi |
@@ -774,11 +812,12 @@ terlewat.
 Satu putaran implementasi dinyatakan selesai jika:
 
 1. F0–F8 lulus gate dan seluruh temuan di §7 punya bukti uji.
-2. Target §1.1 terbukti: commit memicu sync <= 1,5 detik, perangkat lain
-   menerima <= 30 detik pada jaringan baik, fallback 60 detik berjalan, dan
-   keterlambatan > 5 menit selalu terlihat di UI.
+2. Target §1.1 terbukti: offline 24 jam tetap penuh (jual, stok, cetak,
+   retur/void), sesi tidak terputus, sync hanya event-driven tanpa polling
+   60 detik, dan reconnect memicu sync.
 3. Tidak ada jalur kehilangan data yang tersisa: logout, restore, reset, purge,
-   void/retur, opname, sync, kunci.
+   void/retur, opname, sync, kunci. Tidak ada aksi stok yang lolos tanpa izin
+   `stok_keluar`, `stok_masuk`, atau `opname` yang sesuai.
 4. Skenario SC-01..SC-05 lulus pada salinan data nyata.
 5. Dua VPS berjalan terpisah: relay tidak bisa menghapus arsip; arsip tidak
    bisa membaca plaintext.
