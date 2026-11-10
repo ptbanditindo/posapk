@@ -241,7 +241,7 @@ class AppDatabase {
   Future<void> _setQueryOnly(bool value) async {
     final db = _db;
     if (db == null) return;
-    await db.execute('PRAGMA query_only = ${value ? 'ON' : 'OFF'}');
+    await db.rawQuery('PRAGMA query_only = ${value ? 'ON' : 'OFF'}');
   }
 
   /// Kembali ke database pembukuan utama setelah sesi ringkasan berakhir.
@@ -472,8 +472,9 @@ class AppDatabase {
     await db.execute('PRAGMA foreign_keys = ON');
     // Backup/restore dan sinkronisasi dapat menulis bersamaan dengan layar
     // kasir. Beri SQLite waktu tunggu agar GUI tidak menerima pesan
-    // "database is locked" mentah.
-    await db.execute('PRAGMA busy_timeout = 5000');
+    // "database is locked" mentah. Android menolak PRAGMA ini lewat execute()
+    // karena mengembalikan baris.
+    await db.rawQuery('PRAGMA busy_timeout = 5000');
   }
 
   /// WAL eksplisit di semua platform file. Database baca-saja (mode ringkasan)
