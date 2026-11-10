@@ -212,7 +212,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         _collectTemplate();
         _template.validate();
       } catch (error) {
-        validation = '$error';
+        validation = '$error'.replaceFirst('Invalid argument(s): ', '');
       }
       setState(() => _validation = validation);
       if (_tabs.index == 5) _refreshPreview();
@@ -226,7 +226,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       _collectTemplate();
       _template.validate();
     } catch (error) {
-      validation = '$error';
+      validation = '$error'.replaceFirst('Invalid argument(s): ', '');
     }
     setState(() {
       _validation = validation;
@@ -267,11 +267,15 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       await AppDatabase.instance
           .setSetting('bengkel.telepon', _kontak.text.trim());
       if (!mounted) return;
-      showSnack(context, 'Template struk disimpan.');
+      showSnack(context, 'Pengaturan struk disimpan.');
       await _refreshPreview();
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, 'Gagal menyimpan: $error', error: true);
+      showSnack(
+        context,
+        'Pengaturan struk gagal disimpan: $error',
+        error: true,
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -280,10 +284,10 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
   Future<void> _reset() async {
     final confirmed = await confirmAction(
       context,
-      title: 'Reset template struk?',
-      message: 'Semua pengaturan tampilan struk kembali ke default. '
-          'Nama toko dan alamat tidak diubah.',
-      confirmLabel: 'Reset',
+      title: 'Kembalikan tampilan struk ke awal?',
+      message: 'Semua pengaturan tampilan struk kembali ke awal. Nama toko, '
+          'alamat, dan data transaksi tidak berubah.',
+      confirmLabel: 'Kembalikan',
     );
     if (confirmed != true) return;
     setState(() {
@@ -293,11 +297,15 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
     try {
       await ReceiptSettings.instance.save(_template);
       if (!mounted) return;
-      showSnack(context, 'Template struk direset.');
+      showSnack(context, 'Tampilan struk dikembalikan ke awal.');
       await _refreshPreview();
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mereset: $error', error: true);
+        showSnack(
+          context,
+          'Tampilan struk gagal dikembalikan: $error',
+          error: true,
+        );
       }
     }
   }
@@ -308,7 +316,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       if (mounted) {
         showSnack(
           context,
-          'Belum ada printer. Tambahkan printer di Pengaturan.',
+          'Belum ada printer. Tambahkan printer di menu Printer lebih dulu.',
           error: true,
         );
       }
@@ -325,7 +333,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       if (mounted) showSnack(context, result.message, error: !result.ok);
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mencetak: $error', error: true);
+        showSnack(context, 'Uji cetak gagal: $error', error: true);
       }
     }
   }
@@ -350,7 +358,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       _schedulePreview();
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal memilih logo: $error', error: true);
+        showSnack(context, 'Logo gagal dipilih: $error', error: true);
       }
     }
   }
@@ -378,10 +386,14 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         mimeType: 'application/json',
       );
       if (uri == null) return;
-      if (mounted) showSnack(context, 'Template struk diekspor.');
+      if (mounted) showSnack(context, 'Berkas template struk disimpan.');
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mengekspor template: $error', error: true);
+        showSnack(
+          context,
+          'Template struk gagal diekspor: $error',
+          error: true,
+        );
       }
     }
   }
@@ -406,11 +418,17 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       final raw = utf8.decode(await platform.readFile(path));
       final decoded = jsonDecode(raw);
       if (decoded is! Map) {
-        throw const FormatException('Isi file bukan objek JSON.');
+        throw const FormatException(
+          'Isi file tidak dikenali. Pilih berkas template struk (.json) yang '
+          'benar.',
+        );
       }
       final map = Map<String, Object?>.from(decoded);
       if (map['version'] != 2) {
-        throw const FormatException('Versi template tidak didukung.');
+        throw const FormatException(
+          'Versi template ini tidak didukung aplikasi. Minta berkas template '
+          'terbaru.',
+        );
       }
       final imported = ReceiptTemplate.fromJson(map)..validate();
       setState(() {
@@ -425,12 +443,16 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       if (mounted) {
         showSnack(
           context,
-          'Template dimuat. Tekan Simpan untuk menerapkan.',
+          'Template dimuat. Simpan untuk menerapkan ke struk berikutnya.',
         );
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mengimpor template: $error', error: true);
+        showSnack(
+          context,
+          'Template struk gagal diimpor: $error',
+          error: true,
+        );
       }
     }
   }
@@ -447,8 +469,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                 isScrollable: true,
                 tabs: const [
                   Tab(text: 'Tampilan'),
-                  Tab(text: 'Kepala'),
-                  Tab(text: 'Isi'),
+                  Tab(text: 'Kepala struk'),
+                  Tab(text: 'Isi nota'),
                   Tab(text: 'Pembayaran'),
                   Tab(text: 'Penutup'),
                   Tab(text: 'Pratinjau'),
@@ -456,7 +478,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
               ),
         actions: [
           PopupMenuButton<String>(
-            tooltip: 'Template JSON',
+            tooltip: 'Ekspor atau impor template',
             enabled: !_loading,
             onSelected: (value) {
               if (value == 'export') _exportTemplate();
@@ -548,6 +570,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
     required T value,
     required Map<T, String> items,
     required ValueChanged<T> onChanged,
+    String? helper,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -555,7 +578,10 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         key: ValueKey('$label-$value'),
         initialValue: value,
         isExpanded: true,
-        decoration: InputDecoration(labelText: label),
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: helper,
+        ),
         items: items.entries
             .map(
               (entry) => DropdownMenuItem<T>(
@@ -580,11 +606,13 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       children: [
         SectionCard(
           title: 'Kertas dan salinan',
-          subtitle: 'Printer tetap menentukan lebar akhir saat mencetak.',
+          subtitle: 'Lebar ini dipakai saat menyusun struk. Printer tetap '
+              'menyesuaikan lebar saat mencetak.',
           child: Column(
             children: [
               _dropdown<int>(
                 label: 'Lebar kertas default',
+                helper: 'Pilih sesuai kertas struk yang dipakai.',
                 value: _template.paperWidth,
                 items: const {58: '58 mm (32 kolom)', 80: '80 mm (48 kolom)'},
                 onChanged: (value) {
@@ -594,12 +622,14 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
               ),
               _dropdown<int>(
                 label: 'Jumlah salinan',
+                helper: 'Berapa lembar dicetak untuk satu nota.',
                 value: _template.copies,
                 items: const {1: '1 salinan', 2: '2 salinan', 3: '3 salinan'},
                 onChanged: (value) => _template.copies = value,
               ),
               _dropdown<int>(
                 label: 'Baris kosong sebelum potong',
+                helper: 'Ruang kosong sebelum kertas dipotong.',
                 value: _template.blankLines,
                 items: {
                   for (var i = 0; i <= 5; i++) i: '$i baris',
@@ -608,6 +638,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
               ),
               _dropdown<String>(
                 label: 'Codepage printer',
+                helper: 'Biarkan Ikuti printer, kecuali huruf di struk tercetak '
+                    'rusak.',
                 value: _template.codepage,
                 items: receiptCodepages,
                 onChanged: (value) => _template.codepage = value,
@@ -621,16 +653,16 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
           child: Column(
             children: [
               _switch(
-                'Tampilkan banner VOID',
+                'Tampilkan tanda VOID',
                 _template.voidBanner,
                 (value) => _template.voidBanner = value,
-                subtitle: 'Banner dan alasan tampil pada nota yang dibatalkan.',
+                subtitle: 'Tanda dan alasan tampil pada nota yang dibatalkan.',
               ),
               _switch(
                 'Tampilkan banner pelunasan',
                 _template.pelunasanBanner,
                 (value) => _template.pelunasanBanner = value,
-                subtitle: 'Muncul saat sisa pembayaran lunas.',
+                subtitle: 'Muncul saat sisa pembayaran sudah lunas.',
               ),
             ],
           ),
@@ -651,13 +683,19 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
             children: [
               TextField(
                 controller: _tagline,
-                decoration: const InputDecoration(labelText: 'Tagline'),
+                decoration: const InputDecoration(
+                  labelText: 'Tagline toko',
+                  hintText: 'Contoh: Servis cepat, harga jujur',
+                  helperText: 'Baris singkat di bawah nama toko.',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _kontak,
                 decoration: const InputDecoration(
                   labelText: 'Telepon / WhatsApp',
+                  hintText: 'Contoh: 081234567890',
+                  helperText: 'Nomor yang bisa dihubungi pelanggan.',
                 ),
               ),
               const SizedBox(height: 8),
@@ -685,7 +723,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                 'Nama toko huruf ganda',
                 _template.headerDouble,
                 (value) => _template.headerDouble = value,
-                subtitle: 'Otomatis normal bila nama terlalu panjang.',
+                subtitle: 'Huruf diperbesar. Otomatis kembali normal bila nama '
+                    'terlalu panjang.',
               ),
             ],
           ),
@@ -693,7 +732,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         const SizedBox(height: 12),
         SectionCard(
           title: 'Logo struk',
-          subtitle: 'Logo dicetak sebagai gambar raster di atas kepala struk.',
+          subtitle: 'Logo tampil di bagian paling atas struk. Lebar 10 sampai '
+              '40 mm.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -742,7 +782,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                         setState(() => _template.logoPath = '');
                         _schedulePreview();
                       },
-                      child: const Text('Hapus'),
+                      child: const Text('Hapus logo'),
                     ),
                   ],
                 ],
@@ -767,6 +807,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         _lineCard(
           title: 'Baris tambahan kepala',
           subtitle: 'Maksimal 5 baris, 80 karakter per baris.',
+          hint: 'Contoh: Melayani motor dan mobil',
           editors: _headerExtra,
         ),
       ],
@@ -779,7 +820,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       children: [
         SectionCard(
           title: 'Urutan bagian',
-          subtitle: 'Atur urutan blok yang tampil pada struk.',
+          subtitle: 'Nyalakan bagian yang ingin dicetak, lalu geser urutannya '
+              'dengan panah.',
           child: Column(
             children: [
               for (var i = 0; i < _template.blockOrder.length; i++)
@@ -819,6 +861,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         const SizedBox(height: 12),
         SectionCard(
           title: 'Informasi nota',
+          subtitle: 'Pilih data nota yang dicetak di bawah kepala struk.',
           child: Column(
             children: [
               for (final entry in receiptMetaFields.entries)
@@ -832,7 +875,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Rincian jasa dan part',
+          title: 'Rincian jasa dan sparepart',
+          subtitle: 'Pilih bagian rincian yang dicetak.',
           child: Column(
             children: [
               _switch(
@@ -854,8 +898,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                 'Diskon per baris',
                 _template.showLineDiscount,
                 (value) => _template.showLineDiscount = value,
-                subtitle: 'Tampilkan potongan diskon di bawah baris yang '
-                    'mendapat diskon.',
+                subtitle: 'Tampilkan potongan diskon di bawah baris barang '
+                    'yang mendapat diskon.',
               ),
             ],
           ),
@@ -863,6 +907,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         const SizedBox(height: 12),
         SectionCard(
           title: 'Total pembayaran',
+          subtitle: 'Pilih baris total yang dicetak.',
           child: Column(
             children: [
               for (final entry in receiptTotalFields.entries)
@@ -877,6 +922,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         const SizedBox(height: 12),
         SectionCard(
           title: 'Label',
+          subtitle: 'Ganti sebutan yang dicetak, misalnya No. Nota menjadi '
+              'Nomor Nota.',
           child: ExpansionTile(
             tilePadding: EdgeInsets.zero,
             title: const Text('Ubah teks label'),
@@ -896,7 +943,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                       counterText: '',
                       errorText:
                           (_labels[entry.key]?.text.trim().isEmpty ?? true)
-                              ? 'Label wajib diisi'
+                              ? 'Isi label atau kembalikan ke teks awal.'
                               : null,
                     ),
                   ),
@@ -924,6 +971,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       children: [
         SectionCard(
           title: 'Riwayat pembayaran',
+          subtitle: 'Atur informasi pembayaran yang tampil di struk.',
           child: Column(
             children: [
               _switch(
@@ -950,19 +998,29 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
               TextField(
                 controller: _bankNama,
                 onChanged: (_) => _schedulePreview(),
-                decoration: const InputDecoration(labelText: 'Nama bank'),
+                decoration: const InputDecoration(
+                  labelText: 'Nama bank',
+                  hintText: 'Contoh: BCA',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _bankNomor,
                 onChanged: (_) => _schedulePreview(),
-                decoration: const InputDecoration(labelText: 'Nomor rekening'),
+                decoration: const InputDecoration(
+                  labelText: 'Nomor rekening',
+                  hintText: 'Contoh: 1234567890',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _bankAtasNama,
                 onChanged: (_) => _schedulePreview(),
-                decoration: const InputDecoration(labelText: 'Atas nama'),
+                decoration: const InputDecoration(
+                  labelText: 'Atas nama',
+                  hintText: 'Contoh: Bengkel Jaya Motor',
+                  helperText: 'Nama pemilik rekening.',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
@@ -971,6 +1029,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                 onChanged: (_) => _schedulePreview(),
                 decoration: const InputDecoration(
                   labelText: 'Catatan rekening (opsional)',
+                  hintText: 'Contoh: Transfer sesuai nominal nota',
                 ),
               ),
             ],
@@ -985,8 +1044,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       padding: const EdgeInsets.all(16),
       children: [
         SectionCard(
-          title: 'Footer struk',
-          subtitle: 'Satu baris teks per baris struk.',
+          title: 'Penutup struk',
+          subtitle: 'Setiap baris di sini dicetak sebagai satu baris di struk.',
           child: TextField(
             controller: _footer,
             maxLines: 4,
@@ -1001,11 +1060,13 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         _lineCard(
           title: 'Baris tambahan penutup',
           subtitle: 'Maksimal 5 baris, 80 karakter per baris.',
+          hint: 'Contoh: Simpan struk sebagai bukti garansi',
           editors: _footerExtra,
         ),
         const SizedBox(height: 12),
         SectionCard(
           title: 'Garansi',
+          subtitle: 'Atur keterangan garansi yang tercetak di struk.',
           child: Column(
             children: [
               _switch(
@@ -1025,6 +1086,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                 onChanged: (_) => _schedulePreview(),
                 decoration: const InputDecoration(
                   labelText: 'Catatan garansi tambahan',
+                  hintText: 'Contoh: Garansi tidak berlaku untuk kerusakan '
+                      'akibat kecelakaan.',
                 ),
               ),
             ],
@@ -1033,6 +1096,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
         const SizedBox(height: 12),
         SectionCard(
           title: 'Tanda tangan',
+          subtitle: 'Nama penanggung jawab yang tercetak di bawah struk.',
           child: TextField(
             controller: _signature,
             onChanged: (_) => _schedulePreview(),
@@ -1050,6 +1114,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
     required String title,
     required String subtitle,
     required List<_LineEditor> editors,
+    String? hint,
   }) {
     return SectionCard(
       title: title,
@@ -1064,7 +1129,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       child: Column(
         children: [
           for (var index = 0; index < editors.length; index++)
-            _lineEditorRow(editors, index),
+            _lineEditorRow(editors, index, hint),
           if (editors.isEmpty)
             const Text('Belum ada baris tambahan.', style: TextStyle(fontSize: 12)),
         ],
@@ -1072,7 +1137,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
     );
   }
 
-  Widget _lineEditorRow(List<_LineEditor> editors, int index) {
+  Widget _lineEditorRow(List<_LineEditor> editors, int index, String? hint) {
     final editor = editors[index];
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -1085,6 +1150,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
             onChanged: (_) => _schedulePreview(),
             decoration: InputDecoration(
               labelText: 'Baris ${index + 1}',
+              hintText: hint,
               counterText: '',
             ),
           ),
@@ -1138,7 +1204,8 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
       children: [
         SectionCard(
           title: 'Pratinjau',
-          subtitle: 'Contoh nota memakai template yang sedang diedit.',
+          subtitle: 'Contoh nota memakai pengaturan yang sedang diedit. '
+              'Simpan untuk menerapkan.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1160,7 +1227,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen>
                   child: Center(child: CircularProgressIndicator()),
                 )
               else if (_previewError != null)
-                Text('Pratinjau gagal: $_previewError')
+                Text('Pratinjau gagal dibuat: $_previewError')
               else if (_preview != null)
                 Container(
                   padding: const EdgeInsets.all(12),

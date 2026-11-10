@@ -122,7 +122,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
         ),
       );
       await _load();
-      if (mounted) showSnack(context, 'Status follow up disimpan.');
+      if (mounted) showSnack(context, 'Status tindak lanjut disimpan.');
     } catch (error) {
       if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
     }
@@ -140,7 +140,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
             title: 'Fitur supplier khusus premium',
             subtitle:
                 'Aktifkan lisensi di menu Premium untuk mencatat supplier '
-                'dan follow up reseller.',
+                'dan menindaklanjuti barang yang menipis.',
           ),
         ],
       );
@@ -166,7 +166,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
     final showPurchase = purchaseEnabled && canSeePurchase;
     final tabs = <Widget>[
       const Tab(text: 'Supplier'),
-      if (followupEnabled) const Tab(text: 'Follow up Reseller'),
+      if (followupEnabled) const Tab(text: 'Tindak lanjut reseller'),
       if (showPurchase) const Tab(text: 'Pembelian & Utang'),
     ];
     final views = <Widget>[
@@ -203,7 +203,7 @@ class _SupplierScreenState extends State<SupplierScreen> {
               FilledButton.icon(
                 onPressed: () => _openForm(),
                 icon: const Icon(Icons.add),
-                label: const Text('Supplier'),
+                label: const Text('Tambah supplier'),
               ),
           ],
         ),
@@ -213,8 +213,8 @@ class _SupplierScreenState extends State<SupplierScreen> {
             icon: Icons.local_shipping_outlined,
             title: 'Belum ada supplier',
             subtitle:
-                'Tambahkan supplier lalu kaitkan barang di layar Stok agar '
-                'barang menipis bisa ditindaklanjuti.',
+                'Tambahkan supplier, lalu hubungkan barang di layar Stok agar '
+                'barang menipis bisa segera dipesan ulang.',
           )
         else
           ..._suppliers.map(
@@ -401,28 +401,47 @@ class _SupplierDialogState extends State<_SupplierDialog> {
             TextField(
               controller: _nama,
               autofocus: widget.supplier == null,
-              decoration: const InputDecoration(labelText: 'Nama supplier'),
+              decoration: const InputDecoration(
+                labelText: 'Nama supplier',
+                hintText: 'Contoh: Toko Oli Jaya',
+                helperText: 'Nama toko atau orang yang memasok barang.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _hp,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(labelText: 'Nomor HP'),
+              decoration: const InputDecoration(
+                labelText: 'Nomor HP',
+                hintText: 'Contoh: 081234567890',
+                helperText: 'Dipakai saat menghubungi supplier lewat WhatsApp.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _alamat,
               maxLines: 2,
-              decoration: const InputDecoration(labelText: 'Alamat'),
+              decoration: const InputDecoration(
+                labelText: 'Alamat',
+                hintText: 'Contoh: Jl. Industri No. 5, Bandung',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _catatan,
-              decoration: const InputDecoration(labelText: 'Catatan'),
+              decoration: const InputDecoration(
+                labelText: 'Catatan',
+                hintText: 'Contoh: Kirim setiap Senin',
+                helperText: 'Jadwal kirim, syarat bayar, atau info lain.',
+              ),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Aktif'),
+              title: const Text('Supplier aktif'),
+              subtitle: const Text(
+                'Supplier nonaktif tetap tersimpan, tetapi tidak bisa dipilih '
+                'saat mencatat pembelian baru.',
+              ),
               value: _aktif,
               onChanged: (value) => setState(() => _aktif = value),
             ),
@@ -446,7 +465,7 @@ class _SupplierDialogState extends State<_SupplierDialog> {
         ),
         FilledButton(
           onPressed: _save,
-          child: const Text('Simpan'),
+          child: const Text('Simpan supplier'),
         ),
       ],
     );

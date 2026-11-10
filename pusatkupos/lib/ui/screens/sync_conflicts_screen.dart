@@ -9,43 +9,43 @@ import '../../sync/sync_service.dart';
 import '../widgets.dart';
 
 const _reasonLabels = {
-  'versi_lokal_lebih_baru': 'Versi lokal lebih baru',
+  'versi_lokal_lebih_baru': 'Data di perangkat ini lebih baru',
   'harga_dikunci_owner': 'Harga jasa dikunci pemilik',
-  'harga_tidak_valid': 'Harga barang/jasa tidak valid',
-  'harga_di_bawah_batas': 'Harga di bawah batas',
-  'stok_negatif': 'Stok menjadi negatif',
-  'tanda_tangan_tidak_valid': 'Tanda tangan tidak valid',
-  'dekripsi_gagal': 'Data tidak dapat dibuka',
-  'konflik_unik': 'Bentrok data unik',
-  'entity_belum_didukung': 'Jenis data belum didukung',
-  'nota_butuh_induk': 'Nota induk belum tersedia',
+  'harga_tidak_valid': 'Harga barang atau jasa tidak valid',
+  'harga_di_bawah_batas': 'Harga di bawah batas modal',
+  'stok_negatif': 'Stok menjadi minus',
+  'tanda_tangan_tidak_valid': 'Tanda tangan data tidak cocok',
+  'dekripsi_gagal': 'Data tidak bisa dibuka',
+  'konflik_unik': 'Data kembar dari perangkat lain',
+  'entity_belum_didukung': 'Jenis data belum didukung versi ini',
+  'nota_butuh_induk': 'Data induk belum diterima',
   'gagal_terapkan': 'Perubahan gagal diterapkan',
-  'retryable': 'Perubahan tertunda',
-  'pembayaran_melebihi_total': 'Pembayaran melebihi total efektif',
-  'gaji_ganda': 'Gaji siklus dibayar lebih dari sekali',
-  'retur_pada_nota_void': 'Retur pada nota VOID',
-  'retur_melebihi_qty': 'Retur melebihi qty terjual',
+  'retryable': 'Perubahan menunggu dicoba lagi',
+  'pembayaran_melebihi_total': 'Pembayaran lebih besar dari total nota',
+  'gaji_ganda': 'Gaji siklus dibayar dua kali',
+  'retur_pada_nota_void': 'Retur pada nota yang sudah dibatalkan',
+  'retur_melebihi_qty': 'Retur lebih banyak dari yang terjual',
   'retur_baris_tidak_ditemukan': 'Baris retur tidak ditemukan',
   'retur_tidak_valid': 'Data retur tidak valid',
-  'koreksi_pada_nota_void': 'Koreksi pada nota VOID',
+  'koreksi_pada_nota_void': 'Koreksi pada nota yang sudah dibatalkan',
   'koreksi_di_bawah_batas': 'Koreksi di bawah batas',
-  'void_setelah_retur': 'Void setelah retur aktif',
-  'void_menang': 'Void menang atas retur',
-  'kompensasi_dibutuhkan': 'Kompensasi diperlukan',
-  'kompensasi_gagal': 'Kompensasi gagal',
-  'pengirim_dicabut': 'Perangkat pengirim sudah dicabut',
-  'akun_pengirim_nonaktif': 'Akun pengirim tidak aktif',
-  'peran_viewer_hanya_baca': 'Peran viewer hanya baca',
+  'void_setelah_retur': 'Nota dibatalkan setelah ada retur',
+  'void_menang': 'Pembatalan nota dipakai',
+  'kompensasi_dibutuhkan': 'Perlu penyesuaian saldo',
+  'kompensasi_gagal': 'Penyesuaian saldo gagal',
+  'pengirim_dicabut': 'Perangkat pengirim sudah tidak terdaftar',
+  'akun_pengirim_nonaktif': 'Akun pengirim sudah nonaktif',
+  'peran_viewer_hanya_baca': 'Peran pengirim hanya bisa melihat',
   'hanya_owner': 'Hanya pemilik yang boleh',
   'hapus_order_hanya_owner': 'Hapus order hanya oleh pemilik',
-  'komisi_akun_hilang': 'Akun mekanik komisi tidak ditemukan',
-  'komisi_tanpa_snapshot': 'Tarif komisi nota tidak tersedia',
-  'kode_barang_bentrok': 'Kode barang bentrok',
-  'kode_barang_kosong': 'Barang tanpa kode',
-  'no_nota_bentrok': 'Nomor nota bentrok',
-  'rekonsiliasi_beda': 'Rekonsiliasi berbeda',
+  'komisi_akun_hilang': 'Akun mekanik penerima komisi tidak ditemukan',
+  'komisi_tanpa_snapshot': 'Tarif komisi di nota tidak tersimpan',
+  'kode_barang_bentrok': 'Kode barang dipakai barang lain',
+  'kode_barang_kosong': 'Barang belum punya kode',
+  'no_nota_bentrok': 'Nomor nota sudah dipakai',
+  'rekonsiliasi_beda': 'Hasil rekonsiliasi berbeda',
   'pembelian_tanpa_supplier': 'Pembelian tanpa supplier',
-  'no_pembelian_bentrok': 'Nomor pembelian bentrok',
+  'no_pembelian_bentrok': 'Nomor pembelian sudah dipakai',
   'saldo_awal_stok_berubah': 'Stok berubah setelah saldo awal',
 };
 
@@ -84,12 +84,46 @@ const _detailLabels = {
   'sender_account': 'Akun pengirim',
   'sender_kind': 'Jenis pengirim',
   'pemenang': 'Pemenang',
-  'butuh_bantuan_owner': 'Butuh bantuan owner',
-  'kompensasi_status': 'Status kompensasi',
-  'kompensasi_error': 'Kesalahan kompensasi',
-  'return_sync_ids': 'Retur yang dikompensasi',
-  'void_hlc': 'HLC void',
+  'butuh_bantuan_owner': 'Perlu bantuan pemilik',
+  'kompensasi_status': 'Status penyesuaian',
+  'kompensasi_error': 'Pesan kegagalan penyesuaian',
+  'return_sync_ids': 'Retur yang disesuaikan',
+  'void_hlc': 'Waktu pembatalan',
 };
+
+const _entityLabels = {
+  'nota': 'Nota servis',
+  'service_order': 'Nota servis',
+  'service_order_item': 'Baris nota',
+  'service_payment': 'Pembayaran',
+  'stock': 'Barang',
+  'stock_item': 'Barang',
+  'stock_movement': 'Pergerakan stok',
+  'customer': 'Pelanggan',
+  'unit': 'Kendaraan',
+  'vehicle': 'Kendaraan',
+  'supplier': 'Supplier',
+  'supplier_followup': 'Tindak lanjut reseller',
+  'supplier_purchase': 'Pembelian',
+  'supplier_payment': 'Pembayaran utang',
+  'supplier_purchase_return': 'Retur pembelian',
+  'estimate': 'Estimasi',
+  'work_order': 'Order kerja',
+  'work_order_status': 'Status order',
+  'nota_adjustment': 'Koreksi nota',
+  'day_digest': 'Ringkasan harian',
+  'data_request': 'Permintaan data',
+  'data_response': 'Jawaban permintaan data',
+  'store_settings': 'Pengaturan toko',
+  'store_feature': 'Modul toko',
+  'opening_balance': 'Saldo awal',
+  'employee': 'Karyawan',
+  'salary_payment': 'Gaji karyawan',
+  'harga_jasa': 'Harga jasa',
+  'pajak_payment': 'Pembayaran PPN',
+};
+
+String _entityLabel(String value) => _entityLabels[value] ?? value;
 
 bool _isMoneyKey(String key) =>
     key == 'nominal' ||
@@ -121,7 +155,7 @@ String _statusLabel(Map<String, Object?> row) {
   if (resolved) return 'Selesai';
   return switch (status) {
     'failed' => 'Perlu tindakan',
-    'retrying' => 'Menunggu dicoba ulang',
+    'retrying' => 'Menunggu dicoba lagi',
     _ => 'Tercatat',
   };
 }
@@ -163,11 +197,11 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
       await SyncService.instance.retryConflict(row['id'] as int);
       await SyncService.instance.syncNow();
       await _load();
-      if (mounted) showSnack(context, 'Perubahan dicoba ulang.');
+      if (mounted) showSnack(context, 'Perubahan dicoba lagi.');
     } catch (error) {
       await _load();
       if (mounted) {
-        showSnack(context, 'Masih tertahan: $error', error: true);
+        showSnack(context, 'Masih belum bisa diterapkan: $error', error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -181,12 +215,14 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final ownerHelp = resolution == 'bantuan_owner';
     final ok = await confirmAction(
       context,
-      title: ownerHelp ? 'Selesaikan sebagai owner' : 'Abaikan konflik',
+      title: ownerHelp
+          ? 'Selesaikan dengan bantuan pemilik'
+          : 'Abaikan perubahan ini',
       message: ownerHelp
-          ? 'Perubahan ini ditandai selesai atas bantuan owner dan dicatat '
-              'di audit. Dokumen bisnis yang sudah ada tidak diubah.'
-          : 'Perubahan ini tidak akan diterapkan di perangkat ini dan akan '
-              'ditandai selesai. Konflik tetap tercatat dan tidak dihapus.',
+          ? 'Perubahan ditandai selesai dengan bantuan pemilik dan dicatat di '
+              'riwayat. Nota atau data yang sudah ada tidak diubah.'
+          : 'Perubahan ini tidak diterapkan di perangkat ini dan ditandai '
+              'selesai. Catatan masalah ini tetap tersimpan.',
       confirmLabel: ownerHelp ? 'Selesaikan' : 'Abaikan',
     );
     if (!ok) return;
@@ -201,13 +237,17 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
         showSnack(
           context,
           ownerHelp
-              ? 'Konflik diselesaikan sebagai bantuan owner.'
-              : 'Konflik ditandai diabaikan.',
+              ? 'Perubahan diselesaikan dengan bantuan pemilik.'
+              : 'Perubahan ditandai diabaikan.',
         );
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal menandai konflik: $error', error: true);
+        showSnack(
+          context,
+          'Perubahan gagal ditandai: $error',
+          error: true,
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -221,7 +261,9 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
       await _load();
     } catch (error) {
       await _load();
-      if (mounted) showSnack(context, 'Sinkron gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Sinkronisasi gagal: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -232,7 +274,7 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final pending = _rows.where((row) => row['resolved_at'] == null).length;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Konflik sinkronisasi'),
+        title: const Text('Data yang perlu diputuskan'),
         actions: [
           IconButton(
             onPressed: _busy ? null : _sync,
@@ -248,6 +290,8 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
               children: [
                 SectionCard(
                   title: 'Ringkasan',
+                  subtitle: 'Jumlah data yang belum selesai dan antrean '
+                      'sinkronisasi.',
                   child: Column(
                     children: [
                       _line('Belum selesai', '$pending'),
@@ -269,7 +313,7 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 40),
                     child: Center(
-                      child: Text('Tidak ada konflik yang tercatat.'),
+                      child: Text('Tidak ada data yang perlu diputuskan.'),
                     ),
                   ),
                 for (final row in _rows) ...[
@@ -306,9 +350,9 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final scheme = Theme.of(context).colorScheme;
     return SectionCard(
       title: _reasonLabel(reason),
-      subtitle: '${row['entity'] ?? ''} ${row['entity_id'] ?? ''} · '
+      subtitle: '${_entityLabel('${row['entity'] ?? ''}')} · '
           '${_statusLabel(row)}'
-          '${needsOwner ? ' · Perlu bantuan owner' : ''}',
+          '${needsOwner ? ' · Perlu bantuan pemilik' : ''}',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -369,7 +413,7 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
                     onPressed: _busy
                         ? null
                         : () => _ignore(row, resolution: 'bantuan_owner'),
-                    child: const Text('Selesaikan (owner)'),
+                    child: const Text('Selesaikan dengan pemilik'),
                   ),
                 OutlinedButton(
                   onPressed: _busy ? null : () => _ignore(row),
@@ -386,13 +430,13 @@ class _SyncConflictsScreenState extends State<SyncConflictsScreen> {
     final text = SyncConflictRules.suggestionForReason(reason);
     if (text.isNotEmpty) return text;
     if (!deadLetter) return '';
-    return 'Amplop ini tidak dapat dipulihkan. Minta perangkat pengirim '
-        'mengirim ulang dokumennya, lalu sinkronkan ulang.';
+    return 'Data ini tidak bisa dipulihkan otomatis. Minta perangkat '
+        'pengirim mengirim ulang datanya, lalu sinkronkan lagi.';
   }
 
   String _kompensasiLabel(String status) => switch (status) {
         'selesai' => 'Selesai',
-        'gagal' => 'Gagal — perlu bantuan owner',
+        'gagal' => 'Gagal, perlu bantuan pemilik',
         'pending' => 'Menunggu perangkat asal',
         _ => status,
       };

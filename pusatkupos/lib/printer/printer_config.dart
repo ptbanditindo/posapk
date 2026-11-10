@@ -191,7 +191,7 @@ class PrinterConfig {
     }
     final cleanName = nama.trim();
     if (cleanName.isEmpty) {
-      throw ArgumentError('Nama printer wajib diisi.');
+      throw ArgumentError('Isi nama printer, misalnya Printer Kasir.');
     }
     if (cleanName.length > 80) {
       throw ArgumentError('Nama printer maksimal 80 karakter.');
@@ -208,7 +208,8 @@ class PrinterConfig {
     final cleanMode = mode.trim().toUpperCase();
     if (!allowed.contains(cleanMode)) {
       throw ArgumentError(
-        'Mode cetak tidak sesuai untuk jenis koneksi printer ini.',
+        'Mode cetak ini tidak cocok dengan jenis koneksi printer. Pilih mode '
+        'lain.',
       );
     }
     if (!_encodingPattern.hasMatch(encoding.trim())) {
@@ -226,31 +227,37 @@ class PrinterConfig {
         }
         if (address.trim().isEmpty) {
           throw ArgumentError(
-            'Alamat Bluetooth printer wajib diisi '
-            '(contoh AA:BB:CC:DD:EE:FF).',
+            'Isi alamat Bluetooth printer, misalnya AA:BB:CC:DD:EE:FF. Tekan '
+            'Cari printer untuk memilih dari daftar.',
           );
         }
         if (!_bluetoothPattern.hasMatch(address.trim())) {
           throw ArgumentError(
-            'Format alamat Bluetooth tidak valid '
-            '(contoh AA:BB:CC:DD:EE:FF).',
+            'Format alamat Bluetooth belum benar. Contoh: AA:BB:CC:DD:EE:FF.',
           );
         }
         break;
       case 'NETWORK':
         if (!_validIp(ip.trim())) {
           throw ArgumentError(
-            'Alamat IP printer tidak valid (contoh 192.168.1.9).',
+            'Alamat IP belum benar. Contoh: 192.168.1.9. Cek alamat printer '
+            'di menu jaringan printer.',
           );
         }
         final value = port;
         if (value == null || value < 1 || value > 65535) {
-          throw ArgumentError('Port printer harus 1-65535.');
+          throw ArgumentError(
+            'Port printer harus angka 1 sampai 65535. Port yang umum dipakai '
+            'adalah 9100.',
+          );
         }
         break;
       case 'USB':
         if (address.trim().isEmpty) {
-          throw ArgumentError('Identitas perangkat USB printer wajib diisi.');
+          throw ArgumentError(
+            'Isi identitas perangkat USB, misalnya usb:0416:5011. Tekan Cari '
+            'printer untuk memilih dari daftar.',
+          );
         }
         break;
     }
@@ -418,7 +425,8 @@ class PrinterStore {
       }
       if (!identities.add(clean.identity)) {
         throw ArgumentError(
-          'Printer duplikat: perangkat yang sama tercatat lebih dari sekali.',
+          'Printer yang sama sudah tercatat. Ubah printer yang ada, jangan '
+          'menambah dua kali.',
         );
       }
       if (clean.utama) primarySeen = true;

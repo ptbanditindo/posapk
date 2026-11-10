@@ -66,7 +66,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
     if (suppliers.isEmpty) {
       showSnack(
         context,
-        'Tambahkan supplier pada tab Supplier terlebih dahulu.',
+        'Tambahkan supplier pada tab Supplier sebelum mencatat pembelian.',
         error: true,
       );
       return;
@@ -74,7 +74,12 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
     final stocks = await AppDatabase.instance.listStock();
     if (!mounted) return;
     if (stocks.isEmpty) {
-      showSnack(context, 'Belum ada barang pada layar Stok.', error: true);
+      showSnack(
+        context,
+        'Belum ada barang di layar Stok. Tambahkan barang dulu '
+        'sebelum mencatat pembelian.',
+        error: true,
+      );
       return;
     }
     final input = await showDialog<_PurchaseFormResult>(
@@ -181,12 +186,18 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
               TextField(
                 controller: nominal,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Nominal'),
+                decoration: const InputDecoration(
+                  labelText: 'Nominal',
+                  hintText: 'Contoh: 500000',
+                  helperText: 'Boleh sebagian atau seluruh sisa utang.',
+                ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 initialValue: metode,
-                decoration: const InputDecoration(labelText: 'Metode'),
+                decoration: const InputDecoration(
+                  labelText: 'Metode pembayaran',
+                ),
                 items: const [
                   DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                   DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
@@ -197,7 +208,11 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
               const SizedBox(height: 10),
               TextField(
                 controller: catatan,
-                decoration: const InputDecoration(labelText: 'Catatan'),
+                decoration: const InputDecoration(
+                  labelText: 'Catatan',
+                  hintText: 'Contoh: transfer BCA',
+                  helperText: 'Boleh dikosongkan.',
+                ),
               ),
             ],
           ),
@@ -208,7 +223,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Bayar'),
+              child: const Text('Simpan pembayaran'),
             ),
           ],
         ),
@@ -287,6 +302,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
                               keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
                                 labelText: 'Qty',
+                                hintText: '0',
                                 isDense: true,
                               ),
                             ),
@@ -296,14 +312,17 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
                     ),
                   TextField(
                     controller: alasan,
-                    decoration:
-                        const InputDecoration(labelText: 'Alasan retur'),
+                    decoration: const InputDecoration(
+                      labelText: 'Alasan retur',
+                      hintText: 'Contoh: barang rusak saat dikirim',
+                    ),
                   ),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     initialValue: metodeRefund,
-                    decoration:
-                        const InputDecoration(labelText: 'Metode refund'),
+                    decoration: const InputDecoration(
+                      labelText: 'Uang retur dikembalikan lewat',
+                    ),
                     items: const [
                       DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                       DropdownMenuItem(
@@ -325,7 +344,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Retur'),
+              child: const Text('Simpan retur'),
             ),
           ],
         ),
@@ -384,7 +403,8 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
             controller: reason,
             autofocus: true,
             decoration: InputDecoration(
-              labelText: 'Alasan reversal',
+              labelText: 'Alasan pembatalan',
+              hintText: 'Contoh: salah input jumlah retur',
               errorText: error,
             ),
             onChanged: (_) {
@@ -445,7 +465,10 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
         content: TextField(
           controller: reason,
           autofocus: true,
-          decoration: const InputDecoration(labelText: 'Alasan pembatalan'),
+          decoration: const InputDecoration(
+            labelText: 'Alasan pembatalan',
+            hintText: 'Contoh: barang tidak jadi dibeli',
+          ),
         ),
         actions: [
           TextButton(
@@ -485,8 +508,10 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
         children: const [
           EmptyState(
             icon: Icons.inventory_outlined,
-            title: 'Pembelian & Utang dimatikan',
-            subtitle: 'Aktifkan melalui Pengaturan › Fitur Toko.',
+            title: 'Pembelian dan utang dimatikan',
+            subtitle:
+                'Aktifkan lewat Pengaturan › Fitur toko bila toko mencatat '
+                'pembelian dari supplier.',
           ),
         ],
       );
@@ -498,7 +523,9 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
           EmptyState(
             icon: Icons.lock_outline,
             title: 'Akses pembelian terbatas',
-            subtitle: 'Hubungi pemilik untuk izin lihat_pembelian.',
+            subtitle:
+                'Hubungi pemilik agar akun Anda diberi izin melihat '
+                'pembelian dan utang supplier.',
           ),
         ],
       );
@@ -521,7 +548,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
                 FilledButton.icon(
                   onPressed: _openForm,
                   icon: const Icon(Icons.add),
-                  label: const Text('Pembelian'),
+                  label: const Text('Catat pembelian'),
                 ),
             ],
           ),
@@ -584,8 +611,8 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
           if (_aging.isNotEmpty) ...[
             const SizedBox(height: 12),
             SectionCard(
-              title: 'Aging utang per supplier',
-              subtitle: 'Berdasarkan umur nota pembelian',
+              title: 'Umur utang per supplier',
+              subtitle: 'Dihitung dalam hari sejak nota pembelian dibuat.',
               child: Column(
                 children: _aging
                     .map(
@@ -630,7 +657,7 @@ class _PurchaseDebtTabState extends State<PurchaseDebtTab> {
                             contentPadding: EdgeInsets.zero,
                             title: Text(
                               '${row['no_pembelian']}'
-                              '${row['status'] == 'VOID' ? ' · VOID' : ''}',
+                              '${row['status'] == 'VOID' ? ' · dibatalkan' : ''}',
                             ),
                             subtitle: Text(
                               '${row['supplier_nama_snapshot']} · '
@@ -701,12 +728,12 @@ class _PurchaseDetailBody extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           '${detail['tanggal']} · ${detail['jenis_bayar']}'
-          '${status == 'VOID' ? ' · VOID' : ''}',
+          '${status == 'VOID' ? ' · dibatalkan' : ''}',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         if ('${detail['void_reason'] ?? ''}'.isNotEmpty)
           Text(
-            'Alasan void: ${detail['void_reason']}',
+            'Alasan pembatalan: ${detail['void_reason']}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         const Divider(height: 24),
@@ -772,7 +799,7 @@ class _PurchaseDetailBody extends StatelessWidget {
               title: Text('${entry['no_retur']}'),
               subtitle: Text(
                 '${entry['alasan']} · ${formatRupiah((entry['total'] as num).toInt())}'
-                '${entry['status'] == 'VOID' ? ' · VOID' : ''}'
+                '${entry['status'] == 'VOID' ? ' · dibatalkan' : ''}'
                 '${'${entry['metode_refund'] ?? 'CASH'}' == 'TRANSFER' ? ' · transfer' : ''}',
               ),
               trailing: entry['status'] == 'AKTIF' && canReverse
@@ -922,11 +949,11 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
     final qty = parseQuantityToMilli(_qty.text, desimal: stock.desimal);
     final harga = tryParseRupiahToCents(_harga.text);
     if (qty == null || qty <= 0) {
-      setState(() => _error = 'Qty harus lebih dari nol.');
+      setState(() => _error = 'Jumlah harus lebih dari 0.');
       return;
     }
     if (harga == null || harga < 0) {
-      setState(() => _error = 'Harga tidak valid.');
+      setState(() => _error = 'Harga beli tidak valid.');
       return;
     }
     setState(() {
@@ -986,7 +1013,10 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
               DropdownButtonFormField<int>(
                 initialValue: _supplierId,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Supplier'),
+                decoration: const InputDecoration(
+                  labelText: 'Supplier',
+                  helperText: 'Hanya supplier aktif yang bisa dipilih.',
+                ),
                 items: [
                   for (final supplier in widget.suppliers)
                     if (supplier['aktif'] == 1 || supplier['id'] == _supplierId)
@@ -1022,7 +1052,7 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                   Expanded(
                     child: DropdownButtonFormField<String>(
                       initialValue: _jenisBayar,
-                      decoration: const InputDecoration(labelText: 'Bayar'),
+                      decoration: const InputDecoration(labelText: 'Cara bayar'),
                       items: const [
                         DropdownMenuItem(value: 'KREDIT', child: Text('Kredit')),
                         DropdownMenuItem(value: 'TUNAI', child: Text('Tunai')),
@@ -1039,7 +1069,8 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                 DropdownButtonFormField<int>(
                   initialValue: _terminHari,
                   decoration: const InputDecoration(
-                    labelText: 'Termin jatuh tempo',
+                    labelText: 'Jatuh tempo',
+                    helperText: 'Batas waktu membayar utang ke supplier.',
                   ),
                   items: const [
                     DropdownMenuItem(value: 0, child: Text('0 hari')),
@@ -1056,7 +1087,7 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
               DropdownButtonFormField<int>(
                 initialValue: _stockId,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Barang'),
+                decoration: const InputDecoration(labelText: 'Barang dibeli'),
                 items: [
                   for (final stock in widget.stocks)
                     DropdownMenuItem(
@@ -1074,9 +1105,10 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                       controller: _qty,
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
-                        labelText: 'Qty',
+                        labelText: 'Jumlah',
+                        hintText: 'Contoh: 12',
                         helperText: _selectedStock == null
-                            ? null
+                            ? 'Pilih barang untuk melihat satuannya.'
                             : 'Desimal ${_selectedStock?.desimal ?? 0}',
                       ),
                     ),
@@ -1087,7 +1119,9 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                       controller: _harga,
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(
-                        labelText: 'Harga satuan',
+                        labelText: 'Harga beli',
+                        hintText: 'Contoh: 45000',
+                        helperText: 'Harga per satuan dari supplier.',
                       ),
                     ),
                   ),
@@ -1123,7 +1157,11 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                     child: TextField(
                       controller: _diskon,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Diskon'),
+                      decoration: const InputDecoration(
+                        labelText: 'Diskon',
+                        hintText: 'Contoh: 10000',
+                        helperText: 'Potongan dalam rupiah.',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1131,7 +1169,11 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                     child: TextField(
                       controller: _ongkir,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Ongkir'),
+                      decoration: const InputDecoration(
+                        labelText: 'Ongkir',
+                        hintText: 'Contoh: 15000',
+                        helperText: 'Biaya kirim ke toko.',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1139,7 +1181,11 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                     child: TextField(
                       controller: _ppn,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'PPN'),
+                      decoration: const InputDecoration(
+                        labelText: 'PPN',
+                        hintText: 'Contoh: 11000',
+                        helperText: 'Isi nominal, bukan persen.',
+                      ),
                     ),
                   ),
                 ],
@@ -1153,6 +1199,8 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(
                         labelText: 'Dibayar sekarang',
+                        hintText: 'Contoh: 200000',
+                        helperText: 'Kosongkan bila belum ada pembayaran.',
                       ),
                     ),
                   ),
@@ -1177,7 +1225,10 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
               const SizedBox(height: 10),
               TextField(
                 controller: _catatan,
-                decoration: const InputDecoration(labelText: 'Catatan'),
+                decoration: const InputDecoration(
+                  labelText: 'Catatan',
+                  hintText: 'Contoh: barang datang besok pagi',
+                ),
               ),
               if (_error != null)
                 Align(
@@ -1198,7 +1249,7 @@ class _PurchaseFormDialogState extends State<_PurchaseFormDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(onPressed: _save, child: const Text('Simpan')),
+        FilledButton(onPressed: _save, child: const Text('Simpan pembelian')),
       ],
     );
   }

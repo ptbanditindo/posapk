@@ -668,7 +668,7 @@ class _StockDialogState extends State<_StockDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.item == null ? 'Barang baru' : 'Ubah barang'),
+      title: Text(widget.item == null ? 'Tambah barang' : 'Ubah barang'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -676,12 +676,20 @@ class _StockDialogState extends State<_StockDialog> {
             TextField(
               controller: _kode,
               autofocus: widget.item == null,
-              decoration: const InputDecoration(labelText: 'Kode'),
+              decoration: const InputDecoration(
+                labelText: 'Kode barang',
+                hintText: 'Contoh: OLI-01',
+                helperText: 'Kode unik barang. Boleh huruf, angka, atau '
+                    'tanda hubung.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _nama,
-              decoration: const InputDecoration(labelText: 'Nama barang'),
+              decoration: const InputDecoration(
+                labelText: 'Nama barang',
+                hintText: 'Contoh: Oli mesin 10W-40',
+              ),
             ),
             const SizedBox(height: 10),
             if (_isOwner)
@@ -691,8 +699,10 @@ class _StockDialogState extends State<_StockDialog> {
                     child: TextField(
                       controller: _modal,
                       keyboardType: TextInputType.number,
-                      decoration:
-                          const InputDecoration(labelText: 'Harga modal'),
+                      decoration: const InputDecoration(
+                        labelText: 'Harga modal',
+                        hintText: 'Contoh: 45000',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -700,8 +710,10 @@ class _StockDialogState extends State<_StockDialog> {
                     child: TextField(
                       controller: _jual,
                       keyboardType: TextInputType.number,
-                      decoration:
-                          const InputDecoration(labelText: 'Harga jual'),
+                      decoration: const InputDecoration(
+                        labelText: 'Harga jual',
+                        hintText: 'Contoh: 60000',
+                      ),
                     ),
                   ),
                 ],
@@ -723,9 +735,10 @@ class _StockDialogState extends State<_StockDialog> {
                     enabled: AppState.instance.isOwner,
                     keyboardType: TextInputType.number,
                     decoration: InputDecoration(
-                      labelText: 'Stok',
+                      labelText: 'Stok awal',
+                      hintText: 'Contoh: 12',
                       helperText: AppState.instance.isOwner
-                          ? null
+                          ? 'Jumlah barang yang ada saat ini.'
                           : 'Gunakan opname stok untuk mengubah stok.',
                     ),
                   ),
@@ -735,8 +748,12 @@ class _StockDialogState extends State<_StockDialog> {
                   child: TextField(
                     controller: _minimum,
                     keyboardType: TextInputType.number,
-                    decoration:
-                        const InputDecoration(labelText: 'Stok minimum'),
+                    decoration: const InputDecoration(
+                      labelText: 'Stok minimum',
+                      hintText: 'Contoh: 3',
+                      helperText: 'Peringatan muncul saat stok di bawah angka '
+                          'ini.',
+                    ),
                   ),
                 ),
               ],
@@ -749,7 +766,8 @@ class _StockDialogState extends State<_StockDialog> {
                     controller: _satuan,
                     decoration: const InputDecoration(
                       labelText: 'Satuan',
-                      hintText: 'pcs / liter / meter',
+                      hintText: 'pcs / liter / botol',
+                      helperText: 'Satuan yang dipakai saat menjual barang.',
                     ),
                   ),
                 ),
@@ -759,6 +777,7 @@ class _StockDialogState extends State<_StockDialog> {
                     initialValue: _desimal,
                     decoration: const InputDecoration(
                       labelText: 'Desimal kuantitas',
+                      helperText: 'Pilih 1 atau 2 bila barang dijual pecahan.',
                     ),
                     items: const [
                       DropdownMenuItem(value: 0, child: Text('0')),
@@ -821,7 +840,7 @@ class _StockDialogState extends State<_StockDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(onPressed: _save, child: const Text('Simpan')),
+        FilledButton(onPressed: _save, child: const Text('Simpan barang')),
       ],
     );
   }
@@ -858,7 +877,7 @@ class _StockInDialogState extends State<_StockInDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Stok masuk · ${widget.item.nama}'),
+      title: Text('Stok masuk: ${widget.item.nama}'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -866,12 +885,19 @@ class _StockInDialogState extends State<_StockInDialog> {
             controller: _qty,
             autofocus: true,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Jumlah masuk'),
+            decoration: const InputDecoration(
+              labelText: 'Jumlah masuk',
+              hintText: 'Contoh: 12',
+              helperText: 'Jumlah barang yang baru diterima.',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _alasan,
-            decoration: const InputDecoration(labelText: 'Keterangan'),
+            decoration: const InputDecoration(
+              labelText: 'Keterangan',
+              hintText: 'Contoh: Kiriman supplier',
+            ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 10),
@@ -943,7 +969,7 @@ class _StockOutDialogState extends State<_StockOutDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Stok keluar · ${widget.item.nama}'),
+      title: Text('Stok keluar: ${widget.item.nama}'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -953,7 +979,9 @@ class _StockOutDialogState extends State<_StockOutDialog> {
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
               labelText: 'Jumlah keluar',
-              helperText: 'Stok ${widget.item.jumlahLabel}',
+              hintText: 'Contoh: 2',
+              helperText: 'Stok tersedia: ${widget.item.jumlahLabel}. Isi '
+                  'jumlah yang keluar.',
             ),
           ),
           const SizedBox(height: 10),
@@ -961,7 +989,7 @@ class _StockOutDialogState extends State<_StockOutDialog> {
             controller: _alasan,
             decoration: const InputDecoration(
               labelText: 'Alasan (wajib)',
-              hintText: 'Rusak / dipakai sendiri',
+              hintText: 'Contoh: rusak / dipakai sendiri',
             ),
           ),
           if (_error != null) ...[
@@ -985,11 +1013,11 @@ class _StockOutDialogState extends State<_StockOutDialog> {
               desimal: widget.item.desimal,
             );
             if (qty == null || qty <= 0) {
-              setState(() => _error = 'Jumlah keluar tidak valid.');
+              setState(() => _error = 'Isi jumlah lebih dari 0.');
               return;
             }
             if (_alasan.text.trim().isEmpty) {
-              setState(() => _error = 'Alasan wajib diisi.');
+              setState(() => _error = 'Isi alasan stok keluar.');
               return;
             }
             Navigator.pop(context, _QtyReason(qty, _alasan.text.trim()));
@@ -1033,12 +1061,12 @@ class _OpnameDialogState extends State<_OpnameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Opname · ${widget.item.nama}'),
+      title: Text('Opname stok: ${widget.item.nama}'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            'Stok sistem: ${widget.item.jumlahLabel}',
+            'Stok menurut sistem: ${widget.item.jumlahLabel}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 10),
@@ -1046,12 +1074,19 @@ class _OpnameDialogState extends State<_OpnameDialog> {
             controller: _fisik,
             autofocus: true,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'Jumlah fisik'),
+            decoration: const InputDecoration(
+              labelText: 'Jumlah fisik',
+              hintText: 'Contoh: 8',
+              helperText: 'Masukkan hasil hitung barang di rak atau gudang.',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _alasan,
-            decoration: const InputDecoration(labelText: 'Catatan (opsional)'),
+            decoration: const InputDecoration(
+              labelText: 'Catatan (opsional)',
+              hintText: 'Contoh: selisih hitung',
+            ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 10),

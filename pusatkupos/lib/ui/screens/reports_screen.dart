@@ -279,7 +279,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               OutlinedButton.icon(
                 onPressed: _tutupBuku,
                 icon: const Icon(Icons.event_available_outlined),
-                label: const Text('Tutup buku'),
+                label: const Text('Tutup buku bulanan'),
               ),
           ],
         ),
@@ -288,9 +288,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
           spacing: 8,
           children: [
             _chip('Hari ini', _ReportPreset.today),
-            _chip('7 hari', _ReportPreset.week),
+            _chip('7 hari terakhir', _ReportPreset.week),
             _chip('Per bulan', _ReportPreset.month),
-            _chip('Semua', _ReportPreset.all),
+            _chip('Semua waktu', _ReportPreset.all),
           ],
         ),
         if (_preset == _ReportPreset.month) ...[
@@ -331,8 +331,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
             }
             if (snapshot.hasError) {
               return EmptyState(
-                title: 'Laporan gagal dimuat',
-                subtitle: '${snapshot.error}',
+                title: 'Laporan belum bisa dimuat',
+                subtitle: 'Data laporan tidak bisa dibaca: ${snapshot.error}. '
+                    'Coba pilih ulang periode atau buka halaman ini lagi.',
                 icon: Icons.error_outline,
               );
             }
@@ -355,7 +356,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Total transaksi',
+                            label: 'Jumlah nota',
                             value: '${summary.transaksi}',
                             icon: Icons.receipt_long_outlined,
                           ),
@@ -363,7 +364,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Omzet bruto (sebelum retur)',
+                            label: 'Omzet sebelum retur',
                             value: formatRupiah(summary.totalCents),
                             icon: Icons.receipt_long_outlined,
                           ),
@@ -371,7 +372,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Omzet neto (setelah retur)',
+                            label: 'Omzet setelah retur',
                             value: formatRupiah(summary.totalNetCents),
                             icon: Icons.payments_outlined,
                             tone: Theme.of(context).colorScheme.tertiary,
@@ -380,7 +381,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Dibayar nota periode',
+                            label: 'Uang masuk dari nota periode ini',
                             value: formatRupiah(summary.dibayarCents),
                             icon: Icons.account_balance_wallet_outlined,
                             tone: Colors.green,
@@ -389,7 +390,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Piutang saldo nota periode',
+                            label: 'Sisa piutang nota periode ini',
                             value: formatRupiah(summary.piutangCents),
                             icon: Icons.schedule_outlined,
                             tone: Colors.orange,
@@ -398,7 +399,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Kas diterima periode',
+                            label: 'Uang diterima periode ini',
                             value: formatRupiah(
                               summary.cashByMethod.values.fold<int>(
                                 0,
@@ -415,9 +416,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Omzet bruto, dibayar, dan piutang mengikuti tanggal nota; '
-                  'retur mengikuti tanggal retur; uang diterima mengikuti '
-                  'tanggal pembayaran.',
+                  'Penjualan, pembayaran, dan piutang dihitung dari tanggal '
+                  'nota. Retur dihitung dari tanggal retur. Uang diterima '
+                  'dihitung dari tanggal pembayaran.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 if (_closing != null) ...[
@@ -426,11 +427,17 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ],
                 const SizedBox(height: 16),
                 SectionCard(
-                  title: 'Rincian',
+                  title: 'Rincian omzet dan laba',
                   child: Column(
                     children: [
-                      _line('Jasa', formatRupiah(summary.totalJasaCents)),
-                      _line('Part', formatRupiah(summary.totalPartCents)),
+                      _line(
+                        'Penjualan jasa',
+                        formatRupiah(summary.totalJasaCents),
+                      ),
+                      _line(
+                        'Penjualan part',
+                        formatRupiah(summary.totalPartCents),
+                      ),
                       _line('Diskon', '-${formatRupiah(summary.diskonCents)}'),
                       const Divider(),
                       _line(
@@ -440,41 +447,41 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       ),
                       if (summary.returCents > 0) ...[
                         _line(
-                          'Retur jasa',
+                          'Retur jasa (dikurangi)',
                           '-${formatRupiah(summary.returJasaCents)}',
                         ),
                         _line(
-                          'Retur part',
+                          'Retur part (dikurangi)',
                           '-${formatRupiah(summary.returPartCents)}',
                         ),
                         _line(
-                          'Penjualan neto',
+                          'Penjualan setelah retur',
                           formatRupiah(summary.totalNetCents),
                           bold: true,
                         ),
                       ],
                       const SizedBox(height: 8),
                       _line(
-                        'Modal part',
+                        'Modal part (HPP)',
                         formatRupiah(summary.totalModalPartCents),
                       ),
                       _line(
-                        'Laba kotor part (setelah diskon)',
+                        'Laba kotor part setelah diskon',
                         formatRupiah(summary.labaKotorPartCents),
                       ),
                       _line(
-                        'Modal jasa',
+                        'Modal jasa (HPP)',
                         formatRupiah(summary.totalModalJasaCents),
                       ),
                       _line(
-                        'Laba kotor jasa (setelah diskon)',
+                        'Laba kotor jasa setelah diskon',
                         formatRupiah(summary.labaKotorJasaCents),
                       ),
                       const Divider(),
                       _line('Komisi', formatRupiah(summary.komisiCents)),
                       _line('Gaji dibayar', formatRupiah(summary.gajiCents)),
                       _line(
-                        'Laba setelah komisi & gaji',
+                        'Laba bersih setelah komisi dan gaji',
                         formatRupiah(
                           summary.labaKotorNetCents -
                               summary.komisiCents -
@@ -488,7 +495,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 const SizedBox(height: 16),
                 SectionCard(
                   title: 'Per jenis transaksi',
-                  subtitle: 'Setelah koreksi nota, sebelum retur',
+                  subtitle: 'Sudah termasuk koreksi nota, belum dikurangi retur',
                   child: summary.countByType.isEmpty
                       ? const Text('Belum ada transaksi pada periode ini.')
                       : Column(
@@ -508,10 +515,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 if (AppState.instance.isOwner && !_fromSnapshot) ...[
                   const SizedBox(height: 16),
                   SectionCard(
-                    title: 'Penjualan di bawah harga terdaftar',
+                    title: 'Penjualan di bawah harga patokan',
                     subtitle: _below.isEmpty
                         ? 'Tidak ada selisih harga pada periode ini.'
-                        : '${_below.length} baris perlu ditinjau',
+                        : '${_below.length} baris perlu diperiksa',
                     child: _below.isEmpty
                         ? const SizedBox.shrink()
                         : Column(
@@ -591,7 +598,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   SectionCard(
                     title: 'Margin per barang',
                     subtitle:
-                        'Memakai harga modal yang tersimpan pada baris nota.',
+                        'Memakai modal (HPP) yang tersimpan di baris nota.',
                     child: _margin.isEmpty
                         ? const Text('Belum ada penjualan part pada periode ini.')
                         : Column(
@@ -602,8 +609,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                     dense: true,
                                     title: Text('${row['nama_part']}'),
                                     subtitle: Text(
-                                      'Qty ${formatQuantity((row['qty_milli'] as num).toInt(), 0)} · '
-                                      'HPP ${formatRupiah((row['hpp'] as num).toInt())}',
+                                      'Jumlah ${formatQuantity((row['qty_milli'] as num).toInt(), 0)} · '
+                                      'Modal ${formatRupiah((row['hpp'] as num).toInt())}',
                                     ),
                                     trailing: Text(
                                       formatRupiah((row['margin'] as num).toInt()),
@@ -621,7 +628,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   const SizedBox(height: 16),
                   SectionCard(
                     title: 'Nilai persediaan',
-                    subtitle: 'HPP rata-rata bergerak per barang',
+                    subtitle: 'Modal rata-rata per barang',
                     child: _valuation.isEmpty
                         ? const Text('Belum ada barang.')
                         : Column(
@@ -633,7 +640,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                   title: Text('${row['nama']}'),
                                   subtitle: Text(
                                     '${formatQuantity((row['jumlah_milli'] as num).toInt(), 0, satuan: '${row['satuan'] ?? ''}')} · '
-                                    'HPP ${formatRupiah((row['hpp_satuan'] as num).toInt())}',
+                                    'Modal per satuan ${formatRupiah((row['hpp_satuan'] as num).toInt())}',
                                   ),
                                   trailing: Text(
                                     formatRupiah(
@@ -664,7 +671,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     const SizedBox(height: 16),
                     SectionCard(
                       title: 'Saldo awal toko',
-                      subtitle: 'Tercatat sebelum transaksi berjalan',
+                      subtitle: 'Dicatat sebelum transaksi berjalan dimulai',
                       child: _openingSummary(context),
                     ),
                   ],
@@ -672,7 +679,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 const SizedBox(height: 16),
                 SectionCard(
                   title: 'Uang diterima per metode',
-                  subtitle: 'Berdasarkan tanggal pembayaran, termasuk refund',
+                  subtitle: 'Dihitung dari tanggal pembayaran, termasuk '
+                      'uang kembali (refund).',
                   child: summary.cashByMethod.isEmpty
                       ? const Text('Belum ada pembayaran pada periode ini.')
                       : Column(
@@ -690,7 +698,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   subtitle: '${_rows.length} nota ditampilkan',
                   child: _rows.isEmpty
                       ? const EmptyState(
-                          title: 'Tidak ada transaksi',
+                          title: 'Belum ada nota',
+                          subtitle: 'Nota yang tercatat pada periode ini akan '
+                              'tampil di sini.',
                           icon: Icons.inbox_outlined,
                         )
                       : Column(
@@ -720,7 +730,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                   label: Text(
                                     _loadingMore
                                         ? 'Memuat...'
-                                        : 'Muat lebih banyak',
+                                        : 'Muat 50 nota lagi',
                                   ),
                                 ),
                               ),
@@ -753,13 +763,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
     return Column(
       children: [
-        _line('Belum dikonversi', '${unconverted.length}'),
+        _line('Estimasi belum jadi nota', '${unconverted.length}'),
         _line('Sudah kedaluwarsa', '$expired'),
-        _line('Selisih estimasi vs nota', formatRupiah(variance)),
+        _line('Selisih estimasi dengan nota', formatRupiah(variance)),
         if (perCashier.isNotEmpty) ...[
           const Divider(),
           ...perCashier.entries.map(
-            (entry) => _line('Belum konversi · ${entry.key}', '${entry.value}'),
+            (entry) =>
+                _line('Belum jadi nota · ${entry.key}', '${entry.value}'),
           ),
         ],
       ],
@@ -786,7 +797,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         _line('Stok awal', formatQuantity(stockQty, 0)),
         _line('Utang supplier awal', formatRupiah(debt)),
         _line('Piutang pelanggan awal', formatRupiah(receivable)),
-        _line('Jumlah baris', '${items.length}'),
+        _line('Banyak baris saldo awal', '${items.length}'),
       ],
     );
   }
@@ -841,7 +852,7 @@ class _ClosingCard extends StatelessWidget {
     final periode = '${closing['periode'] ?? ''}';
     final rev = (closing['rev'] as num?)?.toInt() ?? 1;
     return SectionCard(
-      title: 'Tutup buku $periode · rev $rev',
+      title: 'Tutup buku $periode (revisi $rev)',
       child: Column(
         children: [
           Row(
@@ -850,7 +861,7 @@ class _ClosingCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Snapshot final · ${closing['zona'] ?? ''}',
+                  'Angka final · ${closing['zona'] ?? ''}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -864,14 +875,14 @@ class _ClosingCard extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              'DPP ${formatRupiah(_value('dpp_cents'))} · '
+              'DPP (dasar pajak) ${formatRupiah(_value('dpp_cents'))} · '
               'PPN ${formatRupiah(_value('ppn_cents'))}',
             ),
           ),
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              'HPP ${formatRupiah(_value('hpp_cents'))} · '
+              'Modal (HPP) ${formatRupiah(_value('hpp_cents'))} · '
               'Komisi ${formatRupiah(_value('komisi_cents'))}',
             ),
           ),

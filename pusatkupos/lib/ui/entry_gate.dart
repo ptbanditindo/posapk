@@ -129,22 +129,22 @@ Future<String?> _showOutboxDialog(
   return showDialog<String>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text('Masih ada antrean sinkronisasi'),
+      title: const Text('Masih ada data yang belum terkirim'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('$total dokumen belum terkirim: $pending menunggu, '
+          Text('$total data belum terkirim: $pending menunggu dikirim, '
               '$failed gagal.'),
           if (oldest.isNotEmpty) ...[
             const SizedBox(height: 8),
-            Text('Dokumen tertua: ${_formatOutboxStamp(oldest)}.'),
+            Text('Data paling lama: ${_formatOutboxStamp(oldest)}.'),
           ],
           const SizedBox(height: 12),
           const Text(
-            'Dokumen yang belum terkirim tetap tersimpan di perangkat setelah '
-            'keluar. Ekspor antrean bila Anda perlu bukti atau cadangan '
-            'sebelum meninggalkan perangkat ini.',
+            'Data ini tetap tersimpan di perangkat setelah Anda keluar. '
+            'Ekspor data bila Anda perlu cadangan sebelum meninggalkan '
+            'perangkat ini.',
           ),
         ],
       ),
@@ -155,11 +155,11 @@ Future<String?> _showOutboxDialog(
         ),
         OutlinedButton(
           onPressed: () => Navigator.pop(context, 'export'),
-          child: const Text('Ekspor antrean'),
+          child: const Text('Ekspor data'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, 'logout'),
-          child: const Text('Keluar'),
+          child: const Text('Tetap keluar'),
         ),
       ],
     ),
@@ -183,7 +183,7 @@ Future<bool> _exportOutbox(BuildContext context) async {
         .replaceAll(RegExp(r'[:.]'), '-')
         .substring(0, 19);
     final target = await FilePicker.saveFile(
-      dialogTitle: 'Simpan antrean sinkronisasi',
+      dialogTitle: 'Simpan data yang belum terkirim',
       fileName: 'pusatkupos_outbox_$stamp.json',
       bytes: Uint8List.fromList(utf8.encode(payload)),
       mimeType: 'application/json',
@@ -193,8 +193,8 @@ Future<bool> _exportOutbox(BuildContext context) async {
       SnackBar(
         content: Text(
           target == null
-              ? 'Ekspor antrean dibatalkan.'
-              : 'Antrean sinkronisasi disimpan.',
+              ? 'Ekspor data dibatalkan.'
+              : 'Data yang belum terkirim sudah disimpan.',
         ),
       ),
     );
@@ -202,7 +202,7 @@ Future<bool> _exportOutbox(BuildContext context) async {
   } catch (error) {
     if (!context.mounted) return false;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Ekspor antrean gagal: $error')),
+      SnackBar(content: Text('Ekspor data gagal. $error')),
     );
     return false;
   }
@@ -274,10 +274,10 @@ Future<void> resetDeviceSession(BuildContext context) async {
     builder: (context) => AlertDialog(
       title: const Text('Reset perangkat?'),
       content: const Text(
-        'Database toko, kunci identitas, dan antrean sinkronisasi di '
+        'Data toko, kunci identitas, dan data yang belum terkirim di '
         'perangkat ini akan dihapus permanen. Tindakan ini tidak dapat '
-        'dibatalkan. Buat backup dan ekspor antrean terlebih dahulu bila '
-        'masih diperlukan.',
+        'dibatalkan. Buat cadangan dan ekspor data yang belum terkirim '
+        'lebih dahulu bila masih diperlukan.',
       ),
       actions: [
         TextButton(
@@ -375,6 +375,7 @@ Future<bool> _confirmOwnerPin(BuildContext context) async {
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: 'PIN pemilik',
+                helperText: 'PIN ini memastikan hanya pemilik yang boleh reset.',
                 errorText: error,
               ),
             ),
@@ -389,12 +390,12 @@ Future<bool> _confirmOwnerPin(BuildContext context) async {
             onPressed: () {
               final value = controller.text.trim();
               if (value.isEmpty) {
-                setLocal(() => error = 'Masukkan PIN pemilik.');
+                setLocal(() => error = 'Isi PIN pemilik.');
                 return;
               }
               Navigator.pop(context, value);
             },
-            child: const Text('Lanjut'),
+            child: const Text('Periksa PIN'),
           ),
         ],
       ),
@@ -409,9 +410,10 @@ Future<bool> _confirmOwnerPin(BuildContext context) async {
   }
   if (!context.mounted) return false;
   final message = switch (result) {
-    PinVerification.locked => 'Terlalu banyak percobaan. Coba lagi nanti.',
-    PinVerification.wrong => 'PIN pemilik salah.',
-    _ => 'PIN pemilik tidak dapat diverifikasi.',
+    PinVerification.locked => 'PIN dikunci sementara karena terlalu banyak '
+        'percobaan. Tunggu sebentar, lalu coba lagi.',
+    PinVerification.wrong => 'PIN pemilik tidak cocok. Periksa lagi.',
+    _ => 'PIN pemilik tidak dapat diperiksa. Coba lagi.',
   };
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(content: Text(message)),

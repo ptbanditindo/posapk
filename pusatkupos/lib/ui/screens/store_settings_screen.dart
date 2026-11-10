@@ -189,6 +189,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Nama peran',
                   hintText: 'Contoh: Penanggung Jawab',
+                  helperText: 'Nama ini tampil saat mengatur akun karyawan.',
                 ),
               ),
               const SizedBox(height: 12),
@@ -196,6 +197,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 initialValue: source,
                 decoration: const InputDecoration(
                   labelText: 'Salin akses dari',
+                  helperText: 'Akses awal disalin dari peran ini, lalu bisa '
+                      'diubah.',
                 ),
                 items: settings.roleNames
                     .map(
@@ -221,7 +224,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 if (!RegExp(r'^[A-Za-z0-9 _-]{2,32}$').hasMatch(name)) {
                   showSnack(
                     context,
-                    'Nama peran 2-32 karakter (huruf, angka, spasi, _ atau -).',
+                    'Nama peran 2 sampai 32 karakter. Pakai huruf, angka, '
+                    'spasi, garis bawah, atau tanda hubung.',
                     error: true,
                   );
                   return;
@@ -230,12 +234,16 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   (role) => role.toLowerCase() == name.toLowerCase(),
                 );
                 if (exists) {
-                  showSnack(context, 'Peran itu sudah ada.', error: true);
+                  showSnack(
+                    context,
+                    'Nama peran itu sudah dipakai. Pilih nama lain.',
+                    error: true,
+                  );
                   return;
                 }
                 Navigator.pop(context, {'name': name, 'source': source});
               },
-              child: const Text('Tambah'),
+              child: const Text('Buat peran'),
             ),
           ],
         ),
@@ -279,7 +287,10 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Hapus peran ${roleDisplayName(role)}?'),
-        content: const Text('Akses peran ini akan dihapus dari pengaturan toko.'),
+        content: const Text(
+          'Peran ini akan dihapus beserta pengaturan aksesnya. Akun yang '
+          'memakai peran ini tidak terhapus.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -287,7 +298,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Hapus'),
+            child: const Text('Hapus peran'),
           ),
         ],
       ),
@@ -351,7 +362,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
         tilePadding: const EdgeInsets.symmetric(horizontal: 16),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         title: Text(roleDisplayName(role)),
-        subtitle: Text(builtin ? 'Peran bawaan' : 'Peran kustom'),
+        subtitle: Text(builtin ? 'Peran bawaan' : 'Peran buatan toko'),
         children: [
           Align(
             alignment: Alignment.centerLeft,
@@ -359,7 +370,7 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 ? TextButton.icon(
                     onPressed: () => _resetRole(role),
                     icon: const Icon(Icons.restart_alt, size: 18),
-                    label: const Text('Pakai akses bawaan'),
+                    label: const Text('Kembalikan akses bawaan'),
                   )
                 : TextButton.icon(
                     onPressed: () => _removeRole(role),
@@ -368,12 +379,12 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   ),
           ),
           _group(
-            'Menu yang terlihat',
+            'Menu yang bisa dibuka',
             _accessChips(settings, role, viewAccessLabels),
           ),
           const SizedBox(height: 12),
           _group(
-            'Tindakan yang diizinkan',
+            'Tindakan yang boleh dilakukan',
             _accessChips(settings, role, actionAccessLabels),
           ),
           const SizedBox(height: 12),
@@ -420,7 +431,11 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     final settings = _settings;
     if (settings == null) return;
     if (_pajakPersenInvalid) {
-      showSnack(context, 'Tarif PPN tidak valid.', error: true);
+      showSnack(
+        context,
+        'Tarif PPN belum valid. Perbaiki angka PPN sebelum menyimpan.',
+        error: true,
+      );
       return;
     }
     setState(() => _busy = true);
@@ -438,7 +453,9 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
       showSnack(context, 'Aturan transaksi disimpan.');
       await _load();
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal menyimpan: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Aturan gagal disimpan: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -460,26 +477,39 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           SectionCard(
-            title: 'Preset cepat',
-            subtitle: 'Pilih pola lalu sesuaikan bila perlu.',
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
+            title: 'Pola pengaturan cepat',
+            subtitle: 'Pilih pola yang paling dekat dengan cara toko bekerja, '
+                'lalu sesuaikan jenis transaksi di bawah.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ChoiceChip(
-                  label: const Text('Layanan langsung'),
-                  selected: settings.preset == presetLayananLangsung,
-                  onSelected: (_) => _applyPreset(presetLayananLangsung),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Layanan langsung'),
+                      selected: settings.preset == presetLayananLangsung,
+                      onSelected: (_) => _applyPreset(presetLayananLangsung),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Order lengkap'),
+                      selected: settings.preset == presetOrderLengkap,
+                      onSelected: (_) => _applyPreset(presetOrderLengkap),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Manual'),
+                      selected: settings.preset == presetManual,
+                      onSelected: (_) => _applyPreset(presetManual),
+                    ),
+                  ],
                 ),
-                ChoiceChip(
-                  label: const Text('Order lengkap'),
-                  selected: settings.preset == presetOrderLengkap,
-                  onSelected: (_) => _applyPreset(presetOrderLengkap),
-                ),
-                ChoiceChip(
-                  label: const Text('Manual'),
-                  selected: settings.preset == presetManual,
-                  onSelected: (_) => _applyPreset(presetManual),
+                const SizedBox(height: 10),
+                Text(
+                  'Layanan langsung: servis tanpa order kerja. Order lengkap: '
+                  'semua tahap order aktif. Manual: atur sendiri setiap '
+                  'pilihan.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
@@ -487,7 +517,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Jenis transaksi',
-            subtitle: 'Jenis yang dimatikan tidak tampil di kasir.',
+            subtitle: 'Aktifkan jenis yang dipakai toko. Jenis yang dimatikan '
+                'tidak muncul di kasir.',
             child: Column(
               children: [
                 for (final type in transactionTypes)
@@ -511,7 +542,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Tahap order kerja',
-            subtitle: 'Tahap yang mati dilewati pada order baru.',
+            subtitle: 'Hanya dipakai saat Order kerja aktif. Tahap yang '
+                'dimatikan dilewati pada order baru.',
             child: Column(
               children: [
                 for (final stage in orderStages)
@@ -538,13 +570,16 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Kasir dan persetujuan',
+            subtitle: 'Atur apa yang harus diisi dan disetujui saat kasir '
+                'membuat nota.',
             child: Column(
               children: [
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Simpan estimasi terpisah'),
                   subtitle: const Text(
-                    'Mati: estimasi hanya dicetak dan tidak disimpan.',
+                    'Hidup: kasir bisa menyimpan estimasi untuk dilihat lagi. '
+                    'Mati: estimasi hanya dicetak.',
                   ),
                   value: settings.simpanEstimasiLepas,
                   onChanged: (value) => _update(
@@ -556,7 +591,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Kendaraan wajib untuk servis'),
                   subtitle: const Text(
-                    'Mati: kasir boleh membuat nota servis tanpa unit.',
+                    'Hidup: kasir harus memilih unit kendaraan saat servis. '
+                    'Mati: nota servis boleh dibuat tanpa unit.',
                   ),
                   value: settings.vehicleRequired,
                   onChanged: (value) => _update(
@@ -570,9 +606,9 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Kasir wajib persetujuan untuk diskon'),
                   subtitle: const Text(
-                    'Mati: diskon kasir sampai selisih harga jual dan modal '
-                    'langsung dipakai. Hidup: setiap diskon kasir perlu '
-                    'persetujuan. Harga tetap tidak boleh di bawah modal.',
+                    'Hidup: diskon dari kasir menunggu persetujuan pemilik '
+                    'atau penanggung jawab. Mati: diskon kasir langsung '
+                    'dipakai selama harga tidak di bawah modal.',
                   ),
                   value: settings.approvalDiscount,
                   onChanged: (value) => _update(
@@ -583,9 +619,20 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   ),
                 ),
                 const Divider(),
-                Text(
-                  'Yang boleh menyetujui',
-                  style: Theme.of(context).textTheme.titleSmall,
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Yang boleh menyetujui diskon',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Berlaku saat persetujuan diskon dihidupkan. Persetujuan '
+                    'memakai PIN di perangkat ini.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ),
                 RadioGroup<String>(
                   groupValue: settings.approverMode,
@@ -604,8 +651,10 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                         dense: true,
                         value: approverOwner,
                         title: Text('Pemilik'),
-                        subtitle:
-                            Text('Memakai PIN pemilik di perangkat ini.'),
+                        subtitle: Text(
+                          'Pemilik menyetujui dengan PIN pemilik di perangkat '
+                          'ini.',
+                        ),
                       ),
                       RadioListTile<String>(
                         contentPadding: EdgeInsets.zero,
@@ -614,7 +663,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                         enabled: approverCandidates.isNotEmpty,
                         title: const Text('Penanggung jawab'),
                         subtitle: const Text(
-                          'Akun karyawan aktif dengan izin menyetujui.',
+                          'Akun karyawan aktif yang punya izin menyetujui. '
+                          'Pilih orangnya di bawah.',
                         ),
                       ),
                     ],
@@ -627,8 +677,11 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                     )
                         ? settings.approverEmployeeSyncId
                         : null,
-                    decoration:
-                        const InputDecoration(labelText: 'Penanggung jawab'),
+                    decoration: const InputDecoration(
+                      labelText: 'Pilih penanggung jawab',
+                      helperText: 'Hanya akun aktif dengan izin menyetujui '
+                          'yang muncul di sini.',
+                    ),
                     items: approverCandidates
                         .map(
                           (row) => DropdownMenuItem(
@@ -657,7 +710,11 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
               initialValue: zonaWaktuOffsets.containsKey(settings.zonaWaktu)
                   ? settings.zonaWaktu
                   : zonaWaktuDefault,
-              decoration: const InputDecoration(labelText: 'Zona waktu toko'),
+              decoration: const InputDecoration(
+                labelText: 'Zona waktu toko',
+                helperText: 'Contoh: WIB untuk Jakarta dan Bandung, WITA '
+                    'untuk Makassar, WIT untuk Jayapura.',
+              ),
               items: zonaWaktuOffsets.keys
                   .map(
                     (zona) => DropdownMenuItem(
@@ -675,8 +732,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'PPN',
-            subtitle: 'Tarif berlaku untuk nota baru. Nota lama memakai snapshot '
-                'tarif saat dibuat sehingga tidak berubah.',
+            subtitle: 'Tarif baru hanya berlaku untuk nota berikutnya. Nota '
+                'lama tetap memakai tarif saat nota dibuat.',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -684,7 +741,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Aktifkan PPN'),
                   subtitle: const Text(
-                    'Mati: nota tanpa PPN. Hidup: PPN dihitung per nota.',
+                    'Hidup: PPN dihitung di setiap nota. Mati: nota dibuat '
+                    'tanpa PPN.',
                   ),
                   value: settings.pajakAktif,
                   onChanged: (value) {
@@ -706,7 +764,10 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                 if (settings.pajakAktif) ...[
                   DropdownButtonFormField<String>(
                     initialValue: settings.pajakMode,
-                    decoration: const InputDecoration(labelText: 'Mode PPN'),
+                    decoration: const InputDecoration(
+                      labelText: 'Cara hitung PPN',
+                      helperText: 'Ikuti aturan pajak yang berlaku di toko.',
+                    ),
                     items: pajakModes
                         .map(
                           (mode) => DropdownMenuItem(
@@ -729,16 +790,19 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                     decoration: InputDecoration(
                       labelText: 'Tarif PPN (%)',
                       helperText: 'Contoh: 11 atau 11,25. Rentang 0,01-100.',
-                      errorText:
-                          _pajakPersenInvalid ? 'Tarif tidak valid' : null,
+                      errorText: _pajakPersenInvalid
+                          ? 'Isi angka 0,01 sampai 100, misalnya 11 atau 11,25.'
+                          : null,
                     ),
                     onChanged: _onPajakPersen,
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: settings.pajakPenanggung,
-                    decoration:
-                        const InputDecoration(labelText: 'PPN ditanggung oleh'),
+                    decoration: const InputDecoration(
+                      labelText: 'PPN ditanggung oleh',
+                      helperText: 'Pilih siapa yang membayar PPN pada nota.',
+                    ),
                     items: pajakPenanggungValues
                         .map(
                           (value) => DropdownMenuItem(
@@ -756,9 +820,9 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Dibayar pembeli: PPN ikut ditagihkan. Ditanggung bengkel: '
-                    'PPN dicatat sebagai biaya non-kas dan pembeli hanya '
-                    'membayar DPP.',
+                    'Dibayar pembeli: PPN ditambahkan ke total nota. '
+                    'Ditanggung bengkel: PPN dicatat sebagai biaya toko dan '
+                    'pembeli hanya membayar harga barang atau jasa.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -768,9 +832,9 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Peran dan akses',
-            subtitle:
-                'Peran hanya menandai orang. Atur menu dan tindakan yang boleh '
-                'dipakai tiap peran; peran kustom dimulai tanpa akses.',
+            subtitle: 'Ketuk nama peran untuk mengatur menu dan tindakan yang '
+                'boleh dipakai. Peran baru dimulai tanpa akses, lalu pilih '
+                'aksesnya satu per satu.',
             trailing: FilledButton.tonalIcon(
               onPressed: _addRole,
               icon: const Icon(Icons.add, size: 18),
@@ -785,7 +849,8 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
           FilledButton.icon(
             onPressed: _busy ? null : _save,
             icon: const Icon(Icons.save_outlined),
-            label: Text(_busy ? 'Menyimpan...' : 'Simpan aturan'),
+            label:
+                Text(_busy ? 'Menyimpan...' : 'Simpan aturan transaksi'),
           ),
         ],
       ),

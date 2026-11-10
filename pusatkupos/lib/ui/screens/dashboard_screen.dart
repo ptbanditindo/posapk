@@ -93,7 +93,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Omzet bruto hari ini',
+                          label: 'Penjualan hari ini',
                           value: formatRupiah(data.todayGrossCents),
                           icon: Icons.receipt_long_outlined,
                         ),
@@ -101,7 +101,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Omzet neto (setelah retur)',
+                          label: 'Penjualan setelah retur',
                           value: formatRupiah(data.todayRevenueCents),
                           icon: Icons.payments_outlined,
                         ),
@@ -109,7 +109,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Uang diterima hari ini',
+                          label: 'Uang masuk hari ini',
                           value: formatRupiah(data.todayCashCents),
                           icon: Icons.savings_outlined,
                           tone: Colors.green,
@@ -118,7 +118,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Transaksi hari ini',
+                          label: 'Jumlah nota hari ini',
                           value: '${data.todayCount}',
                           icon: Icons.receipt_outlined,
                           tone: Theme.of(context).colorScheme.tertiary,
@@ -127,7 +127,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Stok menipis',
+                          label: 'Barang hampir habis',
                           value: '${data.lowStockCount}',
                           icon: Icons.inventory_2_outlined,
                           tone: Theme.of(context).colorScheme.error,
@@ -139,7 +139,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       SizedBox(
                         width: width,
                         child: StatCard(
-                          label: 'Piutang',
+                          label: 'Piutang pelanggan',
                           value: formatRupiah(data.receivableCents),
                           icon: Icons.account_balance_wallet_outlined,
                           tone: Colors.orange,
@@ -152,7 +152,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         SizedBox(
                           width: width,
                           child: StatCard(
-                            label: 'Stok negatif / konflik',
+                            label: 'Stok bermasalah',
                             value: '${data.negativeStockCount}',
                             icon: Icons.error_outline,
                             tone: Theme.of(context).colorScheme.error,
@@ -167,7 +167,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 16),
               SectionCard(
-                title: 'Aksi cepat',
+                title: 'Pintasan',
                 child: Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -207,11 +207,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 16),
               SectionCard(
                 title: 'Nota terbaru',
-                subtitle: '8 transaksi terakhir',
+                subtitle: '8 nota terakhir',
                 child: data.recent.isEmpty
                     ? const EmptyState(
                         title: 'Belum ada nota',
-                        subtitle: 'Mulai dari menu Kasir.',
+                        subtitle: 'Buka menu Kasir untuk membuat nota pertama.',
                         icon: Icons.receipt_outlined,
                       )
                     : Column(

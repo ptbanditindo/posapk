@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/dates.dart';
 import '../../core/summary_file_io.dart';
 import '../../data/escrow_service.dart';
 import '../../data/google_drive_escrow.dart';
@@ -80,7 +81,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
       showSnack(context, error.message, error: true);
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, 'Gagal: ${friendlyError(error)}', error: true);
+      showSnack(context, 'Gagal diproses: ${friendlyError(error)}', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -113,14 +114,18 @@ class _EscrowScreenState extends State<EscrowScreen> {
 
   Future<void> _create() async {
     if (!AppState.instance.isOwner) {
-      showSnack(context, 'Hanya pemilik yang dapat membuat escrow.', error: true);
+      showSnack(
+        context,
+        'Hanya pemilik yang bisa membuat cadangan kunci.',
+        error: true,
+      );
       return;
     }
     final ok = await _confirm(
-      title: 'Buat escrow baru?',
-      message: 'Escrow lama (bila ada) akan diganti. Frasa dan share yang lama '
-          'tidak berlaku lagi setelah escrow baru dibuat.',
-      confirmLabel: 'Buat escrow',
+      title: 'Buat cadangan kunci baru?',
+      message: 'Cadangan lama akan diganti. Frasa dan share admin yang lama '
+          'tidak berlaku lagi setelah cadangan baru dibuat.',
+      confirmLabel: 'Buat cadangan',
     );
     if (!ok) return;
     await _run(() async {
@@ -131,7 +136,8 @@ class _EscrowScreenState extends State<EscrowScreen> {
         _phrase = result.phrase;
         _shares = result.shares;
       });
-    }, 'Escrow dibuat. Simpan frasa dan share sebelum meninggalkan layar ini.');
+    }, 'Cadangan kunci dibuat. Salin frasa dan share admin sekarang sebelum '
+        'meninggalkan layar ini.');
   }
 
   Future<void> _verifyPhrase() async {
@@ -146,7 +152,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
       await EscrowService.instance.clearPendingShares();
       _verifyInput.clear();
       await _load();
-    }, 'Frasa cocok. Escrow ditandai terverifikasi.');
+    }, 'Frasa cocok. Cadangan kunci ditandai terverifikasi.');
   }
 
   Future<void> _verifyShares() async {
@@ -157,7 +163,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
     if (shares.length < 2) {
       showSnack(
         context,
-        'Masukkan dua share admin dari pemegang berbeda.',
+        'Isi dua share admin dari orang yang berbeda.',
         error: true,
       );
       return;
@@ -170,14 +176,15 @@ class _EscrowScreenState extends State<EscrowScreen> {
         controller.clear();
       }
       await _load();
-    }, 'Share cocok. Escrow ditandai terverifikasi.');
+    }, 'Share cocok. Cadangan kunci ditandai terverifikasi.');
   }
 
   Future<void> _restorePhrase() async {
     final ok = await _confirm(
       title: 'Pulihkan dengan frasa?',
-      message: 'Kunci owner dan kunci toko di perangkat ini akan diganti dengan '
-          'isi escrow. Pastikan escrow ini milik toko yang sedang aktif.',
+      message: 'Kunci pemilik dan kunci toko di perangkat ini akan diganti '
+          'dengan isi cadangan. Pastikan cadangan ini milik toko yang sedang '
+          'aktif.',
       confirmLabel: 'Pulihkan',
     );
     if (!ok) return;
@@ -185,7 +192,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
       await EscrowService.instance.restoreWithPhrase(_phraseInput.text.trim());
       _phraseInput.clear();
       await _load();
-    }, 'Kunci berhasil dipulihkan dari escrow.');
+    }, 'Kunci berhasil dipulihkan dari cadangan.');
   }
 
   Future<void> _restoreShares() async {
@@ -194,13 +201,13 @@ class _EscrowScreenState extends State<EscrowScreen> {
         .where((value) => value.isNotEmpty)
         .toList();
     if (shares.length < 2) {
-      showSnack(context, 'Masukkan minimal dua share admin.', error: true);
+      showSnack(context, 'Isi minimal dua share admin.', error: true);
       return;
     }
     final ok = await _confirm(
       title: 'Pulihkan dengan share admin?',
-      message: 'Kunci owner dan kunci toko di perangkat ini akan diganti dengan '
-          'isi escrow.',
+      message: 'Kunci pemilik dan kunci toko di perangkat ini akan diganti '
+          'dengan isi cadangan.',
       confirmLabel: 'Pulihkan',
     );
     if (!ok) return;
@@ -210,26 +217,26 @@ class _EscrowScreenState extends State<EscrowScreen> {
         controller.clear();
       }
       await _load();
-    }, 'Kunci berhasil dipulihkan dari escrow.');
+    }, 'Kunci berhasil dipulihkan dari cadangan.');
   }
 
   Future<void> _upload() => _run(
         () => EscrowService.instance.uploadToDrive(),
-        'Escrow diunggah ke Google Drive.',
+        'Cadangan kunci diunggah ke Google Drive.',
       );
 
   Future<void> _download() async {
     final ok = await _confirm(
-      title: 'Unduh escrow dari Drive?',
-      message: 'Berkas escrow ini akan menggantikan escrow lokal. Pemulihan '
-          'tetap memerlukan frasa atau share admin.',
+      title: 'Unduh cadangan kunci dari Google Drive?',
+      message: 'Berkas cadangan ini menggantikan cadangan di perangkat. '
+          'Pemulihan tetap memerlukan frasa atau share admin.',
       confirmLabel: 'Unduh',
     );
     if (!ok) return;
     await _run(() async {
       await EscrowService.instance.downloadFromDrive();
       await _load();
-    }, 'Escrow berhasil diunduh dari Google Drive.');
+    }, 'Cadangan kunci berhasil diunduh dari Google Drive.');
   }
 
   Future<void> _exportFile() async {
@@ -240,17 +247,17 @@ class _EscrowScreenState extends State<EscrowScreen> {
           .replaceAll(RegExp(r'[:.]'), '-')
           .substring(0, 19);
       await FilePicker.saveFile(
-        dialogTitle: 'Simpan berkas escrow',
+        dialogTitle: 'Simpan berkas cadangan kunci',
         fileName: 'pusatkupos_escrow_$stamp.json',
         bytes: utf8.encode(text),
         mimeType: 'application/json',
       );
-    }, 'Berkas escrow disimpan.');
+    }, 'Berkas cadangan kunci disimpan.');
   }
 
   Future<void> _importFile() async {
     final picked = await FilePicker.pickFile(
-      dialogTitle: 'Pilih berkas escrow',
+      dialogTitle: 'Pilih berkas cadangan kunci',
       type: FileType.custom,
       allowedExtensions: const ['json'],
     );
@@ -259,7 +266,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
       final text = await readSummaryFile(picked);
       await EscrowService.instance.importBundleText(text);
       await _load();
-    }, 'Berkas escrow diimpor.');
+    }, 'Berkas cadangan kunci diimpor.');
   }
 
   Future<void> _copy(String label, String value) async {
@@ -274,15 +281,15 @@ class _EscrowScreenState extends State<EscrowScreen> {
     final driveReady = GoogleDriveEscrow.instance.configured &&
         GoogleDriveEscrow.instance.supported;
     return Scaffold(
-      appBar: AppBar(title: const Text('Escrow pemulihan')),
+      appBar: AppBar(title: const Text('Cadangan kunci pemulihan')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           SectionCard(
-            title: 'Status escrow',
-            subtitle: 'Escrow membungkus kunci owner dan kunci setiap toko. '
-                'Membukanya butuh frasa pemulihan atau dua dari tiga share '
-                'admin.',
+            title: 'Status cadangan kunci',
+            subtitle: 'Cadangan ini menyimpan kunci pemilik dan kunci tiap '
+                'toko. Untuk membukanya, gunakan frasa pemulihan atau 2 dari '
+                '3 share admin.',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -300,10 +307,11 @@ class _EscrowScreenState extends State<EscrowScreen> {
                     Expanded(
                       child: Text(
                         _verified
-                            ? 'Terverifikasi — pemulihan sudah diuji.'
+                            ? 'Terverifikasi. Pemulihan sudah diuji.'
                             : _hasBundle
-                                ? 'Belum terverifikasi — uji frasa atau share.'
-                                : 'Belum ada escrow di perangkat ini.',
+                                ? 'Belum diverifikasi. Uji frasa atau share '
+                                    'admin.'
+                                : 'Belum ada cadangan kunci di perangkat ini.',
                       ),
                     ),
                   ],
@@ -311,7 +319,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
                 if (_createdAt != null) ...[
                   const SizedBox(height: 8),
                   Text(
-                    'Dibuat ${_createdAt!.toLocal()}',
+                    'Dibuat ${dateTimeId.format(_createdAt!.toLocal())}',
                     style: theme.textTheme.bodySmall,
                   ),
                 ],
@@ -332,19 +340,19 @@ class _EscrowScreenState extends State<EscrowScreen> {
                           ? null
                           : _create,
                       icon: const Icon(Icons.key_outlined),
-                      label: const Text('Buat escrow'),
+                      label: const Text('Buat cadangan kunci'),
                     ),
                     OutlinedButton.icon(
                       onPressed: _busy || !_hasBundle || !driveReady
                           ? null
                           : _upload,
                       icon: const Icon(Icons.cloud_upload_outlined),
-                      label: const Text('Unggah ke Drive'),
+                      label: const Text('Unggah ke Google Drive'),
                     ),
                     OutlinedButton.icon(
                       onPressed: _busy || !driveReady ? null : _download,
                       icon: const Icon(Icons.cloud_download_outlined),
-                      label: const Text('Unduh dari Drive'),
+                      label: const Text('Unduh dari Google Drive'),
                     ),
                   ],
                 ),
@@ -358,9 +366,9 @@ class _EscrowScreenState extends State<EscrowScreen> {
           if (_phrase != null || _shares.isNotEmpty) ...[
             const SizedBox(height: 12),
             SectionCard(
-              title: 'Simpan sekarang',
-              subtitle: 'Ditampilkan sekali. Tanpa frasa atau share, escrow di '
-                  'Drive tidak dapat dibuka.',
+              title: 'Simpan sekarang juga',
+              subtitle: 'Hanya ditampilkan sekali. Tanpa frasa atau share '
+                  'admin, cadangan di Google Drive tidak bisa dibuka.',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -380,7 +388,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
                     Align(
                       alignment: Alignment.centerLeft,
                       child: OutlinedButton.icon(
-                        onPressed: () => _copy('Frasa', _phrase!),
+                        onPressed: () => _copy('Frasa pemulihan', _phrase!),
                         icon: const Icon(Icons.copy_outlined),
                         label: const Text('Salin frasa'),
                       ),
@@ -403,7 +411,7 @@ class _EscrowScreenState extends State<EscrowScreen> {
                             ),
                             IconButton(
                               tooltip: 'Salin share',
-                              onPressed: () => _copy('Share', share),
+                              onPressed: () => _copy('Share admin', share),
                               icon: const Icon(Icons.copy_outlined),
                             ),
                           ],
@@ -434,8 +442,8 @@ class _EscrowScreenState extends State<EscrowScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Pulihkan kunci',
-            subtitle: 'Gunakan pada perangkat pengganti. Data lokal tidak '
-                'dihapus; hanya kunci owner dan kunci toko yang dipulihkan.',
+            subtitle: 'Dipakai di perangkat pengganti. Data lokal tidak '
+                'dihapus, hanya kunci pemilik dan kunci toko yang dipulihkan.',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -458,7 +466,10 @@ class _EscrowScreenState extends State<EscrowScreen> {
                   ),
                 ),
                 const Divider(height: 30),
-                Text('Atau dua share admin', style: theme.textTheme.titleSmall),
+                Text(
+                  'Atau pakai dua share admin',
+                  style: theme.textTheme.titleSmall,
+                ),
                 const SizedBox(height: 8),
                 for (var i = 0; i < _shareInputs.length; i++)
                   Padding(
@@ -492,9 +503,9 @@ class _EscrowScreenState extends State<EscrowScreen> {
           ),
           const SizedBox(height: 12),
           SectionCard(
-            title: 'Berkas escrow',
-            subtitle: 'Simpan salinan terenkripsi di media yang aman. Berkas '
-                'tetap tidak dapat dibuka tanpa frasa atau share.',
+            title: 'Berkas cadangan kunci',
+            subtitle: 'Simpan salinan terenkripsi di tempat yang aman. Berkas '
+                'tetap tidak bisa dibuka tanpa frasa atau share admin.',
             child: Wrap(
               spacing: 10,
               runSpacing: 10,

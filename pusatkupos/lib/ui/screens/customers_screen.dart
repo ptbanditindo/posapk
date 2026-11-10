@@ -429,18 +429,28 @@ class _CustomerDialogState extends State<_CustomerDialog> {
             TextField(
               controller: _nama,
               autofocus: true,
-              decoration: const InputDecoration(labelText: 'Nama'),
+              decoration: const InputDecoration(
+                labelText: 'Nama pelanggan',
+                hintText: 'Contoh: Budi Santoso',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _hp,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(labelText: 'Nomor HP'),
+              decoration: const InputDecoration(
+                labelText: 'Nomor HP',
+                hintText: 'Contoh: 081234567890',
+                helperText: 'Dipakai untuk WhatsApp dan follow up.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _alamat,
-              decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
+              decoration: const InputDecoration(
+                labelText: 'Alamat (opsional)',
+                hintText: 'Contoh: Jl. Merdeka No. 10, Bandung',
+              ),
             ),
             if (widget.canSetLimit) ...[
               const SizedBox(height: 10),
@@ -449,19 +459,21 @@ class _CustomerDialogState extends State<_CustomerDialog> {
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
                   labelText: 'Limit kredit (Rp)',
-                  helperText: 'Kosongkan atau 0 untuk tanpa limit',
+                  hintText: 'Contoh: 500000',
+                  helperText: 'Batas utang yang boleh berjalan. Isi 0 untuk '
+                      'tanpa limit.',
                 ),
               ),
             ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Setuju dihubungi via WhatsApp'),
+              title: const Text('Setuju dihubungi lewat WhatsApp'),
               value: _waConsent,
               onChanged: (value) => setState(() => _waConsent = value),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Jangan dihubungi (promo/follow up)'),
+              title: const Text('Jangan kirim promo atau follow up'),
               value: _doNotContact,
               onChanged: (value) => setState(() => _doNotContact = value),
             ),
@@ -480,7 +492,7 @@ class _CustomerDialogState extends State<_CustomerDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(onPressed: _save, child: const Text('Simpan')),
+        FilledButton(onPressed: _save, child: const Text('Simpan pelanggan')),
       ],
     );
   }
@@ -674,14 +686,17 @@ class _UnitDialogState extends State<_UnitDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Unit baru'),
+      title: const Text('Tambah unit'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             DropdownButtonFormField<String>(
               initialValue: _type,
-              decoration: const InputDecoration(labelText: 'Jenis unit'),
+              decoration: const InputDecoration(
+                labelText: 'Jenis unit',
+                helperText: 'Pilih kendaraan atau barang yang diservis.',
+              ),
               items: const [
                 DropdownMenuItem(value: 'MOBIL', child: Text('Mobil')),
                 DropdownMenuItem(
@@ -710,31 +725,42 @@ class _UnitDialogState extends State<_UnitDialog> {
             const SizedBox(height: 10),
             TextField(
               controller: _nopol,
-              decoration: const InputDecoration(labelText: 'Nomor polisi'),
+              decoration: const InputDecoration(
+                labelText: 'Nomor polisi',
+                hintText: 'Contoh: B 1234 XYZ',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _jenis,
               decoration: const InputDecoration(
                 labelText: 'Jenis kendaraan/barang',
+                hintText: 'Contoh: Honda Beat 2020',
               ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _tahun,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Tahun'),
+              decoration: const InputDecoration(
+                labelText: 'Tahun',
+                hintText: 'Contoh: 2020',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _radiator,
-              decoration: const InputDecoration(labelText: 'Tipe radiator'),
+              decoration: const InputDecoration(
+                labelText: 'Tipe radiator',
+                hintText: 'Contoh: Denso',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _labelRadiator,
               decoration: const InputDecoration(
                 labelText: 'Label radiator (opsional)',
+                hintText: 'Contoh: Radiator depan',
               ),
             ),
           ],
@@ -762,7 +788,7 @@ class _UnitDialogState extends State<_UnitDialog> {
                   : _labelRadiator.text.trim(),
             ),
           ),
-          child: const Text('Simpan'),
+          child: const Text('Simpan unit'),
         ),
       ],
     );
@@ -845,18 +871,28 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
             TextField(
               controller: _nama,
               autofocus: true,
-              decoration: const InputDecoration(labelText: 'Nama'),
+              decoration: const InputDecoration(
+                labelText: 'Nama pelanggan',
+                hintText: 'Contoh: Budi Santoso',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _hp,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(labelText: 'Nomor HP'),
+              decoration: const InputDecoration(
+                labelText: 'Nomor HP',
+                hintText: 'Contoh: 081234567890',
+                helperText: 'Dipakai untuk WhatsApp dan follow up.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _alamat,
-              decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
+              decoration: const InputDecoration(
+                labelText: 'Alamat (opsional)',
+                hintText: 'Contoh: Jl. Merdeka No. 10, Bandung',
+              ),
             ),
             if (widget.canSetLimit) ...[
               const SizedBox(height: 10),
@@ -865,19 +901,21 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
                   labelText: 'Limit kredit (Rp)',
-                  helperText: 'Kosongkan atau 0 untuk tanpa limit',
+                  hintText: 'Contoh: 500000',
+                  helperText: 'Batas utang yang boleh berjalan. Isi 0 untuk '
+                      'tanpa limit.',
                 ),
               ),
             ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Setuju dihubungi via WhatsApp'),
+              title: const Text('Setuju dihubungi lewat WhatsApp'),
               value: _waConsent,
               onChanged: (value) => setState(() => _waConsent = value),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Jangan dihubungi (promo/follow up)'),
+              title: const Text('Jangan kirim promo atau follow up'),
               value: _doNotContact,
               onChanged: (value) => setState(() => _doNotContact = value),
             ),
@@ -922,7 +960,7 @@ class _CustomerEditDialogState extends State<_CustomerEditDialog> {
               ),
             );
           },
-          child: const Text('Simpan'),
+          child: const Text('Simpan pelanggan'),
         ),
       ],
     );

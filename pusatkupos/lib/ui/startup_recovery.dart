@@ -51,10 +51,9 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
       builder: (context) => AlertDialog(
         title: const Text('Buka mode aman?'),
         content: const Text(
-          'Database yang gagal dibuka akan dipindahkan ke berkas '
-          '"corrupt-..." di folder aplikasi, lalu aplikasi mulai dengan '
-          'database kosong. Berkas lama tidak dihapus dan tetap dapat '
-          'diekspor atau dipulihkan.',
+          'Data yang gagal dibuka akan dipindahkan ke berkas "corrupt-..." '
+          'di folder aplikasi, lalu aplikasi mulai dengan data kosong. Berkas '
+          'lama tidak dihapus dan masih bisa diekspor atau dipulihkan.',
         ),
         actions: [
           TextButton(
@@ -138,20 +137,25 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Passphrase backup'),
+        title: const Text('Kata sandi cadangan'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               required
-                  ? 'Backup ini terkunci passphrase yang dibuat saat backup.'
-                  : 'Kosongkan bila backup dibuat tanpa passphrase pemilik.',
+                  ? 'Cadangan ini dikunci kata sandi yang Anda buat saat '
+                      'membuat cadangan.'
+                  : 'Kosongkan bila cadangan dibuat tanpa kata sandi.',
             ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'Passphrase'),
+              decoration: const InputDecoration(
+                labelText: 'Kata sandi cadangan',
+                hintText: 'Ketik kata sandi yang sama seperti saat membuat '
+                    'cadangan.',
+              ),
             ),
           ],
         ),
@@ -162,7 +166,7 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Pulihkan'),
+            child: const Text('Buka cadangan'),
           ),
         ],
       ),
@@ -189,8 +193,8 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Pulihkan backup mengganti seluruh data lokal. Masukkan PIN '
-                'pemilik untuk melanjutkan.',
+                'Memulihkan cadangan akan mengganti seluruh data di perangkat '
+                'ini. Masukkan PIN pemilik untuk melanjutkan.',
               ),
               const SizedBox(height: 12),
               TextField(
@@ -219,7 +223,7 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
                 }
                 Navigator.pop(context, value);
               },
-              child: const Text('Lanjut'),
+              child: const Text('Lanjutkan pemulihan'),
             ),
           ],
         ),
@@ -257,7 +261,7 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
           .replaceAll(RegExp(r'[:.]'), '-')
           .substring(0, 19);
       final target = await FilePicker.saveFile(
-        dialogTitle: 'Simpan berkas database',
+        dialogTitle: 'Simpan berkas data',
         fileName: 'pusatkupos_database_$stamp.db',
         bytes: Uint8List.fromList(bytes),
         mimeType: 'application/octet-stream',
@@ -268,14 +272,14 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
           content: Text(
             target == null
                 ? 'Ekspor dibatalkan.'
-                : 'Berkas database disimpan. Jangan bagikan ke pihak lain.',
+                : 'Berkas data tersimpan. Jangan bagikan ke pihak lain.',
           ),
         ),
       );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ekspor gagal: $error')),
+        SnackBar(content: Text('Ekspor gagal. $error')),
       );
     }
   }
@@ -318,8 +322,8 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
                           const SizedBox(height: 8),
                           const Text(
                             'Data tidak dihapus. Pilih tindakan pemulihan di '
-                            'bawah; jika ragu, ekspor berkas database lebih '
-                            'dulu lalu hubungi dukungan.',
+                            'bawah. Jika ragu, ekspor berkas data lebih dulu, '
+                            'lalu hubungi dukungan.',
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 16),
@@ -367,9 +371,9 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'Versi aplikasi: '
-                                  'skema v${AppDatabase.schemaVersion} · '
-                                  'kontrak v${AppDatabase.schemaContractVersion}',
+                                  'Versi data: v${AppDatabase.schemaVersion} · '
+                                  'versi aturan: '
+                                  'v${AppDatabase.schemaContractVersion}',
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
                                 const SizedBox(height: 6),
@@ -390,13 +394,13 @@ class _StartupRecoveryAppState extends State<StartupRecoveryApp> {
                           OutlinedButton.icon(
                             onPressed: _busy ? null : _restoreBackup,
                             icon: const Icon(Icons.unarchive_outlined),
-                            label: const Text('Pulihkan dari backup'),
+                            label: const Text('Pulihkan dari cadangan'),
                           ),
                           const SizedBox(height: 8),
                           OutlinedButton.icon(
                             onPressed: _busy ? null : _exportRawDatabase,
                             icon: const Icon(Icons.save_alt),
-                            label: const Text('Ekspor berkas database'),
+                            label: const Text('Ekspor berkas data'),
                           ),
                           const SizedBox(height: 8),
                           OutlinedButton.icon(

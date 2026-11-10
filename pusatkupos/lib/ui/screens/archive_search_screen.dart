@@ -65,7 +65,10 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
   Future<void> _search({bool append = false}) async {
     final query = _query.text.trim();
     if (query.isEmpty && _dari == null && _sampai == null) {
-      setState(() => _error = 'Masukkan nomor nota, nama, nopol, atau tanggal.');
+      setState(
+        () => _error =
+            'Isi nomor nota, nama pelanggan, nopol, atau pilih tanggal dulu.',
+      );
       return;
     }
     setState(() {
@@ -115,7 +118,7 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
     } catch (error) {
       if (!mounted) return;
       Navigator.pop(context);
-      showSnack(context, 'Gagal membuka arsip: ${friendlyError(error)}',
+      showSnack(context, 'Arsip tidak bisa dibuka: ${friendlyError(error)}',
           error: true);
     }
   }
@@ -126,7 +129,7 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
       final archive = await ArchiveService.instance.exportArchive();
       final raw = const JsonEncoder.withIndent('  ').convert(archive);
       final uri = await FilePicker.saveFile(
-        dialogTitle: 'Simpan ekspor arsip',
+        dialogTitle: 'Simpan salinan arsip',
         fileName: 'pusatkupos_arsip_'
             '${DateTime.now().millisecondsSinceEpoch}.json',
         bytes: utf8.encode(raw),
@@ -137,7 +140,8 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
         context,
         uri == null
             ? 'Ekspor arsip dibatalkan.'
-            : 'Ekspor arsip tersimpan tanpa dekripsi di server.',
+            : 'Salinan arsip tersimpan. Isi nota tetap terkunci dan hanya '
+                'bisa dibuka dari aplikasi ini.',
       );
     } catch (error) {
       if (!mounted) return;
@@ -152,7 +156,7 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Cari di server'),
+        title: const Text('Cari arsip di server'),
         actions: [
           IconButton(
             onPressed: _exporting ? null : _export,
@@ -163,7 +167,7 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.cloud_download_outlined),
-            tooltip: 'Ekspor seluruh arsip',
+            tooltip: 'Ekspor semua arsip',
           ),
         ],
       ),
@@ -178,7 +182,9 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
                   controller: _query,
                   textInputAction: TextInputAction.search,
                   decoration: const InputDecoration(
-                    hintText: 'Nomor nota, nama pelanggan, atau nopol',
+                    hintText: 'Contoh: INV-0001, Budi, atau B 1234 XY',
+                    helperText: 'Ketik nomor nota, nama pelanggan, atau nopol '
+                        'kendaraan.',
                     prefixIcon: Icon(Icons.manage_search),
                   ),
                   onSubmitted: (_) => _search(),
@@ -192,8 +198,8 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
                       avatar: const Icon(Icons.event_outlined, size: 18),
                       label: Text(
                         _dari == null
-                            ? 'Dari tanggal'
-                            : 'Dari ${dateId.format(_dari!)}',
+                            ? 'Mulai tanggal'
+                            : 'Mulai ${dateId.format(_dari!)}',
                       ),
                       selected: _dari != null,
                       onSelected: (_) => _pickDate(start: true),
@@ -245,8 +251,9 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
     }
     if (_results.isEmpty) {
       return const EmptyState(
-        title: 'Belum ada hasil',
-        subtitle: 'Nota lama yang tersimpan di arsip server akan tampil di sini.',
+        title: 'Arsip belum ditemukan',
+        subtitle: 'Nota lama yang tersimpan di server akan tampil di sini. '
+            'Coba kata kunci lain atau pilih rentang tanggal.',
         icon: Icons.inventory_2_outlined,
       );
     }
@@ -260,7 +267,7 @@ class _ArchiveSearchScreenState extends State<ArchiveSearchScreen> {
             child: OutlinedButton.icon(
               onPressed: _loading ? null : () => _search(append: true),
               icon: const Icon(Icons.expand_more),
-              label: const Text('Muat lebih banyak'),
+              label: const Text('Muat 50 hasil lagi'),
             ),
           );
         }
@@ -364,7 +371,9 @@ class _ArchivedDocumentSheetState extends State<ArchivedDocumentSheet> {
                     icon: Icon(
                       _showStruk ? Icons.receipt_long : Icons.receipt_outlined,
                     ),
-                    label: Text(_showStruk ? 'Sembunyikan struk' : 'Lihat struk'),
+                    label: Text(
+                      _showStruk ? 'Sembunyikan struk' : 'Tampilkan struk',
+                    ),
                   ),
                 ),
                 if (Permissions.can(
@@ -380,7 +389,7 @@ class _ArchivedDocumentSheetState extends State<ArchivedDocumentSheet> {
                             _ArchiveReturnDialog(document: widget.payload),
                       ),
                       icon: const Icon(Icons.assignment_return_outlined),
-                      label: const Text('Retur'),
+                      label: const Text('Retur barang'),
                     ),
                   ),
                 ],
@@ -399,8 +408,8 @@ class _ArchivedDocumentSheetState extends State<ArchivedDocumentSheet> {
                 child: SingleChildScrollView(
                   child: SelectableText(
                     strukText.isEmpty
-                        ? 'Struk tidak tersimpan; data nota tetap lengkap di '
-                            'arsip.'
+                        ? 'Struk tidak tersimpan, tetapi data nota tetap '
+                            'lengkap di arsip.'
                         : strukText,
                     style: const TextStyle(fontFamily: 'monospace'),
                   ),
@@ -481,7 +490,10 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
   Future<void> _submit() async {
     final actor = AppState.instance.operator;
     if (actor == null) {
-      setState(() => _error = 'Sesi operator tidak tersedia.');
+      setState(
+        () => _error =
+            'Sesi pengguna tidak tersedia. Masuk ulang lalu coba lagi.',
+      );
       return;
     }
     final inputs = <ArchiveReturnLineInput>[];
@@ -491,7 +503,10 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
       if (raw.isEmpty) continue;
       final milli = parseQuantityToMilli(raw, desimal: 3);
       if (milli == null) {
-        setState(() => _error = 'Jumlah "${line['deskripsi']}" tidak valid.');
+        setState(
+          () => _error = 'Jumlah "${line['deskripsi']}" tidak valid. '
+              'Isi angka lebih dari 0, misalnya 1 atau 0,5.',
+        );
         return;
       }
       if (milli <= 0) continue;
@@ -522,7 +537,7 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
       );
       if (!mounted) return;
       Navigator.pop(context);
-      showSnack(context, 'Retur arsip tersimpan.');
+      showSnack(context, 'Retur tersimpan. Stok dan kas sudah diperbarui.');
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -544,12 +559,13 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Retur dari arsip',
+                'Retur barang dari arsip',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 4),
               Text(
-                'Kosongkan baris yang tidak diretur. Nota asli tidak diubah.',
+                'Isi jumlah yang dikembalikan. Kosongkan baris yang tidak '
+                'diretur. Nota asli tidak diubah.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 10),
@@ -558,7 +574,7 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
                     ? const Center(child: CircularProgressIndicator())
                     : _lines.isEmpty
                     ? const Center(
-                        child: Text('Semua baris sudah diretur.'),
+                        child: Text('Semua barang di nota ini sudah diretur.'),
                       )
                     : ListView.separated(
                         itemCount: _lines.length,
@@ -581,7 +597,7 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
                                       ),
                                     ),
                                     Text(
-                                      'Sisa '
+                                      'Sisa yang bisa diretur '
                                       '${formatQuantity((line['sisa_milli'] as num?)?.toInt() ?? 0, 3)}'
                                       ' · ${_lineLabel('${line['line_type']}')}',
                                       style: Theme.of(context)
@@ -603,7 +619,7 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
                                       ),
                                   decoration: const InputDecoration(
                                     isDense: true,
-                                    labelText: 'Qty',
+                                    labelText: 'Jumlah',
                                   ),
                                 ),
                               ),
@@ -617,13 +633,16 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
                 controller: _reason,
                 decoration: const InputDecoration(
                   labelText: 'Alasan retur (wajib)',
+                  hintText: 'Contoh: barang rusak saat dipasang.',
                 ),
                 maxLines: 2,
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 initialValue: _metode,
-                decoration: const InputDecoration(labelText: 'Metode refund'),
+                decoration: const InputDecoration(
+                  labelText: 'Uang dikembalikan lewat',
+                ),
                 items: const [
                   DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                   DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
@@ -656,7 +675,7 @@ class _ArchiveReturnDialogState extends State<_ArchiveReturnDialog> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.save_outlined),
-                    label: const Text('Simpan retur'),
+                    label: const Text('Simpan retur barang'),
                   ),
                 ],
               ),

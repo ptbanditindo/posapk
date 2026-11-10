@@ -58,7 +58,11 @@ class _StoresScreenState extends State<StoresScreen> {
 
   Future<void> _switch(StoreRecord store) async {
     if (!_isOwner && !_allowedStoreIds.contains(store.storeId)) {
-      showSnack(context, 'Toko ini tidak ditugaskan untuk akun Anda.', error: true);
+      showSnack(
+        context,
+        'Akun Anda tidak punya akses ke toko ini. Minta pemilik menugaskan.',
+        error: true,
+      );
       return;
     }
     if (store.storeId == AppDatabase.instance.activeStoreId) return;
@@ -119,13 +123,19 @@ class _StoresScreenState extends State<StoresScreen> {
                   TextField(
                     controller: nama,
                     autofocus: true,
-                    decoration: const InputDecoration(labelText: 'Nama toko'),
+                    decoration: const InputDecoration(
+                      labelText: 'Nama toko',
+                      hintText: 'Contoh: Bengkel Jaya Motor Cabang Dago',
+                    ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: alamat,
                     maxLines: 2,
-                    decoration: const InputDecoration(labelText: 'Alamat'),
+                    decoration: const InputDecoration(
+                      labelText: 'Alamat',
+                      hintText: 'Contoh: Jl. Dago No. 21, Bandung',
+                    ),
                   ),
                   const SizedBox(height: 10),
                   Align(
@@ -197,7 +207,7 @@ class _StoresScreenState extends State<StoresScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Toko')),
+      appBar: AppBar(title: const Text('Daftar toko')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -216,7 +226,7 @@ class _StoresScreenState extends State<StoresScreen> {
                       if (_visibleStores.isEmpty)
                         const Align(
                           alignment: Alignment.centerLeft,
-                          child: Text('Belum ada toko yang ditugaskan.'),
+                          child: Text('Belum ada toko untuk akun ini.'),
                         ),
                       for (final store in _visibleStores)
                         ListTile(
@@ -234,8 +244,8 @@ class _StoresScreenState extends State<StoresScreen> {
                           title: Text(store.nama),
                           subtitle: Text(
                             store.alamat.isEmpty
-                                ? store.storeId
-                                : '${store.alamat} · ${store.storeId}',
+                                ? 'Alamat belum diisi'
+                                : store.alamat,
                           ),
                           trailing: store.storeId ==
                                   AppDatabase.instance.activeStoreId

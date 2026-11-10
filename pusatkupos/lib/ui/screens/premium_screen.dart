@@ -111,7 +111,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (mounted) {
         showSnack(
           context,
-          'Perangkat ini belum terhubung ke server akun.',
+          'Perangkat ini belum terhubung ke server akun. Sambungkan '
+          'perangkat lebih dulu.',
           error: true,
         );
       }
@@ -131,7 +132,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
         _relayDevices = devices;
       });
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal memuat akses: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Daftar akses gagal dimuat: $error',
+            error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -143,7 +147,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (!silent && mounted) {
         showSnack(
           context,
-          'Perangkat ini belum terhubung ke server akun.',
+          'Perangkat ini belum terhubung ke server akun. Sambungkan '
+          'perangkat lebih dulu.',
           error: true,
         );
       }
@@ -183,11 +188,12 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
       await _refreshRelayAccess();
       if (!silent && mounted) {
-        showSnack(context, '$count akun dikirim ke server akun.');
+        showSnack(context, '$count akun sudah dikirim ke server akun.');
       }
     } catch (error) {
       if (!silent && mounted) {
-        showSnack(context, 'Gagal mengirim akun: $error', error: true);
+        showSnack(context, 'Akun gagal dikirim ke server. $error',
+            error: true);
       }
     } finally {
       if (!silent && mounted) setState(() => _busy = false);
@@ -210,7 +216,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (mounted) {
         showSnack(
           context,
-          'Perangkat ini belum terhubung ke server akun.',
+          'Perangkat ini belum terhubung ke server akun. Sambungkan '
+          'perangkat lebih dulu.',
           error: true,
         );
       }
@@ -230,7 +237,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Kode pairing'),
+          title: const Text('Kode hubungkan perangkat'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -277,7 +284,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
       );
       await _refreshRelayAccess();
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal membuat kode: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Kode gagal dibuat: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -292,7 +301,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
     if (id == current) {
       showSnack(
         context,
-        'Perangkat ini tidak dapat dicabut dari dirinya sendiri.',
+        'Perangkat yang sedang dipakai tidak bisa dicabut dari sini.',
         error: true,
       );
       return;
@@ -302,8 +311,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Cabut perangkat'),
         content: Text(
-          'Cabut ${device['nama'] ?? 'perangkat ini'}? Perangkat tersebut '
-          'harus pairing ulang untuk mengirim data.',
+          'Cabut ${device['nama'] ?? 'perangkat ini'}? Perangkat itu harus '
+          'dihubungkan ulang sebelum bisa mengirim data.',
         ),
         actions: [
           TextButton(
@@ -324,7 +333,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await _refreshRelayAccess();
       if (mounted) showSnack(context, 'Perangkat dicabut.');
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal mencabut: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Perangkat gagal dicabut: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -334,7 +345,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Rekonsiliasi tertunda'),
+        title: const Text('Data yang perlu dicocokkan'),
         content: SizedBox(
           width: 420,
           child: ListView(
@@ -369,15 +380,19 @@ class _PremiumScreenState extends State<PremiumScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Tempel token lisensi yang diterbitkan server. Aplikasi akan '
-              'memverifikasi tanda tangan dan masa berlakunya secara lokal.',
+              'Tempel token lisensi dari server. Aplikasi memeriksa '
+              'keaslian dan masa berlaku lisensi di perangkat ini.',
             ),
             const SizedBox(height: 12),
             TextField(
               controller: token,
               minLines: 3,
               maxLines: 5,
-              decoration: const InputDecoration(labelText: 'Token lisensi'),
+              decoration: const InputDecoration(
+                labelText: 'Token lisensi',
+                helperText: 'Tempel seluruh token. Bentuknya panjang dan '
+                    'tanpa spasi.',
+              ),
             ),
           ],
         ),
@@ -388,7 +403,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Pasang'),
+            child: const Text('Pasang lisensi'),
           ),
         ],
       ),
@@ -405,10 +420,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
         await showDialog<void>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Kode pemulihan owner'),
+            title: const Text('Kode pemulihan pemilik'),
             content: Text(
-              '$recovery\n\nTampil sekali. Simpan offline; setelah '
-              'dikonfirmasi kode ini dihapus dari penyimpanan aman.',
+              '$recovery\n\nKode ini hanya tampil sekali. Simpan di tempat '
+              'aman. Setelah Anda menekan "Sudah disimpan", kode dihapus dari '
+              'perangkat.',
             ),
             actions: [
               FilledButton(
@@ -421,7 +437,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
         await LicenseService.instance.clearRecoveryCode();
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal memasang lisensi: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Lisensi gagal dipasang: $error', error: true);
+      }
     }
   }
 
@@ -440,7 +458,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (mounted) showSnack(context, error.message, error: true);
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mengaktifkan lisensi Google: $error', error: true);
+        showSnack(context, 'Lisensi Google gagal diaktifkan: $error',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -474,11 +493,14 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (mounted) {
         showSnack(
           context,
-          'Akun ${input.username} dibuat. Password: ${input.password}',
+          'Akun ${input.username} dibuat. Password awal: '
+          '${input.password}. Catat sekarang.',
         );
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal membuat akun: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Akun gagal dibuat: $error', error: true);
+      }
     }
   }
 
@@ -512,7 +534,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await _pushAccountsToServer(silent: true);
       if (mounted) showSnack(context, 'Akun ${input.username} diperbarui.');
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal mengubah akun: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Akun gagal diperbarui: $error', error: true);
+      }
     }
   }
 
@@ -526,10 +550,13 @@ class _PremiumScreenState extends State<PremiumScreen> {
       );
       await _load();
       if (mounted) {
-        showSnack(context, 'Perangkat owner terdaftar: ${result['id']}');
+        showSnack(context, 'Perangkat pemilik terdaftar: ${result['id']}');
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal daftar perangkat: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Perangkat gagal didaftarkan: $error',
+            error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -538,7 +565,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
   Future<void> _registerEmployeeDevice() async {
     final active = _accounts.where((row) => row['aktif'] == 1).toList();
     if (active.isEmpty) {
-      showSnack(context, 'Buat akun karyawan terlebih dahulu.', error: true);
+      showSnack(context, 'Buat akun karyawan dulu sebelum mendaftarkan '
+          'perangkat.', error: true);
       return;
     }
     int? accountId = active.first['id'] as int;
@@ -553,12 +581,17 @@ class _PremiumScreenState extends State<PremiumScreen> {
             children: [
               TextField(
                 controller: nama,
-                decoration: const InputDecoration(labelText: 'Nama perangkat'),
+                decoration: const InputDecoration(
+                  labelText: 'Nama perangkat',
+                  helperText: 'Contoh: HP kasir toko.',
+                ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<int>(
                 initialValue: accountId,
-                decoration: const InputDecoration(labelText: 'Akun'),
+                decoration: const InputDecoration(
+                  labelText: 'Akun karyawan',
+                ),
                 items: active
                     .map(
                       (row) => DropdownMenuItem(
@@ -599,8 +632,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
         builder: (context) => AlertDialog(
           title: const Text('Token perangkat'),
           content: Text(
-            '${result['nama']}\nID: ${result['id']}\n\n'
-            'Token (tampil sekali):\n${result['token']}',
+            '${result['nama']}\nID perangkat: ${result['id']}\n\n'
+            'Token hanya tampil sekali. Salin sekarang:\n${result['token']}',
           ),
           actions: [
             FilledButton(
@@ -611,7 +644,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
         ),
       );
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal daftar perangkat: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Perangkat gagal didaftarkan: $error',
+            error: true);
+      }
     }
   }
 
@@ -633,7 +669,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal menyambungkan perangkat: $error', error: true);
+        showSnack(context, 'Perangkat gagal disambungkan: $error',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -649,18 +686,23 @@ class _PremiumScreenState extends State<PremiumScreen> {
       if (result['snapshot_required'] == true) {
         showSnack(
           context,
-          'Perangkat tertinggal. Minta owner mengunggah snapshot.',
+          'Perangkat ini tertinggal. Minta pemilik mengunggah cadangan '
+          'data.',
         );
       } else if (result['snapshot_applied'] == true) {
-        showSnack(context, 'Snapshot diterapkan. Sinkronkan lagi untuk delta.');
+        showSnack(context, 'Cadangan data sudah dipasang. Sinkronkan lagi '
+            'untuk mengambil perubahan terbaru.');
       } else {
         showSnack(
           context,
-          'Sinkron: ${result['sent']} terkirim, ${result['applied']} diterapkan.',
+          'Sinkron selesai: ${result['sent']} data terkirim, '
+          '${result['applied']} data diterima.',
         );
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Sinkron gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Sinkronisasi gagal: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -670,11 +712,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Rotasi kunci toko?'),
+        title: const Text('Ganti kunci toko?'),
         content: const Text(
-          'Semua perangkat aktif akan menerima kunci versi baru. Perangkat '
-          'yang sudah dicabut tidak dapat membuka data baru, sementara data '
-          'lama tetap dapat dibaca dengan kunci sebelumnya.',
+          'Semua perangkat aktif akan menerima kunci baru. Perangkat yang '
+          'sudah dicabut tidak bisa membuka data baru, tetapi data lama tetap '
+          'bisa dibaca dengan kunci sebelumnya.',
         ),
         actions: [
           TextButton(
@@ -683,7 +725,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Rotasi'),
+            child: const Text('Ganti kunci'),
           ),
         ],
       ),
@@ -701,7 +743,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await _load();
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Rotasi kunci gagal: $error', error: true);
+        showSnack(context, 'Kunci toko gagal diganti: $error', error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -716,12 +758,13 @@ class _PremiumScreenState extends State<PremiumScreen> {
       showSnack(
         context,
         count == 0
-            ? 'Semua perangkat aktif sudah memegang kunci toko terbaru.'
+            ? 'Semua perangkat aktif sudah memakai kunci toko terbaru.'
             : 'Kunci toko dibagikan ke $count perangkat aktif.',
       );
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal bagikan kunci: $error', error: true);
+        showSnack(context, 'Kunci toko gagal dibagikan: $error',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -744,13 +787,15 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await _load();
       if (!mounted) return;
       if (result['applied'] == true) {
-        showSnack(context, 'Snapshot diterapkan sampai urutan ${result['cursor']}.');
+        showSnack(context, 'Cadangan data dipasang sampai urutan '
+            '${result['cursor']}.');
       } else {
-        showSnack(context, 'Belum ada snapshot yang dapat diterapkan.');
+        showSnack(context, 'Belum ada cadangan data yang bisa dipasang.');
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal ambil snapshot: $error', error: true);
+        showSnack(context, 'Cadangan data gagal diambil: $error',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -767,14 +812,18 @@ class _PremiumScreenState extends State<PremiumScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Masukkan kode pemulihan owner. Jika cocok, minta token '
-              'lisensi baru ke server menggunakan ID owner.',
+              'Masukkan kode pemulihan pemilik. Jika cocok, minta token '
+              'lisensi baru ke server memakai ID pemilik.',
             ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
               autofocus: true,
-              decoration: const InputDecoration(labelText: 'Kode pemulihan'),
+              decoration: const InputDecoration(
+                labelText: 'Kode pemulihan',
+                helperText: 'Kode dari penyedia lisensi atau pemilik '
+                    'toko.',
+              ),
             ),
           ],
         ),
@@ -796,7 +845,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final valid = await LicenseService.instance.verifyRecoveryCode(code);
     if (!mounted) return;
     if (!valid) {
-      showSnack(context, 'Kode pemulihan tidak cocok.', error: true);
+      showSnack(context, 'Kode pemulihan tidak cocok. Periksa huruf dan '
+          'angkanya.', error: true);
       return;
     }
     final ownerId = await LicenseService.instance.ownerId();
@@ -806,9 +856,9 @@ class _PremiumScreenState extends State<PremiumScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Kode pemulihan valid'),
         content: Text(
-          'ID owner: ${ownerId ?? '-'}\n\n'
-          'Hubungi penyedia lisensi untuk menerbitkan ulang token lisensi '
-          'server, lalu pasang token itu di layar ini.',
+          'ID pemilik: ${ownerId ?? '-'}\n\n'
+          'Hubungi penyedia lisensi untuk menerbitkan token baru, lalu pasang '
+          'token itu di layar ini.',
         ),
         actions: [
           FilledButton(
@@ -862,11 +912,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 padding: const EdgeInsets.all(16),
                 child: Text(
                   expired
-                      ? 'Lisensi kedaluwarsa. Data dan kasir offline tetap '
-                          'bisa dipakai; sinkronisasi dan multi-toko '
-                          'dinonaktifkan sampai lisensi diperbarui.'
-                      : 'Belum ada lisensi server yang valid. Kasir offline '
-                          'tetap gratis; sinkronisasi dan multi-toko '
+                      ? 'Lisensi sudah kedaluwarsa. Data dan kasir offline '
+                          'tetap bisa dipakai. Sinkronisasi dan multi-toko '
+                          'mati sampai lisensi diperbarui.'
+                      : 'Belum ada lisensi server yang aktif. Kasir offline '
+                          'tetap gratis. Sinkronisasi dan multi-toko '
                           'memerlukan lisensi.',
                 ),
               ),
@@ -874,17 +924,17 @@ class _PremiumScreenState extends State<PremiumScreen> {
           ),
         if (_canManageLicense)
           SectionCard(
-            title: 'Lisensi dan ID owner',
+            title: 'Lisensi dan ID pemilik',
           trailing: premium
               ? const Chip(label: Text('Premium'))
               : FilledButton.tonal(
                   onPressed: _activateLicense,
-                  child: const Text('Aktifkan'),
+                  child: const Text('Pasang lisensi'),
                 ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _line('ID owner', '${_status?['owner_id'] ?? '-'}'),
+              _line('ID pemilik', '${_status?['owner_id'] ?? '-'}'),
               _line('Paket', '${_status?['plan'] ?? 'free'}'),
               _line('Berlaku sampai', '${_status?['period_end'] ?? '-'}'),
               _line('Jumlah toko', '${_status?['store_limit'] ?? 1} toko'),
@@ -906,10 +956,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 else
                   Text(
                     !GoogleAuthService.instance.configured
-                        ? 'Login Google belum diaktifkan pada build ini. '
+                        ? 'Masuk dengan Google belum tersedia di versi ini. '
                             'Gunakan token lisensi manual.'
-                        : 'Login Google hanya tersedia di Android, iOS, '
-                            'macOS, dan web.',
+                        : 'Masuk dengan Google hanya tersedia di Android, '
+                            'iOS, macOS, dan web.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
               ],
@@ -927,7 +977,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
               if ((_ownerRow?['public_key'] as String? ?? '').isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'Kunci publik owner',
+                  'Kunci publik pemilik',
                   style: Theme.of(context).textTheme.labelMedium,
                 ),
                 SelectableText(
@@ -939,8 +989,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text(
-                    'Lisensi hanya diterbitkan server. Token berisi owner, '
-                    'masa berlaku, dan jumlah toko.',
+                    'Lisensi hanya diterbitkan server. Token berisi ID '
+                    'pemilik, masa berlaku, dan jumlah toko.',
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
@@ -954,7 +1004,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
           trailing: TextButton.icon(
             onPressed: _addAccount,
             icon: const Icon(Icons.person_add_alt_1),
-            label: const Text('Tambah'),
+            label: const Text('Tambah akun'),
           ),
           child: _accounts.isEmpty
               ? const Text('Belum ada akun karyawan.')
@@ -974,7 +1024,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
                             itemBuilder: (context) => const [
                               PopupMenuItem(
                                 value: 'ubah',
-                                child: Text('Ubah peran & akses'),
+                                child: Text('Ubah peran dan akses'),
                               ),
                               PopupMenuItem(
                                 value: 'reset-password',
@@ -986,7 +1036,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
                               ),
                               PopupMenuItem(
                                 value: 'audit',
-                                child: Text('Audit'),
+                                child: Text('Riwayat audit'),
                               ),
                             ],
                           ),
@@ -1006,7 +1056,10 @@ class _PremiumScreenState extends State<PremiumScreen> {
               if (value == 'employee') _registerEmployeeDevice();
             },
             itemBuilder: (context) => const [
-              PopupMenuItem(value: 'owner', child: Text('Daftarkan perangkat owner')),
+              PopupMenuItem(
+                value: 'owner',
+                child: Text('Daftarkan perangkat pemilik'),
+              ),
               PopupMenuItem(
                 value: 'employee',
                 child: Text('Daftarkan perangkat karyawan'),
@@ -1027,7 +1080,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                           ),
                           title: Text('${device['nama']}'),
                           subtitle: Text(
-                            '${device['kind']} · ${device['id']}\n'
+                            '${device['kind'] == 'owner' ? 'Pemilik' : 'Karyawan'}'
+                            ' · ${device['id']}\n'
                             '${device['revoked_at'] == null ? 'aktif' : 'dicabut'}',
                           ),
                           isThreeLine: true,
@@ -1051,8 +1105,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
           SectionCard(
             title: 'Akses karyawan',
           subtitle:
-              'Kode pairing berlaku 10 menit dan hangus setelah dipakai '
-              'satu perangkat.',
+              'Kode untuk menghubungkan perangkat berlaku 10 menit dan '
+              'hangus setelah dipakai satu perangkat.',
           trailing: IconButton(
             tooltip: 'Muat akses',
             onPressed: _busy ? null : _refreshRelayAccess,
@@ -1085,14 +1139,14 @@ class _PremiumScreenState extends State<PremiumScreen> {
                           title: Text('${account['nama'] ?? '-'}'),
                           subtitle: Text(
                             '${account['username'] ?? '-'} · '
-                            '${account['role_base'] ?? '-'}',
+                            '${roleLabels[account['role_base']] ?? account['role_base'] ?? '-'}',
                           ),
                           trailing: TextButton.icon(
                             onPressed: _busy
                                 ? null
                                 : () => _createPairingCode(account),
                             icon: const Icon(Icons.qr_code_2, size: 18),
-                            label: const Text('Kode pairing'),
+                            label: const Text('Buat kode'),
                           ),
                         ),
                       ),
@@ -1124,7 +1178,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                             subtitle: Text(
                               revoked
                                   ? 'dicabut'
-                                  : '${device['kind'] ?? '-'} · $lastSeen'
+                                  : '${device['kind'] == 'owner' ? 'Pemilik' : 'Karyawan'}'
+                                      ' · $lastSeen'
                                       '${_keyLabel(device)}',
                             ),
                             trailing: revoked
@@ -1163,19 +1218,19 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   ),
                   OutlinedButton(
                     onPressed: premium ? _shareStoreKey : null,
-                    child: const Text('Selaraskan akses kunci'),
+                    child: const Text('Bagikan kunci ke perangkat'),
                   ),
                   OutlinedButton(
                     onPressed: premium ? _rotateKey : null,
-                    child: const Text('Rotasi kunci toko'),
+                    child: const Text('Ganti kunci toko'),
                   ),
                   OutlinedButton(
                     onPressed: premium ? _uploadSnapshot : null,
-                    child: const Text('Unggah snapshot'),
+                    child: const Text('Unggah cadangan data'),
                   ),
                   OutlinedButton(
                     onPressed: premium ? _takeSnapshot : null,
-                    child: const Text('Ambil snapshot'),
+                    child: const Text('Ambil cadangan data'),
                   ),
                   OutlinedButton(
                     onPressed: () => Navigator.of(context).push(
@@ -1184,7 +1239,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                       ),
                     ),
                     child: Text(
-                      'Konflik (${_syncStatus?['conflicts'] ?? 0})',
+                      'Perlu diputuskan '
+                      '(${_syncStatus?['conflicts'] ?? 0})',
                     ),
                   ),
                 ],
@@ -1193,15 +1249,15 @@ class _PremiumScreenState extends State<PremiumScreen> {
               _line('Sinkron terakhir', _lastSyncLabel),
               _line('Menunggu dikirim', '${_syncStatus?['pending'] ?? 0}'),
               _line(
-                'Konflik / gagal',
+                'Data bermasalah / gagal',
                 '${((_syncStatus?['failed'] as int?) ?? 0) + ((_syncStatus?['blocking'] as int?) ?? 0)}',
               ),
               _line(
-                'Terakhir diterima',
+                'Nomor urut data terakhir',
                 '${_syncStatus?['cursor'] ?? 0}',
               ),
               _line(
-                'Rekonsiliasi terbuka',
+                'Data perlu dicocokkan',
                 '${_reconcileRequests.length}',
               ),
               if (_reconcileRequests.isNotEmpty)
@@ -1209,14 +1265,14 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   alignment: Alignment.centerLeft,
                   child: TextButton(
                     onPressed: _showReconcileRequests,
-                    child: const Text('Lihat rekonsiliasi'),
+                    child: const Text('Lihat data'),
                   ),
                 ),
               if (_syncStatus?['storage_warning'] == true) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'Penyimpanan server hampir penuh. Data lama dibersihkan '
-                  'otomatis setelah semua perangkat menerimanya; cabut '
+                  'Penyimpanan server hampir penuh. Data lama dihapus '
+                  'otomatis setelah semua perangkat menerimanya. Cabut '
                   'perangkat yang sudah tidak dipakai.',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.error,
@@ -1228,7 +1284,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
                 const SizedBox(height: 8),
                 Text(
                   'Ada perubahan yang belum terkirim lebih dari 24 jam. '
-                  'Periksa koneksi atau buka daftar konflik.',
+                  'Periksa koneksi atau buka daftar data yang perlu '
+                  'diputuskan.',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.error,
                     fontSize: 12,
@@ -1238,7 +1295,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
               if (('${_syncStatus?['last_error'] ?? ''}').isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
-                  '${_syncStatus?['last_error']}',
+                  'Kesalahan terakhir: ${_syncStatus?['last_error']}',
                   style: const TextStyle(fontSize: 12),
                 ),
               ],
@@ -1266,13 +1323,13 @@ class _PremiumScreenState extends State<PremiumScreen> {
     final local = parsed.toLocal();
     final days = DateTime.now().difference(local).inDays;
     final label = DateFormat('dd/MM/yyyy HH:mm').format(local);
-    return days >= 7 ? '$label (tertinggal)' : label;
+    return days >= 7 ? '$label (lama tidak terhubung)' : label;
   }
 
   String _keyLabel(Map<String, Object?> device) {
     final version = (device['key_version'] as num?)?.toInt() ?? 0;
-    if (version <= 0) return ' · belum memegang kunci';
-    return ' · kunci v$version';
+    if (version <= 0) return ' · belum punya kunci';
+    return ' · kunci versi $version';
   }
 
   Widget _line(String label, String value) {
@@ -1312,6 +1369,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
               obscureText: true,
               decoration: InputDecoration(
                 labelText: 'Password baru (minimal 8)',
+                helperText: 'Minta karyawan menggantinya setelah masuk.',
                 errorText: error.isEmpty ? null : error,
               ),
             ),
@@ -1325,13 +1383,13 @@ class _PremiumScreenState extends State<PremiumScreen> {
                   final value = password.text.trim();
                   if (value.length < 8) {
                     setDialogState(
-                      () => error = 'Password minimal 8 karakter.',
+                      () => error = 'Password minimal 8 huruf atau angka.',
                     );
                     return;
                   }
                   Navigator.pop(dialogContext, value);
                 },
-                child: const Text('Simpan'),
+                child: const Text('Simpan password'),
               ),
             ],
           ),
@@ -1346,12 +1404,12 @@ class _PremiumScreenState extends State<PremiumScreen> {
           actor: AppState.instance.requireOperator,
         );
         await _load();
-        if (mounted) showSnack(context, 'Password direset.');
+        if (mounted) showSnack(context, 'Password sudah direset.');
       } catch (resetError) {
         if (mounted) {
           showSnack(
             context,
-            'Gagal mereset password: $resetError',
+            'Password gagal direset: $resetError',
             error: true,
           );
         }
@@ -1371,7 +1429,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
         }
       } catch (resetError) {
         if (mounted) {
-          showSnack(context, 'Gagal mereset PIN: $resetError', error: true);
+          showSnack(context, 'PIN gagal direset: $resetError', error: true);
         }
       }
     } else if (action == 'audit') {
@@ -1380,11 +1438,11 @@ class _PremiumScreenState extends State<PremiumScreen> {
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          title: Text('Audit ${account['username']}'),
+          title: Text('Riwayat audit ${account['username']}'),
           content: SizedBox(
             width: 420,
             child: rows.isEmpty
-                ? const Text('Belum ada audit.')
+                ? const Text('Belum ada catatan audit.')
                 : ListView(
                     shrinkWrap: true,
                     children: rows
@@ -1489,17 +1547,27 @@ class _AccountDialogState extends State<_AccountDialog> {
               controller: _username,
               autofocus: !_editing,
               enabled: !_editing,
-              decoration: const InputDecoration(labelText: 'Nama pengguna'),
+              decoration: const InputDecoration(
+                labelText: 'Nama pengguna',
+                helperText: 'Dipakai untuk masuk, tanpa spasi. '
+                    'Contoh: budi.',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _nama,
-              decoration: const InputDecoration(labelText: 'Nama lengkap'),
+              decoration: const InputDecoration(
+                labelText: 'Nama lengkap',
+                helperText: 'Contoh: Budi Santoso.',
+              ),
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               initialValue: _role,
-              decoration: const InputDecoration(labelText: 'Peran'),
+              decoration: const InputDecoration(
+                labelText: 'Peran',
+                helperText: 'Menentukan menu dan tindakan yang bisa dibuka.',
+              ),
               items: _roles
                   .map(
                     (role) => DropdownMenuItem(
@@ -1519,12 +1587,18 @@ class _AccountDialogState extends State<_AccountDialog> {
                 labelText: _editing
                     ? 'Password baru (kosongkan jika tetap)'
                     : 'Password awal (minimal 8)',
+                helperText: _editing
+                    ? 'Kosongkan jika password tidak diganti.'
+                    : 'Minimal 8 huruf atau angka. Berikan ke karyawan.',
               ),
             ),
             if (_editing)
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Aktif'),
+                title: const Text('Akun aktif'),
+                subtitle: const Text(
+                  'Karyawan bisa masuk dan memakai aplikasi.',
+                ),
                 value: _aktif,
                 onChanged: (value) => setState(() => _aktif = value),
               ),
@@ -1532,9 +1606,14 @@ class _AccountDialogState extends State<_AccountDialog> {
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Izin tambahan (di atas akses peran)',
+                'Izin tambahan di atas akses peran',
                 style: Theme.of(context).textTheme.labelLarge,
               ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Centang hanya izin yang benar-benar dibutuhkan.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 6),
             Wrap(
@@ -1578,7 +1657,7 @@ class _AccountDialogState extends State<_AccountDialog> {
               ),
             );
           },
-          child: const Text('Simpan'),
+          child: const Text('Simpan akun'),
         ),
       ],
     );

@@ -52,8 +52,8 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Masukkan PIN pemilik untuk mengubah modul toko. '
-                'Perubahan dicatat di riwayat fitur.',
+                'Masukkan PIN pemilik untuk mengubah modul toko. Setiap '
+                'perubahan dicatat di riwayat fitur.',
               ),
               const SizedBox(height: 12),
               TextField(
@@ -63,6 +63,7 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'PIN pemilik',
+                  helperText: 'PIN yang dipakai pemilik saat membuka aplikasi.',
                   errorText: error,
                 ),
                 onSubmitted: (_) =>
@@ -84,7 +85,7 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
                 }
                 Navigator.pop(context, value);
               },
-              child: const Text('Lanjut'),
+              child: const Text('Periksa PIN'),
             ),
           ],
         ),
@@ -105,9 +106,9 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Matikan fitur induk?'),
         content: Text(
-          '${feature.label} menjadi induk dari $names yang masih aktif. '
-          'Setelah induk dimatikan, sub-fitur tersebut tidak berlaku. '
-          'Data lama tetap tersimpan dan tampil di riwayat.',
+          '${feature.label} adalah induk dari $names yang masih aktif. Jika '
+          'induk dimatikan, $names tidak berlaku. Data lama tetap tersimpan '
+          'dan bisa dilihat di riwayat.',
         ),
         actions: [
           TextButton(
@@ -116,7 +117,7 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Matikan'),
+            child: const Text('Matikan induk'),
           ),
         ],
       ),
@@ -171,7 +172,9 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
             : '${feature.label} dinonaktifkan.',
       );
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Fitur gagal diubah: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -184,9 +187,10 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
         if (feature.dependsOn != null &&
             flags.isEnabled(feature.key) &&
             !flags.isEnabled(feature.dependsOn!))
-          '${feature.label} aktif, tetapi induk '
+          '${feature.label} aktif, tetapi induknya '
               '${FeatureCatalog.definition(feature.dependsOn!)?.label ?? feature.dependsOn} '
-              'dimatikan sehingga belum berlaku.',
+              'sedang dimatikan. Fitur ini belum berlaku sampai induknya '
+              'diaktifkan.',
     ];
   }
 
@@ -194,23 +198,24 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
   Widget build(BuildContext context) {
     if (_loading) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Manajemen Modul dan Fitur')),
+        appBar: AppBar(title: const Text('Modul dan fitur toko')),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
     final flags = FeatureFlagsService.instance;
     final warnings = _warnings();
     return Scaffold(
-      appBar: AppBar(title: const Text('Manajemen Modul dan Fitur')),
+      appBar: AppBar(title: const Text('Modul dan fitur toko')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           SectionCard(
             title: 'Fitur opsional',
             subtitle: _isOwner
-                ? 'Nonaktifkan modul yang tidak dipakai toko ini. Data lama '
-                    'tetap tersimpan, tampil di riwayat, dan ikut backup.'
-                : 'Hanya pemilik yang dapat mengubah saklar fitur.',
+                ? 'Matikan modul yang tidak dipakai toko ini. Data lama '
+                    'tetap tersimpan, tampil di riwayat, dan ikut '
+                    'dicadangkan.'
+                : 'Hanya pemilik yang bisa mengubah saklar fitur.',
             child: Column(
               children: [
                 for (final feature in FeatureCatalog.items)
@@ -224,9 +229,7 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
                       children: [
                         Expanded(child: Text(feature.label)),
                         Text(
-                          flags.isEnabled(feature.key)
-                              ? 'AKTIF'
-                              : 'NONAKTIF',
+                          flags.isEnabled(feature.key) ? 'Aktif' : 'Nonaktif',
                           style: Theme.of(context).textTheme.labelSmall,
                         ),
                       ],
@@ -235,12 +238,14 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
                       [
                         feature.description,
                         if (feature.dependsOn != null)
-                          'Induk: '
+                          'Butuh induk: '
                               '${FeatureCatalog.definition(feature.dependsOn!)?.label ?? feature.dependsOn}.',
-                        if (!feature.optional) 'Fitur wajib.',
+                        if (!feature.optional)
+                          'Selalu aktif dan tidak bisa dimatikan.',
                         if (feature.dependsOn != null &&
                             !flags.isEnabled(feature.dependsOn!))
-                          'Induk belum aktif sehingga belum berlaku.',
+                          'Induknya belum aktif, jadi fitur ini belum '
+                              'berlaku.',
                       ].join(' '),
                     ),
                   ),
@@ -250,7 +255,7 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
           if (warnings.isNotEmpty) ...[
             const SizedBox(height: 12),
             SectionCard(
-              title: 'Peringatan',
+              title: 'Perlu diperiksa',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -266,8 +271,8 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Riwayat perubahan',
-            subtitle: 'Perubahan hanya dapat dilakukan pemilik dan '
-                'tercatat dengan PIN yang valid.',
+            subtitle: 'Setiap perubahan memakai PIN pemilik dan tercatat di '
+                'sini.',
             child: _history.isEmpty
                 ? Text(
                     'Belum ada perubahan fitur.',
@@ -295,10 +300,10 @@ class _StoreFeaturesScreenState extends State<StoreFeaturesScreen> {
           SectionCard(
             title: 'Catatan',
             child: Text(
-              'Fitur wajib seperti kasir, stok, pelanggan, pembayaran, '
-              'retur, laporan, backup, akun, sinkronisasi, lisensi, dan '
-              'pengaturan selalu aktif. Perubahan disinkronkan dan dicatat '
-              'di riwayat fitur.',
+              'Fitur dasar selalu aktif: kasir, stok, pelanggan, pembayaran, '
+              'retur, laporan, cadangan, akun, sinkronisasi, lisensi, dan '
+              'pengaturan. Perubahan fitur opsional ikut tersinkron dan '
+              'tercatat di riwayat.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),

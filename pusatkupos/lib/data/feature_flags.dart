@@ -39,39 +39,41 @@ const storeFeatureCatalog = <StoreFeature>[
   StoreFeature(
     key: featureEstimasi,
     label: 'Estimasi',
-    description: 'Membuat estimasi biaya sebelum pengerjaan.',
+    description:
+        'Mencatat perkiraan biaya servis sebelum pelanggan menyetujui.',
   ),
   StoreFeature(
     key: featureOrderKerja,
-    label: 'Antrian / Order Kerja',
-    description: 'Antrian, status pengerjaan, dan order kerja.',
+    label: 'Antrean dan order kerja',
+    description:
+        'Nomor antrean, status pengerjaan, dan riwayat order kerja.',
   ),
   StoreFeature(
     key: featureSupplierHub,
-    label: 'Supplier & Reseller',
-    description:
-        'Hub supplier, follow up reseller, dan pembelian/utang supplier.',
+    label: 'Supplier dan reseller',
+    description: 'Daftar supplier dan tindak lanjut untuk reseller.',
   ),
   StoreFeature(
     key: featurePurchaseDebt,
-    label: 'Pembelian & Utang Supplier',
-    description: 'Nota pembelian, stok masuk, dan pembayaran utang supplier.',
+    label: 'Pembelian dan utang supplier',
+    description:
+        'Nota pembelian, stok masuk, dan pembayaran utang ke supplier.',
     dependsOn: featureSupplierHub,
   ),
   StoreFeature(
     key: featureFollowup,
-    label: 'Follow Up Pelanggan',
-    description: 'Jadwal dan catatan follow up pelanggan.',
+    label: 'Tindak lanjut pelanggan',
+    description: 'Jadwal dan catatan tindak lanjut ke pelanggan.',
   ),
   StoreFeature(
     key: featureUnitKendaraan,
-    label: 'Unit / Kendaraan',
-    description: 'Menyimpan unit atau kendaraan milik pelanggan.',
+    label: 'Unit kendaraan',
+    description: 'Menyimpan kendaraan yang diservis pelanggan.',
   ),
   StoreFeature(
     key: featureWhatsapp,
     label: 'WhatsApp',
-    description: 'Membuka pesan WhatsApp dari aplikasi.',
+    description: 'Membuka chat WhatsApp dari aplikasi.',
   ),
 ];
 
@@ -179,7 +181,7 @@ class FeatureFlagsService {
     requireEnabled(featureSupplierHub);
     if (!isEnabled(featurePurchaseDebt)) {
       throw StateError(
-        'Fitur "Pembelian & Utang Supplier" dinonaktifkan pemilik.',
+        'Fitur "Pembelian dan utang supplier" dinonaktifkan pemilik.',
       );
     }
   }

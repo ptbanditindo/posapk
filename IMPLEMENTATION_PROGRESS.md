@@ -484,3 +484,39 @@ F10 menyentuh berkas berikut (relatif `pusatkupos/`):
 
 Verifikasi F9/F10: `dart analyze lib` pada `pusatkupos/` dan `relay/` → tidak
 ada masalah. Uji F9-4 belum dijalankan.
+
+## Pass copy UI dan penyatuan desain (10 November 2026)
+
+Ruang lingkup: teks dan tampilan saja. API, kunci data, transaksi, validasi,
+dan alur tidak diubah.
+
+- Katalog baru `UI_COPY_CATALOG.md` mencatat 3.069 teks unik dari 42 berkas
+  `lib/ui`, lengkap dengan nomor baris, aturan penulisan, dan istilah baku.
+- Istilah teknis diganti untuk pengguna UMKM: snapshot menjadi cadangan data,
+  relay menjadi server, outbox menjadi data yang belum terkirim, konflik
+  menjadi data yang perlu diputuskan, passphrase menjadi kata sandi cadangan,
+  owner menjadi pemilik, pairing menjadi hubungkan perangkat, HPP menjadi
+  modal, VOID menjadi dibatalkan.
+- Kolom isian utama diberi contoh nyata dan keterangan asal nilai, termasuk
+  nama, kode, nominal, alasan, dan jumlah.
+- Tombol menyebut tindakan: Simpan pelunasan, Buat cadangan sekarang,
+  Hubungkan perangkat, Masuk dengan PIN, Simpan koreksi.
+- Em dash dihapus dari teks UI. Pesan kesalahan menyebut penyebab dan langkah
+  pemulihan.
+- Desain disatukan lewat `theme.dart`: satu skema warna, kartu datar radius
+  16, isian radius 12, tombol 48, dialog radius 20, navigasi dan bilah status
+  senada, serta `SectionCard`, `StatCard`, dan `EmptyState` sebagai pola tetap.
+- Berkas yang diubah pada pass ini: `home_shell.dart`, `widgets.dart`,
+  `widgets/sync_status_banner.dart`, `widgets/health_surface.dart`,
+  `widgets/store_switcher.dart`, `session_recovery.dart`,
+  `startup_recovery.dart`, `upload_backup_dialog.dart`, `receipt_dialog.dart`,
+  `error_messages.dart`, `onboarding.dart`, `entry_gate.dart`,
+  `settings_screen.dart`, `orders_screen.dart`,
+  `store_features_screen.dart`, `diagnostics_screen.dart`,
+  `printer_settings_screen.dart`, `sync_conflicts_screen.dart`,
+  `owner_viewer.dart`, `premium_screen.dart`, beserta layar lain yang sudah
+  ditulis ulang pada pass sebelumnya.
+
+Verifikasi: `dart analyze` pada `pusatkupos/` menghasilkan "No issues found!".
+Build, uji runtime, dan pemeriksaan tampilan di perangkat belum dijalankan
+karena menunggu persetujuan.

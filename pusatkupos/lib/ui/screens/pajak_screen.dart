@@ -100,7 +100,9 @@ class _PajakScreenState extends State<PajakScreen> {
     await Clipboard.setData(
       ClipboardData(text: PajakReportService.instance.rekapCsv(rekap)),
     );
-    if (mounted) showSnack(context, 'Rekap disalin ke clipboard.');
+      if (mounted) {
+        showSnack(context, 'Rekap disalin. Tempel di WhatsApp atau dokumen.');
+      }
   }
 
   Future<void> _print() async {
@@ -111,7 +113,7 @@ class _PajakScreenState extends State<PajakScreen> {
     if (printer == null) {
       showSnack(
         context,
-        'Belum ada printer. Tambahkan printer di Pengaturan.',
+        'Belum ada printer. Tambahkan printer di menu Printer lebih dulu.',
         error: true,
       );
       return;
@@ -130,11 +132,12 @@ class _PajakScreenState extends State<PajakScreen> {
       if (rekap.returPajakCents > 0)
         'Retur PPN: ${formatRupiah(rekap.returPajakCents)}',
       'PPN masukan: ${formatRupiah(rekap.pajakMasukanNetoCents)}',
-      'PPN diserap: ${formatRupiah(rekap.diserapNetoCents)}',
+      'PPN ditanggung toko: ${formatRupiah(rekap.diserapNetoCents)}',
       divider,
       'PPN neto: ${formatRupiah(rekap.pajakNetoCents)}',
       'Sudah dibayar: ${formatRupiah(rekap.pajakDibayarCents)}',
-      'Sisa kewajiban: ${formatRupiah(rekap.sisaKewajibanCents)}',
+      'Sisa yang harus dibayar: '
+          '${formatRupiah(rekap.sisaKewajibanCents)}',
       divider,
       for (final row in rekap.rincian)
         '${row.mode} ${formatPersenBp(row.persenBp)} '
@@ -183,7 +186,9 @@ class _PajakScreenState extends State<PajakScreen> {
       await _load();
       if (mounted) showSnack(context, 'Pembayaran PPN dibatalkan.');
     } catch (error) {
-      if (mounted) showSnack(context, '$error', error: true);
+      if (mounted) {
+        showSnack(context, 'Pembayaran gagal dibatalkan: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -199,7 +204,10 @@ class _PajakScreenState extends State<PajakScreen> {
           controller: controller,
           autofocus: true,
           maxLines: 2,
-          decoration: InputDecoration(labelText: label),
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: 'Contoh: salah input nominal',
+          ),
         ),
         actions: [
           TextButton(
@@ -212,7 +220,7 @@ class _PajakScreenState extends State<PajakScreen> {
               if (text.isEmpty) return;
               Navigator.pop(context, text);
             },
-            child: const Text('Lanjut'),
+            child: const Text('Batalkan pembayaran'),
           ),
         ],
       ),
@@ -227,8 +235,8 @@ class _PajakScreenState extends State<PajakScreen> {
       return Scaffold(
         appBar: AppBar(title: const Text('PPN')),
         body: const EmptyState(
-          title: 'Hanya pemilik',
-          subtitle: 'Rekap dan pembayaran PPN hanya dapat dibuka oleh pemilik.',
+          title: 'Khusus pemilik toko',
+          subtitle: 'Rekap dan pembayaran PPN hanya bisa dibuka oleh pemilik.',
           icon: Icons.lock_outline,
         ),
       );
@@ -246,7 +254,14 @@ class _PajakScreenState extends State<PajakScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Rekap internal untuk pembukuan. Bukan e-Faktur resmi.',
+            'Rekap internal untuk pembukuan toko. Bukan e-Faktur resmi, jadi '
+            'jangan dipakai sebagai faktur pajak.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'PPN keluaran: pajak dari penjualan. PPN masukan: pajak dari '
+            'pembelian. PPN neto: selisih yang perlu disetor.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -324,7 +339,7 @@ class _PajakScreenState extends State<PajakScreen> {
                     SizedBox(
                       width: width,
                       child: StatCard(
-                        label: 'PPN diserap bengkel',
+                        label: 'PPN ditanggung toko',
                         value: formatRupiah(rekap.diserapNetoCents),
                         icon: Icons.volunteer_activism_outlined,
                         tone: Colors.orange,
@@ -381,7 +396,8 @@ class _PajakScreenState extends State<PajakScreen> {
                       padding: const EdgeInsets.only(top: 6),
                       child: Text(
                         'Pembayaran melebihi kewajiban masa ini. Periksa '
-                        'kembali data retur/pembelian sebelum masa ditutup.',
+                        'kembali data retur dan pembelian sebelum masa '
+                        'ditutup.',
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.error,
                         ),
@@ -393,9 +409,8 @@ class _PajakScreenState extends State<PajakScreen> {
             const SizedBox(height: 16),
             SectionCard(
               title: 'Rincian mode, tarif, dan penanggung',
-              subtitle:
-                  'Memakai snapshot yang tersimpan pada tiap nota, bukan '
-                  'pengaturan saat ini.',
+              subtitle: 'Nilai dihitung dari tarif yang tersimpan di setiap '
+                  'nota, bukan dari pengaturan PPN saat ini.',
               child: rekap.rincian.isEmpty
                   ? const Text('Tidak ada nota ber-PPN pada masa ini.')
                   : Column(
@@ -408,8 +423,8 @@ class _PajakScreenState extends State<PajakScreen> {
                             subtitle: Text(
                               '${row.jumlahNota} nota · DPP '
                               '${formatRupiah(row.dppNetoCents)}'
-                              '${row.diserapCents == 0 ? '' : ' · diserap '
-                                        '${formatRupiah(row.diserapCents)}'}',
+                              '${row.diserapCents == 0 ? '' : ' · ditanggung '
+                                        'toko ${formatRupiah(row.diserapCents)}'}',
                             ),
                             trailing: Text(
                               formatRupiah(row.pajakNetoCents),
@@ -424,13 +439,13 @@ class _PajakScreenState extends State<PajakScreen> {
             const SizedBox(height: 16),
             SectionCard(
               title: 'Pembayaran PPN',
-              subtitle: 'Kas/transfer beserta referensi pembayaran.',
+              subtitle: 'Pembayaran kas atau transfer beserta bukti setornya.',
               trailing: FilledButton.icon(
                 onPressed: _busy || rekap.sisaKewajibanCents <= 0
                     ? null
                     : _recordPayment,
                 icon: const Icon(Icons.add, size: 18),
-                label: const Text('Catat'),
+                label: const Text('Catat pembayaran'),
               ),
               child: _payments.isEmpty
                   ? const Text('Belum ada pembayaran PPN pada masa ini.')
@@ -447,11 +462,11 @@ class _PajakScreenState extends State<PajakScreen> {
                             subtitle: Text(
                               '${dateId.format(localTime(row['dibayar_at']))}'
                               '${_referensi(row)}'
-                              '${row['status'] == 'VOID' ? ' · DIBATALKAN' : ''}',
+                              '${row['status'] == 'VOID' ? ' · Dibatalkan' : ''}',
                             ),
                             trailing: row['status'] == 'VOID'
                                 ? Text(
-                                    'VOID',
+                                    'Dibatalkan',
                                     style: TextStyle(
                                       color: Theme.of(context)
                                           .colorScheme
@@ -493,7 +508,7 @@ class _PajakScreenState extends State<PajakScreen> {
             OutlinedButton.icon(
               onPressed: _busy ? null : _print,
               icon: const Icon(Icons.print_outlined),
-              label: const Text('Cetak / simpan PDF'),
+              label: const Text('Cetak rekap'),
             ),
           ],
         ],
@@ -574,7 +589,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   Future<void> _submit() async {
     final nominal = tryParseRupiahToCents(_nominal.text);
     if (nominal == null || nominal <= 0) {
-      setState(() => _error = 'Nominal pembayaran tidak valid.');
+      setState(() => _error = 'Isi nominal pembayaran lebih dari 0.');
       return;
     }
     if (nominal > widget.sisa) {
@@ -624,8 +639,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Sisa kewajiban ${formatRupiah(widget.sisa)}. Pembayaran tidak '
-                'boleh melebihi nilai ini.',
+                'Sisa PPN yang harus dibayar ${formatRupiah(widget.sisa)}. Isi '
+                'nominal sesuai yang disetor, tidak boleh lebih dari sisa.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
@@ -634,13 +649,14 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Nominal (Rp)',
+                  hintText: 'Contoh: 110000',
                   errorText: _error,
                 ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 initialValue: _metode,
-                decoration: const InputDecoration(labelText: 'Metode'),
+                decoration: const InputDecoration(labelText: 'Cara bayar'),
                 items: const [
                   DropdownMenuItem(value: 'CASH', child: Text('Kas')),
                   DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
@@ -654,6 +670,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 controller: _referensi,
                 decoration: const InputDecoration(
                   labelText: 'Referensi',
+                  hintText: 'Contoh: BPN-12345',
                   helperText: 'Nomor bukti setor atau transaksi bank.',
                 ),
               ),
@@ -672,7 +689,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
               TextField(
                 controller: _catatan,
                 maxLines: 2,
-                decoration: const InputDecoration(labelText: 'Catatan'),
+                decoration: const InputDecoration(
+                  labelText: 'Catatan',
+                  hintText: 'Contoh: setor lewat teller BCA',
+                ),
               ),
             ],
           ),
@@ -685,7 +705,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
         ),
         FilledButton(
           onPressed: _busy ? null : _submit,
-          child: Text(_busy ? 'Menyimpan...' : 'Simpan'),
+          child: Text(_busy ? 'Menyimpan...' : 'Simpan pembayaran'),
         ),
       ],
     );

@@ -95,7 +95,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
   Future<void> _cancel(Map<String, Object?> row) async {
     final syncId = row['sync_id'] as String? ?? '';
     if (syncId.isEmpty) {
-      showSnack(context, 'Estimasi tidak valid.', error: true);
+      showSnack(context, 'Data estimasi tidak lengkap. Muat ulang halaman ini.', error: true);
       return;
     }
     final confirmed = await showDialog<bool>(
@@ -137,7 +137,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
   Future<void> _revise(_EstimatesData data, Map<String, Object?> row) async {
     final syncId = row['sync_id'] as String? ?? '';
     if (syncId.isEmpty) {
-      showSnack(context, 'Estimasi tidak valid.', error: true);
+      showSnack(context, 'Data estimasi tidak lengkap. Muat ulang halaman ini.', error: true);
       return;
     }
     final items = await AppDatabase.instance.db.query(
@@ -148,7 +148,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
     );
     if (!mounted) return;
     if (items.isEmpty) {
-      showSnack(context, 'Estimasi tidak memiliki rincian.', error: true);
+      showSnack(context, 'Estimasi ini tidak punya rincian, jadi belum bisa direvisi.', error: true);
       return;
     }
     final lines = <_RevisionLine>[];
@@ -303,7 +303,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
     final settings = data.settings;
     final syncId = row['sync_id'] as String? ?? '';
     if (syncId.isEmpty) {
-      showSnack(context, 'Estimasi tidak valid.', error: true);
+      showSnack(context, 'Data estimasi tidak lengkap. Muat ulang halaman ini.', error: true);
       return;
     }
     String? ownerPin;
@@ -427,7 +427,7 @@ class _EstimatesScreenState extends State<EstimatesScreen> {
                       subtitle: _aktifSaja
                           ? 'Estimasi yang sudah menjadi nota tampil di '
                                 'filter Semua.'
-                          : 'Buat estimasi dari kasir untuk mulai.',
+                          : 'Buat estimasi dari menu Kasir untuk mulai.',
                       icon: Icons.request_quote_outlined,
                     )
                   : RefreshIndicator(
@@ -730,7 +730,7 @@ class _EstimateDetailDialogState extends State<_EstimateDetailDialog> {
               ),
               const SizedBox(height: 12),
               _line('Pelanggan', row['customer_nama'] as String? ?? '-'),
-              _line('Unit', _unitLabel(row)),
+              _line('Unit kendaraan', _unitLabel(row)),
               _line(
                 'Berlaku sampai',
                 _dateLabel(row['masa_berlaku']) ?? 'Tanpa batas',
@@ -974,7 +974,9 @@ class _RevisionDialogState extends State<_RevisionDialog> {
     }
     final diskon = tryParseRupiahToCents(_diskon.text) ?? 0;
     if (diskon < 0 || diskon > _baseTotal) {
-      setState(() => _error = 'Diskon tidak valid.');
+      setState(
+        () => _error = 'Diskon harus berupa angka dan tidak melebihi total.',
+      );
       return;
     }
     final alasan = _alasan.text.trim();
@@ -1025,7 +1027,7 @@ class _RevisionDialogState extends State<_RevisionDialog> {
                               const TextInputType.numberWithOptions(
                                   decimal: true),
                           decoration: const InputDecoration(
-                            labelText: 'Qty',
+                            labelText: 'Jumlah',
                             isDense: true,
                           ),
                           onChanged: (_) => setState(() => _error = null),
@@ -1040,7 +1042,9 @@ class _RevisionDialogState extends State<_RevisionDialog> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Diskon total',
+                  hintText: 'Contoh: 10000',
                   prefixText: 'Rp ',
+                  helperText: 'Potongan dalam rupiah, bukan persen.',
                   errorText: _error,
                 ),
                 onChanged: (_) => setState(() => _error = null),
@@ -1055,6 +1059,7 @@ class _RevisionDialogState extends State<_RevisionDialog> {
                 controller: _alasan,
                 decoration: const InputDecoration(
                   labelText: 'Alasan revisi (opsional)',
+                  hintText: 'Contoh: pelanggan menambah pekerjaan',
                 ),
               ),
             ],
@@ -1106,7 +1111,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   void _submit() {
     final cents = _bayarCents;
     if (cents == null) {
-      setState(() => _error = 'Nominal tidak valid.');
+      setState(
+        () => _error = 'Nominal harus berupa angka tanpa titik atau huruf.',
+      );
       return;
     }
     if (_metode == 'TRANSFER' && cents > widget.totalCents) {
@@ -1130,7 +1137,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             initialValue: _metode,
-            decoration: const InputDecoration(labelText: 'Metode bayar'),
+            decoration: const InputDecoration(labelText: 'Cara bayar'),
             items: const [
               DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
               DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
@@ -1146,7 +1153,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
               labelText: 'Dibayar',
+              hintText: 'Contoh: 150000',
               prefixText: 'Rp ',
+              helperText:
+                  'Ubah bila pelanggan membayar sebagian atau belum bayar.',
               errorText: _error,
             ),
             onChanged: (_) => setState(() => _error = null),
@@ -1154,7 +1164,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
           const SizedBox(height: 8),
           Text(
             sisa == null
-                ? 'Masukkan nominal yang valid.'
+                ? 'Isi nominal pembayaran terlebih dahulu.'
                 : sisa > 0
                 ? 'Sisa ${formatRupiah(sisa)}'
                 : sisa < 0
@@ -1197,7 +1207,7 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
   void _submit() {
     final value = _secret.text.trim();
     if (value.isEmpty) {
-      setState(() => _error = 'Masukkan PIN.');
+      setState(() => _error = 'Isi PIN terlebih dahulu.');
       return;
     }
     Navigator.pop(context, value);
@@ -1225,6 +1235,9 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
               labelText: widget.delegated
                   ? 'PIN penanggung jawab'
                   : 'PIN pemilik',
+              helperText: widget.delegated
+                  ? 'Minta penanggung jawab memasukkan PIN.'
+                  : 'Masukkan PIN pemilik untuk menyetujui.',
               errorText: _error,
             ),
             onSubmitted: (_) => _submit(),

@@ -122,7 +122,7 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
         hour: int.tryParse(current.first) ?? 8,
         minute: int.tryParse(current.last) ?? 0,
       ),
-      helpText: start ? 'Jam mulai follow up' : 'Jam selesai follow up',
+      helpText: start ? 'Jam mulai pengingat' : 'Jam selesai pengingat',
     );
     if (picked == null) return;
     final text =
@@ -139,7 +139,7 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
 
   Future<void> _save() async {
     final errors = <TextEditingController, String>{};
-    final cooldown = _parse(errors, _cooldown, 'Jeda follow up', min: 1);
+    final cooldown = _parse(errors, _cooldown, 'Jeda tindak lanjut', min: 1);
     final maksHari = _parse(
       errors,
       _maksHari,
@@ -162,24 +162,24 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
     final maksTidakRespons = _parse(
       errors,
       _maksTidakRespons,
-      'Arsip otomatis setelah tidak merespons',
+      'Jumlah tindak lanjut tanpa balasan',
       min: 1,
       max: 100,
     );
     final garansiHari = _parse(
       errors,
       _garansiHari,
-      'Garansi diingatkan H-',
+      'Hari pengingat garansi',
     );
     final garansiArsip = _parse(
       errors,
       _garansiArsip,
-      'Arsip garansi setelah berakhir',
+      'Hari arsip garansi',
     );
     final servisAwal = _parse(
       errors,
       _servisAwal,
-      'Servis berkala tampil sebelum jatuh tempo',
+      'Hari tampil servis berkala',
     );
     final piutangJeda = _parse(
       errors,
@@ -192,7 +192,7 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
     final belumBisa = _parse(
       errors,
       _belumBisa,
-      'Tunda setelah masih kendala',
+      'Jeda setelah pelanggan masih terkendala',
       min: 1,
     );
     if (prospek1 != null &&
@@ -239,10 +239,14 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
       if (!mounted) return;
       await _load();
       if (!mounted) return;
-      showSnack(context, 'Pengaturan follow up disimpan.');
+      showSnack(context, 'Pengaturan pengingat disimpan.');
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, 'Gagal menyimpan: $error', error: true);
+      showSnack(
+        context,
+        'Pengaturan gagal disimpan: $error',
+        error: true,
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -274,18 +278,18 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     return Scaffold(
-      appBar: AppBar(title: const Text('Pengaturan follow up')),
+      appBar: AppBar(title: const Text('Pengaturan pengingat')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           SectionCard(
-            title: 'Jalankan fitur',
+            title: 'Status fitur',
             child: SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Follow up aktif'),
+              title: const Text('Pengingat pelanggan aktif'),
               subtitle: const Text(
-                'Jika dimatikan, pengingat tidak dibuat dan tautan WhatsApp '
-                'tidak dapat dibuat.',
+                'Jika dimatikan, aplikasi berhenti membuat pengingat dan '
+                'tautan WhatsApp.',
               ),
               value: _aktif,
               onChanged: (value) => setState(() => _aktif = value),
@@ -294,13 +298,17 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Jam dan batas pesan',
-            subtitle: 'Mengikuti waktu perangkat toko.',
+            subtitle: 'Memakai jam perangkat ini. Pengingat hanya dibuat '
+                'dalam rentang jam tersebut.',
             child: Column(
               children: [
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.schedule_outlined),
                   title: const Text('Jam mulai'),
+                  subtitle: const Text(
+                    'Pengingat hanya dibuat setelah jam ini.',
+                  ),
                   trailing: Text(_jamMulai),
                   onTap: () => _pickTime(true),
                 ),
@@ -308,23 +316,40 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.schedule_outlined),
                   title: const Text('Jam selesai'),
+                  subtitle: const Text(
+                    'Pengingat berhenti dibuat setelah jam ini.',
+                  ),
                   trailing: Text(_jamSelesai),
                   onTap: () => _pickTime(false),
                 ),
-                _number('Jeda follow up (hari)', _cooldown),
-                _number('Batas pesan per hari', _maksHari),
                 _number(
-                  'Batas pesan prospek/servis per bulan',
+                  'Jeda tindak lanjut (hari)',
+                  _cooldown,
+                  helper: 'Contoh: 7. Jarak hari sebelum pelanggan yang sama '
+                      'boleh dihubungi lagi.',
+                ),
+                _number(
+                  'Batas pesan per hari',
+                  _maksHari,
+                  helper: 'Contoh: 20. Batas pesan tindak lanjut per hari.',
+                ),
+                _number(
+                  'Batas pesan prospek dan servis per bulan',
                   _maksBulan,
+                  helper: 'Contoh: 200. Batas pesan prospek dan servis per '
+                      'bulan.',
                 ),
                 _number(
                   'Jeda prospek setelah servis (hari)',
                   _jedaProspek,
+                  helper: 'Contoh: 3. Jeda sebelum menawarkan servis '
+                      'berikutnya.',
                 ),
                 _number(
                   'Arsip otomatis setelah tidak merespons',
                   _maksTidakRespons,
-                  helper: 'Jumlah follow up tanpa balasan.',
+                  helper: 'Contoh: 3. Setelah 3 tindak lanjut tanpa balasan, '
+                      'pelanggan diarsipkan.',
                 ),
               ],
             ),
@@ -332,29 +357,56 @@ class _FollowupSettingsScreenState extends State<FollowupSettingsScreen> {
           const SizedBox(height: 12),
           SectionCard(
             title: 'Interval pengingat',
-            subtitle: 'Jarak hari untuk setiap jenis pengingat.',
+            subtitle: 'Jarak hari untuk setiap jenis pengingat. Isi angka '
+                'hari, misalnya 7 untuk satu minggu.',
             child: Column(
               children: [
                 _number(
-                  'Garansi diingatkan H- (hari)',
+                  'Pengingat garansi H- (hari)',
                   _garansiHari,
-                  helper: 'Pengingat sebelum garansi berakhir.',
+                  helper: 'Contoh: 7. Pengingat dibuat 7 hari sebelum garansi '
+                      'berakhir.',
                 ),
                 _number(
                   'Arsip garansi setelah berakhir (hari)',
                   _garansiArsip,
+                  helper: 'Contoh: 30. Garansi diarsipkan 30 hari setelah '
+                      'berakhir.',
                 ),
                 _number(
                   'Servis berkala tampil sebelum jatuh tempo (hari)',
                   _servisAwal,
+                  helper: 'Contoh: 14. Layanan servis muncul 14 hari sebelum '
+                      'jatuh tempo.',
                 ),
-                _number('Jeda pengingat piutang (hari)', _piutangJeda),
-                _number('Prospek tahap 1 (hari)', _prospek1),
-                _number('Prospek tahap 2 (hari)', _prospek2),
-                _number('Prospek tahap 3 (hari)', _prospek3),
                 _number(
-                  'Tunda setelah masih kendala (hari)',
+                  'Jeda pengingat piutang (hari)',
+                  _piutangJeda,
+                  helper: 'Contoh: 7. Jarak hari antar pengingat piutang.',
+                ),
+                _number(
+                  'Prospek tahap 1 (hari)',
+                  _prospek1,
+                  helper: 'Contoh: 3. Tindak lanjut pertama setelah pelanggan '
+                      'tertarik.',
+                ),
+                _number(
+                  'Prospek tahap 2 (hari)',
+                  _prospek2,
+                  helper: 'Contoh: 14. Tindak lanjut kedua bila belum ada '
+                      'keputusan.',
+                ),
+                _number(
+                  'Prospek tahap 3 (hari)',
+                  _prospek3,
+                  helper: 'Contoh: 30. Tindak lanjut terakhir sebelum '
+                      'diarsipkan.',
+                ),
+                _number(
+                  'Jeda setelah pelanggan masih terkendala (hari)',
                   _belumBisa,
+                  helper: 'Contoh: 7. Jeda sebelum menghubungi lagi setelah '
+                      'pelanggan masih terkendala.',
                 ),
               ],
             ),

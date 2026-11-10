@@ -59,7 +59,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       await _load();
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, 'Gagal menyimpan printer: $error', error: true);
+      showSnack(context, 'Printer gagal disimpan: $error', error: true);
     }
   }
 
@@ -76,12 +76,14 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     try {
       await PrinterManager.instance.connect(printer);
       if (!mounted) return;
-      showSnack(context, '${printer.nama} terhubung.');
+      showSnack(context, 'Printer ${printer.nama} terhubung.');
     } catch (error) {
       if (!mounted) return;
       showSnack(
         context,
-        error is PrinterException ? error.message : 'Gagal menghubungkan: $error',
+        error is PrinterException
+            ? error.message
+            : 'Printer gagal dihubungkan: $error',
         error: true,
       );
     } finally {
@@ -94,7 +96,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     try {
       await PrinterManager.instance.disconnect(printer);
       if (!mounted) return;
-      showSnack(context, '${printer.nama} diputus.');
+      showSnack(context, 'Printer ${printer.nama} diputus.');
     } catch (error) {
       if (!mounted) return;
       showSnack(context, 'Gagal memutus printer: $error', error: true);
@@ -117,7 +119,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       if (!mounted) return;
       showSnack(
         context,
-        error is PrinterException ? error.message : 'Gagal menguji printer: $error',
+        error is PrinterException
+            ? error.message
+            : 'Uji cetak gagal: $error',
         error: true,
       );
     } finally {
@@ -129,8 +133,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     final ok = await confirmAction(
       context,
       title: 'Hapus printer',
-      message: 'Hapus printer "${printer.nama}" dari daftar?',
-      confirmLabel: 'Hapus',
+      message: 'Printer "${printer.nama}" akan dihapus dari daftar perangkat '
+          'ini. Printer lain tetap bisa dipakai.',
+      confirmLabel: 'Hapus printer',
     );
     if (!ok) return;
     await PrinterManager.instance.disconnect(printer).catchError((_) {});
@@ -161,8 +166,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                     icon: Icons.print_outlined,
                     title: 'Belum ada printer',
                     subtitle:
-                        'Tambahkan printer Bluetooth (SPP/BLE), Wi-Fi/LAN, '
-                        'USB OTG, atau cetak lewat layanan Android.',
+                        'Tambahkan printer kasir lewat Bluetooth, Wi-Fi/LAN, '
+                        'USB OTG, atau cetak lewat layanan Android. Setelah '
+                        'tersimpan, coba Uji cetak.',
                   )
                 else
                   ..._printers.map(_printerCard),
@@ -176,9 +182,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                 ],
                 const SizedBox(height: 12),
                 Text(
-                  'Konfigurasi printer (MAC/IP) disimpan di berkas terpisah dan '
-                  'tidak ikut backup atau sinkronisasi. Struk tetap diproses '
-                  'lokal di perangkat.',
+                  'Alamat printer disimpan di perangkat ini dan tidak ikut '
+                  'cadangan atau sinkronisasi. Setiap perangkat yang mencetak '
+                  'perlu mengatur printer sendiri.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -386,8 +392,8 @@ class _PrinterDialogState extends State<_PrinterDialog> {
       setState(() => _scanning = false);
       if (devices.isEmpty) {
         setState(() {
-          _error = 'Tidak ada printer ditemukan. Pastikan printer menyala dan '
-              'berada dalam jangkauan.';
+          _error = 'Printer tidak ditemukan. Pastikan printer menyala, sudah '
+              'dipasangkan, dan berada dekat perangkat ini.';
         });
         return;
       }
@@ -444,7 +450,9 @@ class _PrinterDialogState extends State<_PrinterDialog> {
   void _submit() {
     final int? port = _isNetwork ? int.tryParse(_port.text.trim()) : null;
     if (_isNetwork && port == null) {
-      setState(() => _error = 'Port harus berupa angka.');
+      setState(
+        () => _error = 'Port harus berupa angka, misalnya 9100.',
+      );
       return;
     }
     final printer = PrinterConfig(
@@ -480,12 +488,19 @@ class _PrinterDialogState extends State<_PrinterDialog> {
           children: [
             TextField(
               controller: _nama,
-              decoration: const InputDecoration(labelText: 'Nama printer'),
+              decoration: const InputDecoration(
+                labelText: 'Nama printer',
+                hintText: 'Contoh: Printer Kasir',
+                helperText: 'Nama ini hanya tampil di pengaturan printer.',
+              ),
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               initialValue: _type,
-              decoration: const InputDecoration(labelText: 'Jenis koneksi'),
+              decoration: const InputDecoration(
+                labelText: 'Jenis koneksi',
+                helperText: 'Pilih cara printer tersambung ke perangkat ini.',
+              ),
               items: printerTypes.entries
                   .map(
                     (entry) => DropdownMenuItem(
@@ -503,7 +518,11 @@ class _PrinterDialogState extends State<_PrinterDialog> {
               DropdownButtonFormField<String>(
                 key: ValueKey('transport-$_transport'),
                 initialValue: _transport,
-                decoration: const InputDecoration(labelText: 'Jenis Bluetooth'),
+                decoration: const InputDecoration(
+                  labelText: 'Jenis Bluetooth',
+                  helperText: 'Bluetooth Classic untuk printer kasir umum. '
+                      'Pilih Bluetooth LE bila printer hanya mendukung BLE.',
+                ),
                 items: bluetoothTransports.entries
                     .map(
                       (entry) => DropdownMenuItem(
@@ -531,10 +550,13 @@ class _PrinterDialogState extends State<_PrinterDialog> {
                                 ? 'Identitas USB'
                                 : 'Alamat Bluetooth',
                         hintText: _isNetwork
-                            ? '192.168.1.50'
+                            ? 'Contoh: 192.168.1.50'
                             : _type == 'USB'
-                                ? 'usb:0416:5011'
-                                : 'AA:BB:CC:DD:EE:FF',
+                                ? 'Contoh: usb:0416:5011'
+                                : 'Contoh: AA:BB:CC:DD:EE:FF',
+                        helperText: _isNetwork
+                            ? 'Lihat alamat ini di menu jaringan printer.'
+                            : 'Tekan Cari printer untuk memilih dari daftar.',
                       ),
                     ),
                   ),
@@ -549,7 +571,7 @@ class _PrinterDialogState extends State<_PrinterDialog> {
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Cari'),
+                          : const Text('Cari printer'),
                     ),
                   ),
                 ],
@@ -560,13 +582,20 @@ class _PrinterDialogState extends State<_PrinterDialog> {
               TextField(
                 controller: _port,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Port'),
+                decoration: const InputDecoration(
+                  labelText: 'Port',
+                  hintText: 'Contoh: 9100',
+                  helperText: 'Port jaringan printer. Umumnya 9100.',
+                ),
               ),
             ],
             const SizedBox(height: 10),
             DropdownButtonFormField<int>(
               initialValue: _paper,
-              decoration: const InputDecoration(labelText: 'Ukuran kertas'),
+              decoration: const InputDecoration(
+                labelText: 'Ukuran kertas',
+                helperText: 'Pilih sesuai lebar kertas struk yang dipakai.',
+              ),
               items: printerPapers.entries
                   .map(
                     (entry) => DropdownMenuItem(
@@ -583,7 +612,11 @@ class _PrinterDialogState extends State<_PrinterDialog> {
               initialValue: _allowedModes.contains(_mode)
                   ? _mode
                   : _allowedModes.first,
-              decoration: const InputDecoration(labelText: 'Mode cetak'),
+              decoration: const InputDecoration(
+                labelText: 'Mode cetak',
+                helperText: 'ESC/POS untuk printer struk. Pilih Teks biasa '
+                    'bila hasil cetak berantakan.',
+              ),
               items: _allowedModes
                   .map(
                     (value) => DropdownMenuItem(
@@ -598,6 +631,9 @@ class _PrinterDialogState extends State<_PrinterDialog> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Jadikan printer utama'),
+              subtitle: const Text(
+                'Printer utama dipakai otomatis saat mencetak struk.',
+              ),
               value: _utama,
               onChanged: (value) => setState(() => _utama = value),
             ),
@@ -621,7 +657,7 @@ class _PrinterDialogState extends State<_PrinterDialog> {
         ),
         FilledButton(
           onPressed: _submit,
-          child: const Text('Simpan'),
+          child: const Text('Simpan printer'),
         ),
       ],
     );

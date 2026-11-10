@@ -107,13 +107,13 @@ class _SyncHealthBannerState extends State<SyncHealthBanner> {
     if (!_visible) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     final message = _neverSynced
-        ? 'Perangkat ini belum pernah menyelesaikan sinkronisasi.'
-        : 'Sinkronisasi terakhir '
+        ? 'Perangkat ini belum pernah berhasil mengirim data ke server.'
+        : 'Pengiriman terakhir '
             '${dateTimeId.format(_lastSuccess!.toLocal())} '
-            '(lebih dari 24 jam).';
+            '(sudah lebih dari 24 jam).';
     final detail = _outstanding > 0
-        ? '$_outstanding dokumen menunggu terkirim.'
-        : 'Belum ada dokumen baru yang menunggu.';
+        ? '$_outstanding data menunggu dikirim.'
+        : 'Tidak ada data baru yang menunggu dikirim.';
     return Material(
       color: scheme.errorContainer,
       child: SafeArea(
@@ -130,7 +130,7 @@ class _SyncHealthBannerState extends State<SyncHealthBanner> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Sinkronisasi tertunda',
+                      'Data belum terkirim ke server',
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         color: scheme.onErrorContainer,
@@ -262,30 +262,36 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
       if (result['key_pending'] == true) {
         showSnack(
           context,
-          'Perangkat tersambung. Tunggu pemilik membagikan akses toko.',
+          'Perangkat sudah terhubung. Tunggu pemilik mengirim kunci toko '
+          'sebelum data bisa dikirim.',
         );
       } else if (result['snapshot_applied'] == true) {
         showSnack(
           context,
-          'Snapshot diterapkan. Sinkronkan lagi untuk delta.',
+          'Cadangan data dari server sudah dimuat. Tekan Sinkron lagi untuk '
+          'mengambil perubahan berikutnya.',
         );
       } else if (result['snapshot_required'] == true) {
         showSnack(
           context,
-          'Perangkat tertinggal. Minta owner mengunggah snapshot.',
+          'Data di perangkat ini tertinggal. Minta pemilik mengunggah '
+          'cadangan data dari perangkat utamanya.',
           error: true,
         );
       } else {
         showSnack(
           context,
-          'Sinkron: ${result['sent'] ?? 0} terkirim, '
-          '${result['applied'] ?? 0} diterapkan.',
+          'Sinkron selesai: ${result['sent'] ?? 0} data terkirim, '
+          '${result['applied'] ?? 0} data diterima.',
         );
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Sinkron gagal: ${friendlyError(error)}',
-            error: true);
+        showSnack(
+          context,
+          'Sinkron gagal. ${friendlyError(error)}',
+          error: true,
+        );
       }
     } finally {
       if (mounted) {
@@ -312,9 +318,9 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Perangkat ini dicabut pemilik. Sinkronisasi dihentikan dan '
-                  'data lokal tidak dihapus. Ekspor antrean yang belum '
-                  'terkirim, lalu pasangkan ulang perangkat.',
+                  'Pemilik mencabut akses perangkat ini. Sinkronisasi berhenti, '
+                  'tetapi data di perangkat tidak dihapus. Ekspor data yang '
+                  'belum terkirim, lalu hubungkan perangkat lagi.',
                   style: TextStyle(color: scheme.onErrorContainer),
                 ),
               ),
@@ -331,7 +337,9 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
                     (_) => false,
                   );
                 },
-                child: Text(owner ? 'Ekspor & reset' : 'Keluar'),
+                child: Text(
+                  owner ? 'Ekspor lalu atur ulang' : 'Keluar dari akun',
+                ),
               ),
             ],
           ),
@@ -350,9 +358,9 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Perbarui aplikasi. Versi ini tidak lagi didukung relay; '
-                  'sinkronisasi ditahan sampai aplikasi diperbarui. '
-                  'Data lokal tetap aman.',
+                  'Perbarui aplikasi. Versi ini tidak didukung server lagi, '
+                  'jadi sinkronisasi berhenti sampai aplikasi diperbarui. '
+                  'Data di perangkat tetap aman.',
                   style: TextStyle(color: scheme.onErrorContainer),
                 ),
               ),
@@ -367,9 +375,9 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
         : 'Terakhir ${dateTimeId.format(_lastSuccess!)}';
     final detail = [
       last,
-      if (_pending > 0) '$_pending menunggu',
-      if (_failed > 0) '$_failed gagal',
-      if (_conflicts > 0) '$_conflicts konflik',
+      if (_pending > 0) '$_pending menunggu dikirim',
+      if (_failed > 0) '$_failed gagal terkirim',
+      if (_conflicts > 0) '$_conflicts perlu diputuskan',
     ].join(' · ');
     return Material(
       color: scheme.surfaceContainerHighest,
@@ -387,7 +395,7 @@ class _SyncStatusStripState extends State<SyncStatusStrip> {
               child: Tooltip(
                 message: _lastError.isEmpty ? _relayHost : _lastError,
                 child: Text(
-                  'Sinkronisasi · $_relayHost\n$detail',
+                  'Sinkron dengan $_relayHost\n$detail',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall,
@@ -428,8 +436,8 @@ class BackupStatusFooter extends StatelessWidget {
           final at = snapshot.data?.toLocal();
           return Text(
             at == null
-                ? 'Belum ada backup lokal · buka Pengaturan untuk membuat backup'
-                : 'Backup lokal terakhir: ${dateTimeId.format(at)}',
+                ? 'Belum ada cadangan lokal. Buka Pengaturan untuk membuatnya.'
+                : 'Cadangan lokal terakhir: ${dateTimeId.format(at)}',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 12),
           );

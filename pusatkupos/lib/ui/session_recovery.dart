@@ -33,7 +33,7 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
     if (_busy) return;
     final code = _code.text.trim();
     if (code.isEmpty) {
-      setState(() => _error = 'Masukkan kode pemulihan owner.');
+      setState(() => _error = 'Masukkan kode pemulihan pemilik.');
       return;
     }
     setState(() {
@@ -42,12 +42,17 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
     });
     try {
       if (!await LicenseService.instance.verifyRecoveryCode(code)) {
-        setState(() => _error = 'Kode pemulihan tidak cocok.');
+        setState(
+          () => _error =
+              'Kode pemulihan tidak cocok. Periksa huruf dan angkanya.',
+        );
         return;
       }
       final ownerId = await LicenseService.instance.ownerId() ?? '';
       if (ownerId.isEmpty) {
-        setState(() => _error = 'Identitas owner tidak ditemukan.');
+        setState(
+          () => _error = 'ID pemilik tidak ditemukan di perangkat ini.',
+        );
         return;
       }
       final premium = await LicenseService.instance.isPremium();
@@ -64,7 +69,7 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
           builder: (_) => const PinSetupPage(
             title: 'Buat PIN pemilik baru',
             subtitle:
-                'Kode pemulihan valid. Buat PIN baru untuk membuka aplikasi '
+                'Kode pemulihan benar. Buat PIN baru untuk membuka aplikasi '
                 'di perangkat ini.',
           ),
         ),
@@ -81,7 +86,7 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
         (_) => false,
       );
     } catch (error) {
-      if (mounted) setState(() => _error = 'Pemulihan gagal: $error');
+      if (mounted) setState(() => _error = 'Pemulihan gagal. $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -114,7 +119,7 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
                     Icon(Icons.key_outlined, size: 48, color: scheme.primary),
                     const SizedBox(height: 16),
                     Text(
-                      'Sesi tidak ditemukan',
+                      'Sesi pemilik tidak ditemukan',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
@@ -122,7 +127,8 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
                     const Text(
                       'Data toko tetap tersimpan di perangkat ini. Untuk '
                       'membuka akses pemilik, masukkan kode pemulihan yang '
-                      'ditampilkan saat aplikasi pertama kali diaktifkan.',
+                      'ditampilkan saat aplikasi pertama kali diaktifkan. '
+                      'Kode itu hanya muncul sekali.',
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 18),
@@ -130,7 +136,10 @@ class _SessionRecoveryScreenState extends State<SessionRecoveryScreen> {
                       controller: _code,
                       autofocus: true,
                       decoration: const InputDecoration(
-                        labelText: 'Kode pemulihan owner',
+                        labelText: 'Kode pemulihan pemilik',
+                        hintText: 'Tempel kode yang Anda simpan.',
+                        helperText: 'Kode ditampilkan sekali saat aplikasi '
+                            'pertama kali diaktifkan.',
                         prefixIcon: Icon(Icons.password),
                       ),
                       onSubmitted: (_) => _recover(),

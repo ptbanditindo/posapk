@@ -10,6 +10,19 @@ import '../../sync/archive_service.dart';
 import '../../sync/sync_service.dart';
 import '../error_messages.dart';
 
+/// Status backup disimpan sebagai kode; tampilkan dalam bahasa sehari-hari.
+String _backupStatusLabel(String raw) {
+  switch (raw.toLowerCase()) {
+    case 'ok':
+    case 'success':
+      return 'berhasil';
+    case 'error':
+    case 'failed':
+      return 'gagal';
+  }
+  return raw;
+}
+
 class HealthSnapshot {
   const HealthSnapshot({
     required this.premium,
@@ -209,12 +222,12 @@ class _OperationalHealthStripState extends State<OperationalHealthStrip> {
     final problem = snapshot.hasProblem;
     final parts = <String>[
       snapshot.backupAt == null
-          ? 'Backup belum ada'
-          : 'Backup ${dateTimeId.format(snapshot.backupAt!.toLocal())}',
+          ? 'Cadangan belum ada'
+          : 'Cadangan ${dateTimeId.format(snapshot.backupAt!.toLocal())}',
       if (snapshot.premium)
         snapshot.archivePending > 0
-            ? 'Arsip ${snapshot.archivePending} tertunda'
-            : 'Arsip ${snapshot.archiveArchived}',
+            ? 'Arsip ${snapshot.archivePending} menunggu'
+            : 'Arsip ${snapshot.archiveArchived} nota',
       if (snapshot.printFailed > 0) 'Cetak ${snapshot.printFailed} gagal',
     ];
     return Material(
@@ -285,7 +298,7 @@ class _HealthDialogState extends State<HealthDialog> {
     final s = _snapshot;
     final scheme = Theme.of(context).colorScheme;
     return AlertDialog(
-      title: const Text('Kesehatan perangkat'),
+      title: const Text('Status perangkat'),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -295,25 +308,25 @@ class _HealthDialogState extends State<HealthDialog> {
             children: [
               _section(
                 icon: Icons.backup_outlined,
-                title: 'Backup lokal',
+                title: 'Cadangan lokal',
                 problem: s.backupError.isNotEmpty ||
                     s.backupStatus.toLowerCase() == 'error' ||
                     s.backupStale,
                 lines: [
                   s.backupAt == null
-                      ? 'Belum ada backup lokal yang berhasil.'
+                      ? 'Belum ada cadangan lokal yang berhasil dibuat.'
                       : 'Terakhir berhasil: '
                           '${dateTimeId.format(s.backupAt!.toLocal())}',
                   if (s.backupAttemptAt != null)
                     'Percobaan terakhir: '
                         '${dateTimeId.format(s.backupAttemptAt!.toLocal())}',
                   if (s.backupStatus.isNotEmpty)
-                    'Status terakhir: ${s.backupStatus}',
+                    'Status terakhir: ${_backupStatusLabel(s.backupStatus)}',
                   if (s.backupError.isNotEmpty)
-                    'Error: ${friendlyError(s.backupError)}',
+                    'Kesalahan: ${friendlyError(s.backupError)}',
                   if (s.backupStale)
-                    'Backup terakhir lebih dari 7 hari. Buat backup baru dari '
-                        'Pengaturan.',
+                    'Cadangan terakhir sudah lebih dari 7 hari. Buat cadangan '
+                        'baru di Pengaturan.',
                 ],
               ),
               _section(
@@ -325,20 +338,21 @@ class _HealthDialogState extends State<HealthDialog> {
                         s.syncError.isNotEmpty),
                 lines: [
                   if (!s.premium)
-                    'Akun gratis: sinkronisasi server tidak aktif.'
+                    'Akun gratis: sinkronisasi server tidak dipakai.'
                   else if (!s.syncActive)
-                    'Perangkat belum terhubung ke relay. Pasangkan perangkat '
-                        'dari menu Premium.'
+                    'Perangkat belum terhubung ke server akun. Hubungkan '
+                        'perangkat dari menu Premium.'
                   else ...[
-                    'Relay: ${s.syncHost}',
+                    'Server: ${s.syncHost}',
                     s.syncAt == null
                         ? 'Belum pernah sinkron berhasil.'
                         : 'Terakhir berhasil: '
                             '${dateTimeId.format(s.syncAt!.toLocal())}',
-                    'Menunggu: ${s.syncPending} · gagal: ${s.syncFailed} · '
-                        'konflik: ${s.syncConflicts}',
+                    'Menunggu dikirim: ${s.syncPending} · '
+                        'gagal: ${s.syncFailed} · '
+                        'perlu diputuskan: ${s.syncConflicts}',
                     if (s.syncError.isNotEmpty)
-                      'Error: ${friendlyError(s.syncError)}',
+                      'Kesalahan: ${friendlyError(s.syncError)}',
                   ],
                 ],
               ),
@@ -358,7 +372,7 @@ class _HealthDialogState extends State<HealthDialog> {
                         : 'Arsip terakhir: '
                             '${dateTimeId.format(s.archiveAt!.toLocal())}',
                     if (s.archiveError.isNotEmpty)
-                      'Error: ${friendlyError(s.archiveError)}',
+                      'Kesalahan: ${friendlyError(s.archiveError)}',
                   ],
                 ],
               ),
@@ -367,7 +381,8 @@ class _HealthDialogState extends State<HealthDialog> {
                 title: 'Antrean cetak',
                 problem: s.printFailed > 0,
                 lines: [
-                  'Menunggu: ${s.printPending} · gagal: ${s.printFailed}',
+                  'Menunggu dicetak: ${s.printPending} · '
+                      'gagal: ${s.printFailed}',
                   if (s.printFailed > 0)
                     'Buka Riwayat atau struk nota, lalu tekan "Cetak ulang". '
                         'Struk tidak hilang saat printer gagal.',
@@ -381,8 +396,8 @@ class _HealthDialogState extends State<HealthDialog> {
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
-                    'Periksa bagian yang ditandai. Data lokal tidak dihapus '
-                    'oleh pemeriksaan ini.',
+                    'Periksa bagian yang ditandai merah. Pemeriksaan ini '
+                    'tidak menghapus data di perangkat.',
                     style: TextStyle(fontSize: 12, color: scheme.error),
                   ),
                 ),
@@ -393,7 +408,7 @@ class _HealthDialogState extends State<HealthDialog> {
       actions: [
         TextButton(
           onPressed: _loading ? null : _refresh,
-          child: const Text('Muat ulang'),
+          child: const Text('Periksa lagi'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context),

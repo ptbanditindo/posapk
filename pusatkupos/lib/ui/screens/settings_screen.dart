@@ -88,7 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         hour: int.tryParse(parts.first) ?? 2,
         minute: parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
       ),
-      helpText: 'Jam backup otomatis',
+      helpText: 'Jam cadangan otomatis',
     );
     if (picked == null) return;
     setState(() {
@@ -100,7 +100,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveBackup() async {
     final passphrase = _backupPassphrase.text.trim();
     if (passphrase.isNotEmpty && passphrase.length < 8) {
-      showSnack(context, 'Passphrase backup minimal 8 karakter.', error: true);
+      showSnack(
+        context,
+        'Kata sandi cadangan minimal 8 karakter.',
+        error: true,
+      );
       return;
     }
     setState(() => _backupBusy = true);
@@ -117,10 +121,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _backupPassphrase.clear();
       await _loadBackup();
       if (!mounted) return;
-      showSnack(context, 'Pengaturan backup disimpan.');
+      showSnack(context, 'Pengaturan cadangan disimpan.');
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, 'Gagal menyimpan backup: $error', error: true);
+      showSnack(
+        context,
+        'Gagal menyimpan pengaturan cadangan. $error',
+        error: true,
+      );
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
@@ -134,7 +142,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       showSnack(context, result.message, error: !result.ok);
     } catch (error) {
-      if (mounted) showSnack(context, 'Backup gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Cadangan gagal dibuat. $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
@@ -221,11 +231,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 autofocus: true,
                 obscureText: true,
                 decoration: InputDecoration(
-                  labelText: 'Passphrase',
+                  labelText: 'Kata sandi cadangan',
                   errorText: error,
                   helperText: requiredPass
-                      ? 'Wajib, minimal 8 karakter.'
-                      : 'Kosongkan untuk backup khusus perangkat ini.',
+                      ? 'Wajib diisi, minimal 8 karakter.'
+                      : 'Kosongkan untuk cadangan khusus perangkat ini.',
                 ),
               ),
             ],
@@ -239,12 +249,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () {
                 final value = controller.text.trim();
                 if (requiredPass && value.length < 8) {
-                  setLocal(() => error = 'Passphrase minimal 8 karakter.');
+                  setLocal(
+                    () => error = 'Kata sandi minimal 8 karakter.',
+                  );
                   return;
                 }
                 Navigator.pop(context, value);
               },
-              child: const Text('Lanjut'),
+              child: const Text('Pakai kata sandi'),
             ),
           ],
         ),
@@ -256,8 +268,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<String?> _askOwnerPin({
     String reason =
-        'Masukkan PIN pemilik untuk menyalin passphrase backup. '
-        'Passphrase tidak ditampilkan di layar.',
+        'Masukkan PIN pemilik untuk menyalin kata sandi cadangan. '
+        'Kata sandi tidak ditampilkan di layar.',
   }) async {
     final controller = TextEditingController();
     String? error;
@@ -278,6 +290,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'PIN pemilik',
+                  helperText: 'PIN yang Anda buat saat membuka aplikasi.',
                   errorText: error,
                 ),
                 onSubmitted: (_) =>
@@ -294,12 +307,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () {
                 final value = controller.text.trim();
                 if (value.isEmpty) {
-                  setLocal(() => error = 'Masukkan PIN pemilik.');
+                  setLocal(() => error = 'Isi PIN pemilik terlebih dahulu.');
                   return;
                 }
                 Navigator.pop(context, value);
               },
-              child: const Text('Lanjut'),
+              child: const Text('Periksa PIN'),
             ),
           ],
         ),
@@ -314,7 +327,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       showSnack(
         context,
-        'Atur PIN pemilik terlebih dahulu untuk membuka passphrase.',
+        'Atur PIN pemilik dulu agar kata sandi cadangan bisa dibuka.',
         error: true,
       );
       return;
@@ -330,35 +343,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (!mounted) return;
         showSnack(
           context,
-          'Passphrase disalin. Hapus clipboard setelah dipakai.',
+          'Kata sandi cadangan disalin. Hapus dari clipboard setelah '
+          'dipakai.',
         );
       case PinVerification.weakLegacyPin:
         showSnack(
           context,
-          'Ganti PIN ke minimal 6 digit sebelum membuka passphrase.',
+          'Perbarui PIN ke minimal 6 angka sebelum membuka kata sandi '
+          'cadangan.',
           error: true,
         );
       case PinVerification.locked:
         showSnack(
           context,
-          'Terlalu banyak percobaan. Coba lagi nanti.',
+          'PIN terkunci sementara karena terlalu banyak percobaan. '
+          'Tunggu sebentar, lalu coba lagi.',
           error: true,
         );
       case PinVerification.wrong:
-        showSnack(context, 'PIN pemilik salah.', error: true);
+        showSnack(
+          context,
+          'PIN pemilik tidak cocok. Periksa lagi.',
+          error: true,
+        );
     }
   }
 
   Future<void> _backup() async {
     if (!AppState.instance.can('backup')) {
-      showSnack(context, 'Izin backup tidak tersedia.', error: true);
+      showSnack(
+        context,
+        'Akun ini tidak punya izin membuat cadangan.',
+        error: true,
+      );
       return;
     }
     final passphrase = await _askBackupPassphrase(
-      title: 'Backup manual',
+      title: 'Buat cadangan manual',
       help:
-          'Isi passphrase agar backup dapat dipulihkan di perangkat lain. '
-          'Tanpa passphrase, backup tetap terenkripsi dengan kunci perangkat '
+          'Isi kata sandi agar cadangan bisa dipulihkan di perangkat lain. '
+          'Tanpa kata sandi, cadangan tetap terkunci dengan kunci perangkat '
           'ini dan hanya bisa dipulihkan di sini.',
     );
     if (passphrase == null) return;
@@ -370,7 +394,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       showSnack(context, result.message, error: !result.ok);
     } catch (error) {
-      if (mounted) showSnack(context, 'Backup gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Cadangan gagal dibuat. $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -378,20 +404,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _restore() async {
     if (!AppState.instance.can('backup')) {
-      showSnack(context, 'Izin restore tidak tersedia.', error: true);
+      showSnack(
+        context,
+        'Akun ini tidak punya izin memulihkan cadangan.',
+        error: true,
+      );
       return;
     }
     if (!AppState.instance.isOwner) {
-      showSnack(context, 'Hanya pemilik yang boleh memulihkan backup.',
-          error: true);
+      showSnack(
+        context,
+        'Hanya pemilik yang bisa memulihkan cadangan.',
+        error: true,
+      );
       return;
     }
     final path = await BackupService.instance.pickBackupArchive();
     if (path == null || !mounted) return;
     if (AppState.instance.pinConfigured) {
       final pin = await _askOwnerPin(
-        reason: 'Restore mengganti seluruh data lokal. Masukkan PIN pemilik '
-            'untuk melanjutkan.',
+        reason: 'Memulihkan cadangan akan mengganti seluruh data di perangkat '
+            'ini. Masukkan PIN pemilik untuk melanjutkan.',
       );
       if (pin == null || !mounted) return;
       final verification = await PinService.instance.verifyDetailed(pin);
@@ -400,8 +433,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           verification != PinVerification.weakLegacyPin) {
         final message = switch (verification) {
           PinVerification.locked =>
-            'Terlalu banyak percobaan. Coba lagi nanti.',
-          PinVerification.wrong => 'PIN pemilik salah.',
+            'PIN terkunci sementara. Tunggu sebentar, lalu coba lagi.',
+          PinVerification.wrong => 'PIN pemilik tidak cocok. Periksa lagi.',
           _ => 'PIN pemilik tidak dapat diverifikasi.',
         };
         showSnack(context, message, error: true);
@@ -410,23 +443,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final ok = await confirmAction(
       context,
-      title: 'Pulihkan backup',
+      title: 'Pulihkan cadangan',
       message:
-          'Seluruh data lokal akan diganti dengan isi backup. Restore ke '
-          'perangkat kedua atau perangkat lama dapat menyebabkan nomor nota '
-          'dan antrean sinkron bentrok. Kode perangkat baru akan dibuat; '
-          'jalankan bootstrap sebelum sinkronisasi. Buat backup terbaru dulu '
-          'bila ragu.',
+          'Seluruh data di perangkat ini akan diganti dengan isi cadangan. '
+          'Memulihkan ke perangkat kedua atau perangkat lama bisa membuat '
+          'nomor nota dan data kiriman bentrok. Kode perangkat baru akan '
+          'dibuat, jadi jalankan penyiapan perangkat sebelum sinkronisasi. '
+          'Buat cadangan terbaru dulu bila ragu.',
       confirmLabel: 'Pulihkan',
     );
     if (!ok || !mounted) return;
     final needsPass = await BackupService.instance.needsPassphrase(path);
     if (!mounted) return;
     final passphrase = await _askBackupPassphrase(
-      title: 'Passphrase backup',
+      title: 'Kata sandi cadangan',
       help: needsPass
-          ? 'Backup ini terkunci passphrase yang dibuat saat backup.'
-          : 'Kosongkan bila backup dibuat tanpa passphrase pemilik.',
+          ? 'Cadangan ini dikunci kata sandi yang dibuat saat membuat '
+              'cadangan.'
+          : 'Kosongkan bila cadangan dibuat tanpa kata sandi.',
       requiredPass: needsPass,
     );
     if (passphrase == null) return;
@@ -446,7 +480,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       showSnack(context, result.message, error: !result.ok);
     } catch (error) {
-      if (mounted) showSnack(context, 'Restore gagal: $error', error: true);
+      if (mounted) showSnack(context, 'Pemulihan gagal: $error', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -458,54 +492,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirm = TextEditingController();
     final success = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Ganti PIN'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: oldPin,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'PIN lama'),
+      builder: (context) {
+        String? error;
+        return StatefulBuilder(
+          builder: (context, setLocal) => AlertDialog(
+            title: const Text('Ganti PIN'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: oldPin,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'PIN lama',
+                    helperText: 'PIN yang sekarang dipakai.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: newPin,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'PIN baru',
+                    helperText: 'Minimal 6 angka. Jangan pakai tanggal lahir.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: confirm,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'Ulangi PIN baru',
+                    errorText: error,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: newPin,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'PIN baru'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: confirm,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Ulangi PIN baru'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Batal'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Batal'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  if (newPin.text.trim().length < 6) {
+                    setLocal(
+                      () => error = 'PIN baru minimal 6 angka.',
+                    );
+                    return;
+                  }
+                  if (newPin.text.trim() != confirm.text.trim()) {
+                    setLocal(
+                      () => error = 'Ulangi PIN belum sama dengan PIN baru.',
+                    );
+                    return;
+                  }
+                  final changed = await PinService.instance.change(
+                    oldPin: oldPin.text.trim(),
+                    newPin: newPin.text.trim(),
+                  );
+                  if (context.mounted) Navigator.pop(context, changed);
+                },
+                child: const Text('Simpan PIN baru'),
+              ),
+            ],
           ),
-            FilledButton(
-            onPressed: () async {
-              if (newPin.text.trim().length < 6 ||
-                  newPin.text.trim() != confirm.text.trim()) {
-                return;
-              }
-              final changed = await PinService.instance.change(
-                oldPin: oldPin.text.trim(),
-                newPin: newPin.text.trim(),
-              );
-              if (context.mounted) Navigator.pop(context, changed);
-            },
-            child: const Text('Simpan'),
-          ),
-        ],
-      ),
+        );
+      },
     );
     oldPin.dispose();
     newPin.dispose();
@@ -513,7 +569,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     showSnack(
       context,
-      success == true ? 'PIN diperbarui.' : 'PIN gagal diubah.',
+      success == true
+          ? 'PIN diperbarui.'
+          : 'PIN belum diubah. Periksa PIN lama Anda.',
       error: success != true,
     );
   }
@@ -543,13 +601,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               TextField(
                 controller: _nama,
-                decoration: const InputDecoration(labelText: 'Nama toko'),
+                decoration: const InputDecoration(
+                  labelText: 'Nama toko',
+                  hintText: 'Contoh: Bengkel Jaya Motor',
+                  helperText: 'Nama ini tampil di struk dan laporan.',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _alamat,
                 maxLines: 2,
-                decoration: const InputDecoration(labelText: 'Alamat'),
+                decoration: const InputDecoration(
+                  labelText: 'Alamat',
+                  hintText: 'Contoh: Jl. Merdeka No. 10, Bandung',
+                ),
               ),
               const SizedBox(height: 12),
               Align(
@@ -557,7 +622,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: FilledButton.icon(
                   onPressed: _saveStore,
                   icon: const Icon(Icons.save_outlined),
-                  label: const Text('Simpan'),
+                  label: const Text('Simpan identitas'),
                 ),
               ),
             ],
@@ -573,7 +638,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.storefront_outlined),
             title: const Text('Kelola toko'),
-            subtitle: const Text('Tambah, pilih, dan ganti toko aktif'),
+            subtitle: const Text(
+              'Tambah toko baru atau pindah ke toko lain',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const StoresScreen()),
@@ -590,7 +657,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.receipt_long_outlined),
                 title: const Text('Pengaturan struk'),
-                subtitle: const Text('Pilih bagian yang tampil di nota'),
+                subtitle: const Text(
+                  'Atur bagian yang tampil di struk pelanggan',
+                ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
@@ -603,7 +672,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.print_outlined),
                 title: const Text('Printer thermal'),
-                subtitle: const Text('Printer ESC/POS lewat jaringan lokal'),
+                subtitle: const Text(
+                  'Hubungkan printer thermal lewat jaringan toko',
+                ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
@@ -625,6 +696,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
                   labelText: 'Durasi garansi (bulan)',
+                  hintText: 'Contoh: 1',
                   helperText: '1 bulan = 30 hari',
                 ),
               ),
@@ -634,6 +706,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 maxLines: 2,
                 decoration: const InputDecoration(
                   labelText: 'Syarat garansi standar',
+                  hintText:
+                      'Contoh: tidak berlaku untuk kerusakan akibat kecelakaan',
                 ),
               ),
               const SizedBox(height: 12),
@@ -642,7 +716,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: FilledButton.icon(
                   onPressed: _saveGaransi,
                   icon: const Icon(Icons.save_outlined),
-                  label: const Text('Simpan'),
+                  label: const Text('Simpan garansi'),
                 ),
               ),
             ],
@@ -710,7 +784,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 leading: const Icon(Icons.toggle_on_outlined),
                 title: const Text('Fitur toko'),
                 subtitle: const Text(
-                  'Estimasi, order kerja, supplier, follow up, unit, WhatsApp',
+                  'Estimasi, order kerja, supplier, tindak lanjut, unit, WhatsApp',
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.of(context).push(
@@ -752,12 +826,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Follow up',
+          title: 'Tindak lanjut',
           subtitle: 'Jam, interval, dan batas pesan WhatsApp.',
           child: ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.notifications_active_outlined),
-            title: const Text('Pengaturan follow up'),
+            title: const Text('Pengaturan tindak lanjut'),
             subtitle: const Text('Kuota gratis 20 kredit WhatsApp'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
@@ -808,7 +882,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 initialValue: _autoLockMinutes,
                 decoration: const InputDecoration(
                   labelText: 'Kunci otomatis',
-                  helperText: 'Aplikasi terkunci setelah tidak dipakai.',
+                  helperText:
+                      'Aplikasi terkunci setelah tidak dipakai beberapa saat.',
                 ),
                 items: const [
                   DropdownMenuItem(value: 0, child: Text('Nonaktif')),
@@ -873,12 +948,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SectionCard(
           title: 'Pemulihan kunci',
           subtitle:
-              'Escrow frasa 12 kata dan share admin untuk memulihkan kunci '
-              'bila perangkat atau akun Google hilang.',
+              'Frasa pemulihan 12 kata dan bagian kunci admin untuk '
+              'memulihkan kunci bila perangkat atau akun Google hilang.',
           child: ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.key_outlined),
-            title: const Text('Kelola escrow'),
+            title: const Text('Kelola pemulihan kunci'),
             subtitle: const Text('Buat, verifikasi, dan pulihkan kunci'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
@@ -888,9 +963,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Backup lokal',
+          title: 'Cadangan data',
           subtitle:
-              'Menyimpan seluruh database ke berkas ZIP. Restore mengganti data lokal.',
+              'Menyimpan seluruh data toko ke satu berkas ZIP. Memulihkan '
+              'cadangan akan mengganti data di perangkat ini.',
           child: Column(
             children: [
               Row(
@@ -899,7 +975,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _busy ? null : _backup,
                       icon: const Icon(Icons.archive_outlined),
-                      label: const Text('Buat backup'),
+                      label: const Text('Buat cadangan'),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -907,7 +983,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _busy ? null : _restore,
                       icon: const Icon(Icons.unarchive_outlined),
-                      label: const Text('Restore'),
+                      label: const Text('Pulihkan cadangan'),
                     ),
                   ),
                 ],
@@ -924,7 +1000,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (!AppState.instance.isOwner) {
                       showSnack(
                         context,
-                        'Hanya pemilik yang dapat mengekspor ringkasan.',
+                        'Hanya pemilik yang bisa mengekspor ringkasan.',
                         error: true,
                       );
                       return;
@@ -932,7 +1008,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     final pin = await _askOwnerPin(
                       reason:
                           'Masukkan PIN pemilik untuk mengekspor ringkasan '
-                          'owner.',
+                          'pemilik.',
                     );
                     if (pin == null || !mounted) return;
                     try {
@@ -945,19 +1021,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         context,
                         path == null
                             ? 'Ekspor dibatalkan.'
-                            : 'Ringkasan owner disimpan.',
+                            : 'Ringkasan pemilik tersimpan.',
                       );
                     } catch (error) {
                       if (!context.mounted) return;
                       showSnack(
                         context,
-                        'Ekspor gagal: $error',
+                        'Ekspor gagal. $error',
                         error: true,
                       );
                     }
                   },
                   icon: const Icon(Icons.verified_outlined),
-                  label: const Text('Ekspor ringkasan owner'),
+                  label: const Text('Ekspor ringkasan pemilik'),
                 ),
               ),
             ],
@@ -965,24 +1041,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         SectionCard(
-          title: 'Backup otomatis',
+          title: 'Cadangan otomatis',
           subtitle:
-              'Menyimpan backup harian ke folder aplikasi. Unggah Telegram '
-              'opsional.',
+              'Menyimpan cadangan harian ke folder aplikasi. Unggah ke '
+              'Telegram opsional.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (kIsWeb)
                 const Text(
-                  'Backup otomatis tersedia di Android/desktop. Di versi web '
-                  'gunakan tombol Buat backup manual.',
+                  'Cadangan otomatis tersedia di Android dan desktop. Di '
+                  'versi web, gunakan tombol Buat cadangan.',
                 )
               else ...[
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Aktifkan backup harian'),
+                  title: const Text('Aktifkan cadangan harian'),
                   subtitle: const Text(
-                    'Backup disusulkan saat aplikasi dibuka bila jadwal '
+                    'Cadangan dibuat saat aplikasi dibuka bila jadwal '
                     'terlewat.',
                   ),
                   value: _backupAuto,
@@ -993,7 +1069,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.schedule_outlined),
-                  title: const Text('Jam backup'),
+                  title: const Text('Jam cadangan'),
                   trailing: Text(_backupJam),
                   onTap: _backupBusy ? null : _pickBackupTime,
                 ),
@@ -1007,7 +1083,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Unggah ke Telegram'),
                   subtitle: const Text(
-                    'Bot mengirim berkas ZIP backup ke chat pemilik.',
+                    'Bot mengirim berkas ZIP cadangan ke chat pemilik.',
                   ),
                   value: _backupTelegram,
                   onChanged: _backupBusy
@@ -1019,7 +1095,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     controller: _backupChat,
                     decoration: const InputDecoration(
                       labelText: 'Chat ID Telegram',
-                      helperText: 'ID chat atau grup penerima backup.',
+                      hintText: 'Contoh: 123456789',
+                      helperText:
+                          'ID chat atau grup yang menerima berkas cadangan.',
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -1027,7 +1105,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     controller: _backupToken,
                     obscureText: true,
                     decoration: InputDecoration(
-                      labelText: 'Bot token',
+                      labelText: 'Token bot Telegram',
+                      hintText: 'Tempel token dari BotFather',
                       helperText: _backupTokenConfigured
                           ? 'Token tersimpan. Kosongkan untuk mempertahankan.'
                           : 'Belum ada token tersimpan.',
@@ -1044,15 +1123,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   controller: _backupPassphrase,
                   obscureText: true,
                   decoration: InputDecoration(
-                    labelText: 'Passphrase backup baru (opsional)',
+                    labelText: 'Kata sandi cadangan baru (opsional)',
                     helperText: _backupPassphraseConfigured
-                        ? 'Passphrase tersimpan tidak ditampilkan. Isi hanya '
-                              'bila ingin menggantinya (minimal 8 karakter).'
-                        : 'Belum ada passphrase tersimpan. Minimal 8 karakter; '
-                              'kosongkan bila tidak diperlukan.',
+                        ? 'Kata sandi tersimpan tidak ditampilkan. Isi hanya '
+                              'bila ingin menggantinya, minimal 8 karakter.'
+                        : 'Belum ada kata sandi tersimpan. Isi minimal 8 '
+                              'karakter, atau kosongkan bila tidak perlu.',
                     suffixIcon: _backupPassphraseConfigured
                         ? IconButton(
-                            tooltip: 'Salin passphrase (perlu PIN pemilik)',
+                            tooltip:
+                                'Salin kata sandi cadangan (perlu PIN pemilik)',
                             icon: const Icon(Icons.copy_outlined),
                             onPressed: _backupBusy
                                 ? null
@@ -1065,9 +1145,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
-                      'Telegram hanya menerima arsip terenkripsi. Passphrase '
-                      'tidak dapat dibaca dari layar; tanpa passphrase ini, '
-                      'backup tidak dapat dipulihkan di perangkat lain.',
+                      'Telegram hanya menerima arsip terenkripsi. Kata sandi '
+                      'tidak bisa dibaca dari layar. Tanpa kata sandi ini, '
+                      'cadangan tidak bisa dipulihkan di perangkat lain.',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
@@ -1078,7 +1158,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: FilledButton.icon(
                         onPressed: _backupBusy ? null : _saveBackup,
                         icon: const Icon(Icons.save_outlined),
-                        label: const Text('Simpan'),
+                        label: const Text('Simpan pengaturan'),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -1086,7 +1166,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: OutlinedButton.icon(
                         onPressed: _backupBusy ? null : _backupNow,
                         icon: const Icon(Icons.backup_outlined),
-                        label: const Text('Backup sekarang'),
+                        label: const Text('Buat cadangan sekarang'),
                       ),
                     ),
                   ],
@@ -1097,7 +1177,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
                 const Divider(height: 24),
                 Text(
-                  'Status backup',
+                  'Status cadangan',
                   style: Theme.of(context).textTheme.labelMedium,
                 ),
                 const SizedBox(height: 6),
@@ -1114,7 +1194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if ((_backupStatus['last_error'] ?? '').isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(
-                    'Error terakhir: ${_backupStatus['last_error']}',
+                    'Kendala terakhir: ${_backupStatus['last_error']}',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                       fontSize: 12,
@@ -1134,8 +1214,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (backupStale) ...[
                   const SizedBox(height: 6),
                   Text(
-                    'Belum ada backup dalam 2 hari terakhir. Periksa folder '
-                    'backup atau jalankan Backup sekarang.',
+                    'Belum ada cadangan dalam 2 hari terakhir. Periksa folder '
+                    'cadangan atau jalankan Buat cadangan sekarang.',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                       fontSize: 12,
@@ -1163,12 +1243,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         title: const Text('Keluar akun?'),
                         content: Text(
                           AppState.instance.isOwner
-                              ? 'Sesi berakhir, tetapi database, antrean '
-                                  'sinkronisasi, dan PIN pemilik tetap '
-                                  'tersimpan di perangkat ini. Buka kembali '
-                                  'dengan PIN yang sama.'
-                              : 'Sesi karyawan akan berakhir. Data toko dan '
-                                  'antrean tetap tersimpan untuk pemilik.',
+                              ? 'Sesi ditutup, tetapi data toko, data yang belum terkirim, '
+                                  'dan PIN pemilik tetap tersimpan di '
+                                  'perangkat ini. Buka kembali dengan PIN '
+                                  'yang sama.'
+                              : 'Sesi karyawan ditutup. Data toko dan data yang belum '
+                                  'terkirim tetap tersimpan untuk pemilik.',
                         ),
                         actions: [
                           TextButton(
@@ -1208,10 +1288,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('PusatkuPOS · Fase 2 Flutter'),
+              const Text('PusatkuPOS'),
               const SizedBox(height: 4),
               Text(
-                'Database lokal SQLite. Tidak memerlukan internet.',
+                'Aplikasi kasir dan stok untuk UMKM. Data tersimpan di perangkat ini dan tidak memerlukan internet.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],

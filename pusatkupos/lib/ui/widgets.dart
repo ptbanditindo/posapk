@@ -9,7 +9,7 @@ class SectionCard extends StatelessWidget {
     this.subtitle,
     this.trailing,
     this.child,
-    this.padding = const EdgeInsets.all(18),
+    this.padding = const EdgeInsets.all(20),
   });
 
   final String? title;
@@ -43,7 +43,7 @@ class SectionCard extends StatelessWidget {
                             ),
                           ),
                         if (subtitle != null) ...[
-                          const SizedBox(height: 3),
+                          const SizedBox(height: 4),
                           Text(subtitle!, style: theme.textTheme.bodySmall),
                         ],
                       ],
@@ -52,7 +52,7 @@ class SectionCard extends StatelessWidget {
                   ?trailing,
                 ],
               ),
-            if (title != null && child != null) const SizedBox(height: 14),
+            if (title != null && child != null) const SizedBox(height: 16),
             ?child,
           ],
         ),
@@ -90,13 +90,13 @@ class StatCard extends StatelessWidget {
           child: Row(
             children: [
               Container(
-                width: 42,
-                height: 42,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(icon, color: color),
+                child: Icon(icon, color: color, size: 22),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -109,8 +109,9 @@ class StatCard extends StatelessWidget {
                       value,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w700,
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                     ),
                   ],
@@ -153,32 +154,37 @@ class EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
-      child: Column(
-        children: [
-          Icon(icon, size: 42, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(height: 12),
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .titleSmall
-                ?.copyWith(fontWeight: FontWeight.w600),
+      padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            children: [
+              Icon(icon, size: 40, color: Theme.of(context).colorScheme.outline),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              if (subtitle != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  subtitle!,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+              if (action != null) ...[
+                const SizedBox(height: 20),
+                action!,
+              ],
+            ],
           ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              subtitle!,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-          if (action != null) ...[
-            const SizedBox(height: 16),
-            action!,
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -198,7 +204,7 @@ Future<bool> confirmAction(
   BuildContext context, {
   required String title,
   required String message,
-  String confirmLabel = 'Lanjut',
+  String confirmLabel = 'Lanjutkan',
 }) async {
   final result = await showDialog<bool>(
     context: context,

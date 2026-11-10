@@ -45,7 +45,7 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _error = '$error';
+        _error = 'Pemeriksaan gagal. $error';
         _busy = false;
       });
     }
@@ -75,7 +75,7 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _error = '$error';
+        _error = 'Pemeriksaan gagal. $error';
         _busy = false;
       });
     }
@@ -94,7 +94,7 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _error = '$error';
+        _error = 'Unggahan gagal. $error';
         _uploading = false;
       });
     }
@@ -150,8 +150,9 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
       mainAxisSize: MainAxisSize.min,
       children: [
         const Text(
-          'Cadangan hanya dapat diunggah setelah semua perangkat toko '
-          'mengirim datanya. Perangkat yang offline akan menahan proses ini.',
+          'Cadangan baru bisa diunggah setelah semua perangkat toko mengirim '
+          'data terbaru. Perangkat yang tidak terhubung internet akan menahan '
+          'proses ini.',
         ),
         const SizedBox(height: 16),
         Row(
@@ -184,8 +185,8 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
           const SizedBox(height: 12),
           _notice(
             scheme,
-            'Minta karyawan membuka aplikasi lalu menekan Sinkron sekarang. '
-            'Perangkat yang benar-benar hilang dapat dicabut di menu Akses.',
+            'Minta karyawan membuka aplikasi, lalu menekan Sinkron sekarang. '
+            'Perangkat yang benar-benar hilang bisa dicabut di menu Akses.',
           ),
         ],
         if (_error != null) ...[
@@ -216,7 +217,7 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
     final kind = switch ('${device['kind']}') {
       'employee' => 'Karyawan',
       'viewer' => 'Ringkasan',
-      _ => 'Owner',
+      _ => 'Pemilik',
     };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -271,7 +272,7 @@ class _UploadBackupDialogState extends State<_UploadBackupDialog> {
                 height: 18,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : const Text('Unggah sekarang'),
+            : const Text('Unggah cadangan'),
       ),
     ];
   }

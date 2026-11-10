@@ -33,24 +33,24 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   static const _slides = [
     (
       icon: Icons.storefront_outlined,
-      title: 'Semua transaksi bengkel di satu tempat',
+      title: 'Catat penjualan bengkel di satu aplikasi',
       body:
-          'Kasir, stok, pelanggan, dan laporan tersimpan rapi. '
+          'Kasir, stok, pelanggan, dan laporan tersimpan di perangkat ini. '
           'Tidak perlu buku catatan terpisah.',
     ),
     (
       icon: Icons.offline_bolt_outlined,
-      title: 'Tetap jalan tanpa internet',
+      title: 'Penjualan tetap jalan tanpa internet',
       body:
-          'Data disimpan di perangkat ini. Saat internet tersedia, '
-          'data diselaraskan otomatis.',
+          'Data disimpan di perangkat. Saat internet tersedia, data dikirim '
+          'ke server secara otomatis.',
     ),
     (
       icon: Icons.groups_outlined,
-      title: 'Satu aplikasi untuk pemilik dan karyawan',
+      title: 'Pemilik dan karyawan memakai aplikasi yang sama',
       body:
-          'Pemilik mengatur toko dan laporan. Karyawan bekerja sesuai '
-          'peran dan toko yang ditugaskan.',
+          'Pemilik mengatur toko dan melihat laporan. Karyawan hanya membuka '
+          'menu sesuai izin yang diberikan.',
     ),
   ];
 
@@ -104,11 +104,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
               context: context,
               barrierDismissible: false,
               builder: (context) => AlertDialog(
-                title: const Text('Kode pemulihan owner'),
+                title: const Text('Kode pemulihan pemilik'),
                 content: Text(
-                  '$recovery\n\nSimpan kode ini di tempat aman. Kode hanya '
-                  'ditampilkan sekali dan dipakai untuk membuka akses pemilik '
-                  'jika sesi perangkat hilang.',
+                  '$recovery\n\nKode ini hanya muncul sekali. Simpan di catatan '
+                  'aman atau kirim ke email Anda sendiri. Kode dipakai untuk '
+                  'membuka akses pemilik bila sesi di perangkat ini hilang.',
                 ),
                 actions: [
                   FilledButton(
@@ -153,15 +153,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Owner ID ${ownerId.isEmpty ? '-' : ownerId} dan datanya masih '
-              'tersimpan. Masukkan kode pemulihan owner untuk melanjutkan. '
-              'Karyawan dapat masuk lewat pilihan akun karyawan.',
+              'ID pemilik ${ownerId.isEmpty ? '-' : ownerId} dan datanya '
+              'masih tersimpan. Masukkan kode pemulihan pemilik untuk '
+              'melanjutkan. Karyawan bisa masuk lewat pilihan akun karyawan.',
             ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
               autofocus: true,
-              decoration: const InputDecoration(labelText: 'Kode pemulihan'),
+              decoration: const InputDecoration(
+                labelText: 'Kode pemulihan pemilik',
+                hintText: 'Tempel kode yang Anda simpan.',
+              ),
             ),
           ],
         ),
@@ -181,11 +184,13 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     controller.dispose();
     if (ok != true) return false;
     if (code.isEmpty) {
-      _showError('Kode pemulihan owner wajib diisi.');
+      _showError('Kode pemulihan pemilik wajib diisi.');
       return false;
     }
     if (!await LicenseService.instance.verifyRecoveryCode(code)) {
-      _showError('Kode pemulihan owner tidak cocok.');
+      _showError(
+        'Kode pemulihan pemilik tidak cocok. Periksa huruf dan angkanya.',
+      );
       return false;
     }
     return true;
@@ -242,7 +247,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           final result = await GoogleAuthService.instance.signIn();
           final ownerId = '${result['owner_id'] ?? ''}';
           if (ownerId.isEmpty) {
-            throw GoogleAuthException('Akun tidak mengembalikan ID owner.');
+            throw GoogleAuthException('Akun tidak mengirim ID pemilik.');
           }
           await AppDatabase.instance.openViewerDatabase(ownerId);
           switched = true;
@@ -327,6 +332,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   obscureText: true,
                   decoration: const InputDecoration(
                     labelText: 'Password saat ini',
+                    helperText: 'Password yang Anda pakai untuk masuk.',
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -334,7 +340,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   controller: newController,
                   obscureText: true,
                   decoration: const InputDecoration(
-                    labelText: 'Password baru (minimal 8)',
+                    labelText: 'Password baru',
+                    helperText: 'Minimal 8 karakter.',
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -368,8 +375,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         final next = newController.text;
                         if (next.length < 8 || next != confirm.text) {
                           setDialogState(
-                            () => error = 'Password baru minimal 8 karakter '
-                                'dan harus sama.',
+                            () => error = 'Isi password baru minimal 8 karakter '
+                                'dan ulangi dengan sama.',
                           );
                           return;
                         }
@@ -448,19 +455,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              scheme.primaryContainer.withValues(alpha: 0.55),
-              Theme.of(context).scaffoldBackgroundColor,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
+      body: SafeArea(
+        child: Column(
             children: [
               Align(
                 alignment: Alignment.centerRight,
@@ -470,7 +466,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                     onPressed: _busy || _index >= _slides.length
                         ? null
                         : _toChoices,
-                    child: const Text('Lewati'),
+                    child: const Text('Lewati panduan'),
                   ),
                 ),
               ),
@@ -521,7 +517,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                           child: Text(
                             _index == _slides.length - 1
                                 ? 'Pilih cara masuk'
-                                : 'Lanjut',
+                                : 'Lihat halaman berikutnya',
                           ),
                         ),
                       ),
@@ -531,7 +527,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
             ],
           ),
         ),
-      ),
     );
   }
 }
@@ -619,28 +614,30 @@ class _ChoiceView extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                'Pilihan ini menentukan data dan fitur yang tersedia.',
+                'Pilih sesuai cara toko Anda memakai PusatkuPOS.',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 20),
               _ChoiceTile(
                 icon: Icons.storefront_outlined,
-                title: 'Lewati tanpa akun',
-                subtitle: 'Pemilik lokal · gratis',
+                title: 'Mulai gratis tanpa akun',
+                subtitle: 'Data tersimpan di perangkat ini',
                 onTap: busy ? null : onFree,
               ),
               const SizedBox(height: 12),
               _ChoiceTile(
                 icon: Icons.account_circle_outlined,
                 title: 'Masuk dengan Google',
-                subtitle: 'Pemilik premium · lisensi per toko',
+                subtitle: 'Untuk pemilik premium dengan lisensi per toko',
                 onTap: busy ? null : onGoogle,
               ),
               const SizedBox(height: 12),
               _ChoiceTile(
                 icon: Icons.badge_outlined,
                 title: 'Masuk karyawan',
-                subtitle: 'Gunakan ID owner, nama pengguna, dan password',
+                subtitle:
+                    'Pakai ID pemilik, nama pengguna, dan password dari '
+                    'pemilik',
                 onTap: busy ? null : onEmployee,
               ),
               const SizedBox(height: 12),
@@ -648,8 +645,8 @@ class _ChoiceView extends StatelessWidget {
                 icon: Icons.insights_outlined,
                 title: 'Ringkasan laporan toko',
                 subtitle:
-                    'Khusus owner yang sudah login Google · hanya membaca '
-                    'dan mengelola akses',
+                    'Khusus pemilik yang sudah masuk Google. Hanya membaca '
+                    'laporan dan mengatur akses.',
                 onTap: busy ? null : onViewer,
               ),
               if (busy) ...[
@@ -799,6 +796,7 @@ class _PinSetupPageState extends State<PinSetupPage> {
                       maxLength: 12,
                       decoration: const InputDecoration(
                         labelText: 'PIN baru',
+                        helperText: 'Minimal 6 angka. Jangan pakai tanggal lahir.',
                         counterText: '',
                         prefixIcon: Icon(Icons.lock_outline),
                       ),
@@ -868,7 +866,9 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
     final username = _username.text.trim();
     final password = _password.text;
     if (ownerId.isEmpty || username.isEmpty || password.isEmpty) {
-      setState(() => _error = 'Isi ID owner, nama pengguna, dan password.');
+      setState(
+        () => _error = 'Isi ID pemilik, nama pengguna, dan password.',
+      );
       return;
     }
     setState(() {
@@ -919,7 +919,7 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
         limit: 1,
       );
       if (rows.isEmpty) {
-        throw StateError('Akun hasil pairing tidak ditemukan.');
+        throw StateError('Akun hasil penghubungan tidak ditemukan.');
       }
       final account = rows.first;
       final role = '${account['role_base'] ?? 'KASIR'}';
@@ -1005,7 +1005,9 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
                       controller: _ownerId,
                       autofocus: true,
                       decoration: const InputDecoration(
-                        labelText: 'ID owner',
+                        labelText: 'ID pemilik',
+                        hintText: 'Contoh: OWNER-01',
+                        helperText: 'Minta ID ini kepada pemilik toko.',
                         prefixIcon: Icon(Icons.qr_code_2_outlined),
                       ),
                     ),
@@ -1014,6 +1016,7 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
                       controller: _username,
                       decoration: const InputDecoration(
                         labelText: 'Nama pengguna',
+                        hintText: 'Contoh: budi',
                         prefixIcon: Icon(Icons.person_outline),
                       ),
                     ),
@@ -1023,6 +1026,7 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
                       obscureText: true,
                       decoration: const InputDecoration(
                         labelText: 'Password',
+                        helperText: 'Password yang diberikan pemilik toko.',
                         prefixIcon: Icon(Icons.password_outlined),
                       ),
                       onSubmitted: (_) => _busy ? null : _submit(),
@@ -1050,12 +1054,12 @@ class _EmployeeLoginPageState extends State<EmployeeLoginPage> {
                     OutlinedButton.icon(
                       onPressed: _busy ? null : _submitInvite,
                       icon: const Icon(Icons.pin_outlined),
-                      label: const Text('Punya kode pairing'),
+                      label: const Text('Punya kode hubungkan perangkat'),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Kode pairing dibuat pemilik, berlaku singkat, dan '
-                      'hanya dapat dipakai satu perangkat.',
+                      'Kode hubungkan perangkat dibuat pemilik, berlaku '
+                      'singkat, dan hanya bisa dipakai di satu perangkat.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
@@ -1115,13 +1119,13 @@ class _InviteDialogState extends State<_InviteDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Kode pairing'),
+      title: const Text('Kode hubungkan perangkat'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
-            'Minta kode kepada pemilik. Kode hanya berlaku sebentar dan '
-            'hangus setelah dipakai.',
+            'Minta kode dari pemilik. Kode berlaku sebentar dan hanya bisa '
+            'dipakai di satu perangkat.',
           ),
           const SizedBox(height: 12),
           TextField(
@@ -1134,13 +1138,18 @@ class _InviteDialogState extends State<_InviteDialog> {
             ],
             decoration: InputDecoration(
               labelText: 'Kode dari pemilik',
+              hintText: 'Contoh: AB12CD',
               errorText: _error,
             ),
             onSubmitted: (_) => _submit(),
           ),
           TextField(
             controller: _deviceName,
-            decoration: const InputDecoration(labelText: 'Nama perangkat'),
+            decoration: const InputDecoration(
+              labelText: 'Nama perangkat',
+              hintText: 'Contoh: HP kasir Budi',
+              helperText: 'Nama ini muncul di daftar perangkat pemilik.',
+            ),
           ),
         ],
       ),
@@ -1149,7 +1158,10 @@ class _InviteDialogState extends State<_InviteDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Pasangkan')),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Hubungkan perangkat'),
+        ),
       ],
     );
   }

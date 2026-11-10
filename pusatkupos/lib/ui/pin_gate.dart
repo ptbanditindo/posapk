@@ -54,7 +54,7 @@ class _PinGateState extends State<PinGate> {
   Future<void> _submit() async {
     final pin = _pin.text.trim();
     if (pin.isEmpty) {
-      setState(() => _error = 'Masukkan PIN.');
+      setState(() => _error = 'Isi PIN terlebih dahulu.');
       return;
     }
     setState(() {
@@ -64,11 +64,14 @@ class _PinGateState extends State<PinGate> {
     try {
       final result = await PinService.instance.verifyDetailed(pin);
       if (result == PinVerification.locked) {
-        setState(() => _error = 'Terlalu banyak percobaan. Coba lagi nanti.');
+        setState(
+          () => _error = 'PIN dikunci sementara karena terlalu banyak '
+              'percobaan. Tunggu sebentar, lalu coba lagi.',
+        );
         return;
       }
       if (result == PinVerification.wrong) {
-        setState(() => _error = 'PIN salah.');
+        setState(() => _error = 'PIN tidak cocok. Periksa lagi.');
         return;
       }
       final profile = widget.profile;
@@ -166,13 +169,13 @@ class _PinGateState extends State<PinGate> {
       barrierDismissible: false,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Ganti PIN wajib'),
+          title: const Text('PIN perlu diperbarui'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'PIN di perangkat ini masih kurang dari 6 digit. Buat PIN '
-                'baru minimal 6 digit untuk melanjutkan.',
+                'PIN di perangkat ini masih kurang dari 6 angka. Buat PIN '
+                'baru minimal 6 angka untuk melanjutkan.',
               ),
               const SizedBox(height: 12),
               TextField(
@@ -181,7 +184,8 @@ class _PinGateState extends State<PinGate> {
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: const InputDecoration(
-                  labelText: 'PIN baru (minimal 6 digit)',
+                  labelText: 'PIN baru',
+                  helperText: 'Minimal 6 angka.',
                 ),
               ),
               const SizedBox(height: 10),
@@ -214,7 +218,7 @@ class _PinGateState extends State<PinGate> {
                       if (value.length < 6 || value != confirm.text.trim()) {
                         setDialogState(
                           () => error =
-                              'PIN baru minimal 6 digit dan harus sama.',
+                              'Isi PIN minimal 6 angka di kedua kolom.',
                         );
                         return;
                       }
@@ -225,7 +229,7 @@ class _PinGateState extends State<PinGate> {
                       );
                       if (context.mounted) Navigator.pop(context, ok);
                     },
-              child: const Text('Simpan'),
+              child: const Text('Simpan PIN baru'),
             ),
           ],
         ),
@@ -243,11 +247,13 @@ class _PinGateState extends State<PinGate> {
         title: const Text('Keluar dari akun ini?'),
         content: Text(
           widget.profile.isOwner
-              ? 'Sesi berakhir, tetapi database, antrean sinkronisasi, dan '
-                  'PIN pemilik tetap tersimpan. Buka kembali dengan PIN yang '
-                  'sama. Reset perangkat tersedia terpisah di Pengaturan.'
-              : 'PIN dan sesi karyawan di perangkat ini akan dihapus. '
-                  'Data transaksi dan antrean tetap tersimpan untuk pemilik.',
+              ? 'Sesi ditutup. Data toko, data yang belum terkirim, dan PIN '
+                  'pemilik tetap tersimpan di perangkat ini. Buka lagi dengan '
+                  'PIN yang sama. Untuk menghapus data, pakai Reset perangkat '
+                  'di Pengaturan.'
+              : 'PIN dan sesi karyawan di perangkat ini akan dihapus. Data '
+                  'transaksi dan data yang belum terkirim tetap tersimpan '
+                  'untuk pemilik.',
         ),
         actions: [
           TextButton(
@@ -270,20 +276,9 @@ class _PinGateState extends State<PinGate> {
     final scheme = Theme.of(context).colorScheme;
     final profile = widget.profile;
     final scaffold = Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              scheme.primaryContainer.withValues(alpha: 0.55),
-              Theme.of(context).scaffoldBackgroundColor,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 440),
               child: Card(
@@ -343,6 +338,8 @@ class _PinGateState extends State<PinGate> {
                         maxLength: 12,
                         decoration: const InputDecoration(
                           labelText: 'PIN',
+                          helperText: 'Masukkan PIN yang Anda buat saat '
+                              'pertama membuka aplikasi.',
                           counterText: '',
                           prefixIcon: Icon(Icons.lock_outline),
                         ),
@@ -365,16 +362,16 @@ class _PinGateState extends State<PinGate> {
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Icon(Icons.arrow_forward),
-                        label: const Text('Buka aplikasi'),
+                        label: const Text('Masuk ke aplikasi'),
                       ),
                       const SizedBox(height: 8),
                       TextButton(
                         onPressed: _busy ? null : _switchAccount,
-                        child: const Text('Bukan akun ini?'),
+                        child: const Text('Ganti akun atau keluar'),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Data tersimpan lokal di perangkat ini.',
+                        'Transaksi tersimpan di perangkat ini.',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
@@ -385,7 +382,6 @@ class _PinGateState extends State<PinGate> {
             ),
           ),
         ),
-      ),
     );
     if (!widget.unlockOnly) return scaffold;
     return PopScope(canPop: false, child: scaffold);

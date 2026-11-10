@@ -447,7 +447,7 @@ class _PosScreenState extends State<PosScreen> {
       return;
     }
     if (_customerId == null) {
-      showSnack(context, 'Pilih pelanggan.', error: true);
+      showSnack(context, 'Pilih pelanggan terlebih dahulu.', error: true);
       return;
     }
     final unitRequired =
@@ -455,7 +455,7 @@ class _PosScreenState extends State<PosScreen> {
         (_settings?.vehicleRequired ?? true) &&
         _jenis != transactionJualSparepart;
     if (unitRequired && _unitId == null) {
-      showSnack(context, 'Pilih unit kendaraan.', error: true);
+      showSnack(context, 'Pilih unit kendaraan terlebih dahulu.', error: true);
       return;
     }
     if (_jobs.isEmpty && _parts.isEmpty) {
@@ -474,7 +474,11 @@ class _PosScreenState extends State<PosScreen> {
       return;
     }
     if (_diskonInvalid) {
-      showSnack(context, 'Format diskon tidak valid.', error: true);
+      showSnack(
+        context,
+        'Diskon harus berupa angka tanpa titik atau huruf.',
+        error: true,
+      );
       return;
     }
     if (_diskonMelebihiTotal) {
@@ -504,7 +508,11 @@ class _PosScreenState extends State<PosScreen> {
       return;
     }
     if (_bayarInvalid) {
-      showSnack(context, 'Format nominal bayar tidak valid.', error: true);
+      showSnack(
+        context,
+        'Nominal bayar harus berupa angka tanpa titik atau huruf.',
+        error: true,
+      );
       return;
     }
     if (_metode == 'TRANSFER' && _bayarCents > _total) {
@@ -940,7 +948,7 @@ class _PosScreenState extends State<PosScreen> {
               title: 'Struk ${record.noNota}',
             ),
             icon: const Icon(Icons.receipt_long_outlined),
-            label: const Text('Lihat'),
+            label: const Text('Lihat struk'),
           ),
           TextButton.icon(
             onPressed: () => printReceiptFor(context, detail.record.id),
@@ -1032,6 +1040,9 @@ class _PosScreenState extends State<PosScreen> {
         ],
         SectionCard(
           title: 'Pelanggan dan unit',
+          subtitle:
+              'Pelanggan wajib dipilih. Unit dipakai untuk mencatat servis '
+              'kendaraan.',
           child: Column(
             children: [
               Row(
@@ -1040,7 +1051,10 @@ class _PosScreenState extends State<PosScreen> {
                     child: DropdownButtonFormField<int>(
                       initialValue: _customerId,
                       isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Pelanggan'),
+                      decoration: const InputDecoration(
+                        labelText: 'Pelanggan',
+                        helperText: 'Pilih nama pelanggan yang membeli.',
+                      ),
                       items: _customers
                           .map(
                             (customer) => DropdownMenuItem(
@@ -1085,8 +1099,12 @@ class _PosScreenState extends State<PosScreen> {
                       decoration: InputDecoration(
                         labelText: (_settings?.vehicleRequired ?? true) &&
                                 !_sparepartOnly
-                            ? 'Unit'
-                            : 'Unit (opsional)',
+                            ? 'Unit kendaraan'
+                            : 'Unit kendaraan (opsional)',
+                        helperText: _units.isEmpty
+                            ? 'Pelanggan ini belum punya unit. Tekan tombol '
+                                  'sebelah kanan untuk menambah.'
+                            : 'Pilih kendaraan yang sedang diservis.',
                       ),
                       items: _units
                           .map(
@@ -1116,8 +1134,10 @@ class _PosScreenState extends State<PosScreen> {
                 controller: _keluhan,
                 maxLines: 2,
                 decoration: const InputDecoration(
-                  labelText: 'Keluhan / keterangan',
-                  hintText: 'Contoh: radiator bocor',
+                  labelText: 'Keluhan atau keterangan',
+                  hintText: 'Contoh: radiator bocor sejak kemarin',
+                  helperText:
+                      'Tulis keluhan pelanggan atau pekerjaan yang diminta.',
                 ),
               ),
               if (_mechanics.isNotEmpty) ...[
@@ -1125,7 +1145,7 @@ class _PosScreenState extends State<PosScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Mekanik (bisa lebih dari satu)',
+                    'Mekanik yang mengerjakan (boleh lebih dari satu)',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -1154,7 +1174,7 @@ class _PosScreenState extends State<PosScreen> {
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      'Estimasi komisi: ${formatRupiah(_estimatedCommission)}',
+                      'Perkiraan komisi: ${formatRupiah(_estimatedCommission)}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
@@ -1172,7 +1192,9 @@ class _PosScreenState extends State<PosScreen> {
             label: const Text('Tambah'),
           ),
           child: _jobs.isEmpty
-              ? const Text('Belum ada jasa.')
+              ? const Text(
+                  'Belum ada jasa. Tekan Tambah untuk mencatat pekerjaan.',
+                )
               : Column(
                   children: [
                     for (var i = 0; i < _jobs.length; i++)
@@ -1214,7 +1236,9 @@ class _PosScreenState extends State<PosScreen> {
             label: const Text('Tambah'),
           ),
           child: _parts.isEmpty
-              ? const Text('Belum ada part.')
+              ? const Text(
+                  'Belum ada sparepart. Tekan Tambah untuk mengambil dari stok.',
+                )
               : Column(
                   children: [
                     for (var i = 0; i < _parts.length; i++)
@@ -1257,7 +1281,7 @@ class _PosScreenState extends State<PosScreen> {
                 title: const Text('Unit ditinggal di bengkel'),
                 subtitle: const Text(
                   'Aktifkan bila kendaraan belum diambil; masuk daftar '
-                  'kendaraan selesai di Follow up.',
+                  'kendaraan selesai di menu Tindak lanjut.',
                 ),
                 value: _unitDitinggal,
                 onChanged: (value) => setState(() => _unitDitinggal = value),
@@ -1279,6 +1303,7 @@ class _PosScreenState extends State<PosScreen> {
                           onChanged: (_) => _garansiEdited = true,
                           decoration: const InputDecoration(
                             labelText: 'Garansi (bulan)',
+                            hintText: 'Contoh: 1',
                             helperText: '1 bulan = 30 hari',
                           ),
                         ),
@@ -1289,6 +1314,7 @@ class _PosScreenState extends State<PosScreen> {
                           controller: _garansiCatatan,
                           decoration: const InputDecoration(
                             labelText: 'Syarat garansi (opsional)',
+                            hintText: 'Contoh: tidak berlaku untuk kecelakaan',
                           ),
                         ),
                       ),
@@ -1308,8 +1334,10 @@ class _PosScreenState extends State<PosScreen> {
                         child: TextField(
                           controller: _garansiBarangNilai,
                           keyboardType: TextInputType.number,
-                          decoration:
-                              const InputDecoration(labelText: 'Durasi'),
+                          decoration: const InputDecoration(
+                            labelText: 'Durasi garansi',
+                            hintText: 'Contoh: 7',
+                          ),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -1352,6 +1380,7 @@ class _PosScreenState extends State<PosScreen> {
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
                         labelText: 'Diskon (Rp)',
+                        hintText: 'Contoh: 5000',
                         errorText: _diskonInvalid
                             ? 'Format tidak valid'
                             : _diskonMelebihiTotal
@@ -1371,7 +1400,9 @@ class _PosScreenState extends State<PosScreen> {
                   Expanded(
                     child: DropdownButtonFormField<String>(
                       initialValue: _metode,
-                      decoration: const InputDecoration(labelText: 'Metode'),
+                      decoration: const InputDecoration(
+                        labelText: 'Cara bayar',
+                      ),
                       items: const [
                         DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                         DropdownMenuItem(
@@ -1405,8 +1436,10 @@ class _PosScreenState extends State<PosScreen> {
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
                         labelText: 'Dibayar (Rp)',
+                        hintText: 'Contoh: 150000',
                         errorText: _bayarInvalid ? 'Format tidak valid' : null,
-                        helperText: 'Kosongkan untuk kredit penuh',
+                        helperText:
+                            'Kosongkan bila pelanggan belum membayar.',
                       ),
                       onChanged: (_) => setState(() {}),
                     ),
@@ -1423,7 +1456,7 @@ class _PosScreenState extends State<PosScreen> {
               ),
               const SizedBox(height: 12),
               _summaryRow('Jasa', _biayaJasa),
-              _summaryRow('Part', _totalPart),
+              _summaryRow('Sparepart', _totalPart),
               _summaryRow('Diskon', -_diskonCents),
               if (_pajak.active) ...[
                 _summaryRow('DPP', _pajak.dppCents),
@@ -1443,7 +1476,7 @@ class _PosScreenState extends State<PosScreen> {
                     : 0,
               ),
               _summaryRow(
-                'Sisa (Kredit)',
+                'Sisa belum dibayar',
                 (_total - _bayarCents).clamp(0, _total).toInt(),
               ),
               if ((_total - _bayarCents) > 0) ...[
@@ -1453,6 +1486,8 @@ class _PosScreenState extends State<PosScreen> {
                   child: InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Jatuh tempo (wajib)',
+                      helperText:
+                          'Tanggal terakhir pelanggan harus melunasi sisa.',
                       suffixIcon: Icon(Icons.event_outlined),
                     ),
                     child: Text(
@@ -1486,7 +1521,13 @@ class _PosScreenState extends State<PosScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.save_outlined),
-          label: Text(_saving ? 'Menyimpan...' : 'Simpan nota'),
+          label: Text(
+            _saving
+                ? 'Menyimpan...'
+                : _jenis == transactionEstimasiSaja
+                ? 'Simpan estimasi'
+                : 'Simpan nota',
+          ),
         ),
         const SizedBox(height: 24),
       ],
@@ -1547,18 +1588,27 @@ class _QuickCustomerDialogState extends State<_QuickCustomerDialog> {
           TextField(
             controller: _nama,
             autofocus: true,
-            decoration: const InputDecoration(labelText: 'Nama'),
+            decoration: const InputDecoration(
+              labelText: 'Nama pelanggan',
+              hintText: 'Contoh: Budi Santoso',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _hp,
             keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(labelText: 'Nomor HP'),
+            decoration: const InputDecoration(
+              labelText: 'Nomor HP',
+              hintText: 'Contoh: 081234567890',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _alamat,
-            decoration: const InputDecoration(labelText: 'Alamat (opsional)'),
+            decoration: const InputDecoration(
+              labelText: 'Alamat (opsional)',
+              hintText: 'Contoh: Jl. Merdeka No. 10',
+            ),
           ),
         ],
       ),
@@ -1579,7 +1629,7 @@ class _QuickCustomerDialogState extends State<_QuickCustomerDialog> {
               ),
             );
           },
-          child: const Text('Simpan'),
+          child: const Text('Simpan pelanggan'),
         ),
       ],
     );
@@ -1630,7 +1680,10 @@ class _QuickUnitDialogState extends State<_QuickUnitDialog> {
         children: [
           DropdownButtonFormField<String>(
             initialValue: _type,
-            decoration: const InputDecoration(labelText: 'Jenis unit'),
+            decoration: const InputDecoration(
+              labelText: 'Jenis unit',
+              helperText: 'Pilih kendaraan atau barang yang diservis.',
+            ),
             items: const [
               DropdownMenuItem(value: 'MOBIL', child: Text('Mobil')),
               DropdownMenuItem(
@@ -1651,18 +1704,27 @@ class _QuickUnitDialogState extends State<_QuickUnitDialog> {
           const SizedBox(height: 10),
           TextField(
             controller: _nopol,
-            decoration: const InputDecoration(labelText: 'Nomor polisi'),
+            decoration: const InputDecoration(
+              labelText: 'Nomor polisi',
+              hintText: 'Contoh: B 1234 XYZ',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _jenis,
-            decoration: const InputDecoration(labelText: 'Jenis kendaraan'),
+            decoration: const InputDecoration(
+              labelText: 'Jenis kendaraan',
+              hintText: 'Contoh: Honda Beat 2020',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _tahun,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Tahun'),
+            decoration: const InputDecoration(
+              labelText: 'Tahun',
+              hintText: 'Contoh: 2020',
+            ),
           ),
         ],
       ),
@@ -1682,7 +1744,7 @@ class _QuickUnitDialogState extends State<_QuickUnitDialog> {
               tahunMobil: int.tryParse(_tahun.text.trim()),
             ),
           ),
-          child: const Text('Simpan'),
+          child: const Text('Simpan unit'),
         ),
       ],
     );
@@ -1736,7 +1798,10 @@ class _JobDialogState extends State<_JobDialog> {
             DropdownButtonFormField<int>(
               initialValue: _catalogId,
               isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Pilih tarif'),
+              decoration: const InputDecoration(
+                labelText: 'Pilih dari daftar tarif',
+                helperText: 'Opsional. Isi sendiri bila jasa belum terdaftar.',
+              ),
               items: widget.catalog
                   .map(
                     (item) => DropdownMenuItem(
@@ -1766,7 +1831,10 @@ class _JobDialogState extends State<_JobDialog> {
           ],
           TextField(
             controller: _desc,
-            decoration: const InputDecoration(labelText: 'Deskripsi'),
+            decoration: const InputDecoration(
+              labelText: 'Deskripsi pekerjaan',
+              hintText: 'Contoh: ganti oli mesin',
+            ),
           ),
           const SizedBox(height: 10),
           Row(
@@ -1775,7 +1843,10 @@ class _JobDialogState extends State<_JobDialog> {
                 child: TextField(
                   controller: _qty,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Qty'),
+                  decoration: const InputDecoration(
+                    labelText: 'Jumlah',
+                    hintText: 'Contoh: 1',
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -1786,6 +1857,7 @@ class _JobDialogState extends State<_JobDialog> {
                   readOnly: _catalogId != null,
                   decoration: InputDecoration(
                     labelText: 'Harga normal',
+                    hintText: 'Contoh: 50000',
                     helperText: _catalogId == null
                         ? 'Harga acuan sebelum nego'
                         : 'Dari daftar tarif',
@@ -1800,6 +1872,7 @@ class _JobDialogState extends State<_JobDialog> {
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
               labelText: 'Harga disepakati',
+              hintText: 'Contoh: 45000',
               errorText: _error,
               helperText: 'Boleh di bawah harga normal dengan alasan',
             ),
@@ -1829,15 +1902,17 @@ class _JobDialogState extends State<_JobDialog> {
             final acuan = tryParseRupiahToCents(_acuan.text);
             final harga = tryParseRupiahToCents(_harga.text);
             if (desc.isEmpty || qty < 1) {
-              setState(() => _error = 'Deskripsi dan qty wajib diisi.');
+              setState(
+                () => _error = 'Isi deskripsi pekerjaan dan jumlah minimal 1.',
+              );
               return;
             }
             if (acuan == null || acuan < 0) {
-              setState(() => _error = 'Format harga normal tidak valid.');
+              setState(() => _error = 'Harga normal belum diisi dengan benar.');
               return;
             }
             if (harga == null || harga < 0) {
-              setState(() => _error = 'Format harga disepakati tidak valid.');
+              setState(() => _error = 'Harga disepakati belum diisi.');
               return;
             }
             if (harga > acuan) {
@@ -1852,8 +1927,10 @@ class _JobDialogState extends State<_JobDialog> {
               final ok = await confirmAction(
                 context,
                 title: 'Harga jasa nol',
-                message: 'Jasa ini dicatat dengan harga Rp 0. Lanjutkan?',
-                confirmLabel: 'Lanjut',
+                message:
+                    'Jasa ini akan dicatat dengan harga Rp 0. '
+                    'Lanjutkan bila memang gratis.',
+                confirmLabel: 'Simpan harga nol',
               );
               if (!ok || !context.mounted) return;
             }
@@ -1877,7 +1954,7 @@ class _JobDialogState extends State<_JobDialog> {
               ),
             );
           },
-          child: const Text('Tambah'),
+          child: const Text('Tambah jasa'),
         ),
       ],
     );
@@ -1931,7 +2008,10 @@ class _PartDialogState extends State<_PartDialog> {
           DropdownButtonFormField<int>(
             initialValue: _stockId,
             isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Barang'),
+            decoration: const InputDecoration(
+              labelText: 'Barang dari stok',
+              helperText: 'Stok berkurang setelah nota disimpan.',
+            ),
             items: widget.stock
                 .map(
                   (item) => DropdownMenuItem(
@@ -1977,7 +2057,9 @@ class _PartDialogState extends State<_PartDialog> {
                   keyboardType: TextInputType.number,
                   decoration: InputDecoration(
                     labelText: 'Harga disepakati',
+                    hintText: 'Contoh: 60000',
                     errorText: _error,
+                    helperText: 'Boleh kurang dari harga normal dengan alasan.',
                   ),
                   onChanged: (_) => setState(() {}),
                 ),
@@ -1999,8 +2081,11 @@ class _PartDialogState extends State<_PartDialog> {
             keyboardType:
                 const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
-              labelText: 'Qty',
+              labelText: 'Jumlah',
               hintText: 'Contoh: 1 atau 0,5',
+              helperText: selected == null
+                  ? 'Pilih barang dulu untuk melihat stok tersedia.'
+                  : 'Stok tersedia: ${selected.jumlahLabel}',
               errorText: _error,
             ),
             onChanged: (_) {
@@ -2034,15 +2119,17 @@ class _PartDialogState extends State<_PartDialog> {
             final acuan = _acuanCents;
             final harga = _hargaCents;
             if (item == null || qtyMilli == null || qtyMilli <= 0) {
-              setState(() => _error = 'Jumlah harus lebih dari nol.');
+              setState(
+                () => _error = 'Pilih barang dan isi jumlah lebih dari 0.',
+              );
               return;
             }
             if (acuan == null || acuan < 0) {
-              setState(() => _error = 'Pilih barang terlebih dahulu.');
+              setState(() => _error = 'Harga normal belum tersedia.');
               return;
             }
             if (harga == null || harga < 0) {
-              setState(() => _error = 'Format harga tidak valid.');
+              setState(() => _error = 'Harga disepakati belum diisi.');
               return;
             }
             if (harga > acuan) {
@@ -2077,7 +2164,7 @@ class _PartDialogState extends State<_PartDialog> {
               ),
             );
           },
-          child: const Text('Tambah'),
+          child: const Text('Tambah sparepart'),
         ),
       ],
     );
@@ -2125,6 +2212,9 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
               labelText: label,
+              helperText: widget.delegated
+                  ? 'Minta penanggung jawab memasukkan PIN.'
+                  : 'Masukkan PIN pemilik untuk menyetujui.',
               errorText: _error,
             ),
             onSubmitted: (_) => _submit(),
@@ -2144,7 +2234,7 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
   void _submit() {
     final value = _secret.text.trim();
     if (value.isEmpty) {
-      setState(() => _error = 'Masukkan PIN.');
+      setState(() => _error = 'Isi PIN terlebih dahulu.');
       return;
     }
     Navigator.pop(context, value);

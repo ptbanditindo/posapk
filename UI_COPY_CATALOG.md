@@ -1,0 +1,3301 @@
+# Katalog Teks UI dan Popup PusatkuPOS
+
+Dokumen ini mencatat semua teks yang tampil di aplikasi: judul layar, label,
+tombol, isian formulir, contoh pengisian, pesan bantuan, peringatan, dialog,
+dan snackbar. Sumbernya `pusatkupos/lib/ui`, dibuat ulang dari kode terkini
+pada 10 November 2026.
+
+Nomor baris menunjuk ke berkas sumber agar teks mudah dicari saat diubah.
+Daftar ini tidak mengubah kode; ia hanya menjadi rujukan penulisan.
+
+## Aturan penulisan
+
+1. Pakai bahasa Indonesia sehari-hari. Hindari istilah teknis seperti
+   snapshot, relay, outbox, cursor, konflik, passphrase, HPP, atau VOID.
+   Ganti dengan kata yang dipakai pemilik toko: cadangan data, server,
+   data menunggu dikirim, nomor urut data, data yang perlu diputuskan,
+   kata sandi cadangan, modal, dan dibatalkan.
+2. Sebut pelakunya. Contoh: "Minta pemilik mengirim kunci baru", bukan
+   "Tunggu pembaruan kunci".
+3. Tombol menyebut tindakan sebenarnya. Contoh: "Simpan pelunasan",
+   "Buat cadangan sekarang", "Hubungkan perangkat", bukan "OK" atau
+   "Lanjut" bila tindakannya sudah jelas.
+4. Setiap kolom isian memakai `labelText` yang jelas, `hintText` berisi
+   contoh nyata, dan `helperText` yang menjelaskan dari mana nilai itu
+   didapat. Contoh: "Contoh: 150000 atau 150.000", "Contoh: budi",
+   "Contoh: HP kasir Budi".
+5. Pesan kesalahan menyebut apa yang salah dan langkah berikutnya.
+   Contoh: "Kode pemulihan tidak cocok. Periksa huruf dan angkanya."
+6. Jangan memakai em dash. Gunakan titik, koma, atau tanda hubung biasa.
+7. Jangan menjanjikan hal yang tidak dilakukan aplikasi. Peringatan
+   keamanan dan data tetap dipertahankan, hanya dibuat lebih sederhana.
+8. Gunakan huruf kapital di awal kalimat dan tanda baca akhir. Nama menu
+   memakai huruf kapital di kata pertama saja, kecuali nama produk.
+
+## Istilah baku
+
+| Istilah lama | Teks yang dipakai |
+| --- | --- |
+| snapshot / backup | cadangan data, cadangan lokal, salinan toko |
+| restore | pulihkan cadangan |
+| relay | server |
+| outbox / antrean sinkronisasi | data yang belum terkirim |
+| cursor | nomor urut data |
+| konflik | data yang perlu diputuskan |
+| passphrase | kata sandi cadangan |
+| owner | pemilik |
+| pairing | hubungkan perangkat |
+| HPP | modal |
+| VOID | dibatalkan |
+| settlement / DP | pelunasan / uang muka |
+| device revoked | akses perangkat dicabut |
+
+## Cakupan
+
+- **Onboarding dan masuk:** pilihan cara masuk, pemulihan pemilik, login
+  karyawan, kode hubungkan perangkat.
+- **Kerangka aplikasi:** menu samping, bilah bawah, ganti tema, ganti toko,
+  pengingat tagihan supplier, layar terkunci, akses menu terbatas.
+- **Kasir dan transaksi:** kasir, keranjang, pembayaran, retur, struk,
+  riwayat nota, koreksi, pembatalan, garansi, pelunasan.
+- **Data toko:** pelanggan, kendaraan, stok, supplier, purchase, order kerja,
+  jasa, estimasi, saldo awal, follow up, karyawan.
+- **Laporan dan pajak:** ringkasan, laporan periode, margin, tutup buku,
+  rekap pajak, arsip nota.
+- **Pengaturan:** identitas toko, struk, printer, fitur toko, cadangan data,
+  pemulihan kunci, sesi, diagnostik.
+- **Server dan lisensi:** premium, lisensi, perangkat, sinkronisasi,
+  data yang perlu diputuskan, pemulihan sesi, pemulihan saat aplikasi gagal.
+
+## Ringkasan perubahan utama
+
+- Semua menu memakai istilah toko: "Supplier dan reseller", "Pengingat
+  pelanggan", "Ganti toko aktif".
+- Layar masuk membedakan "ID pemilik" dan "kode hubungkan perangkat", dengan
+  contoh pengisian pada setiap kolom.
+- Dialog pemulihan dan cadangan menyebut "cadangan", "kata sandi cadangan",
+  dan "PIN pemilik" tanpa istilah escrow atau passphrase di teks utama.
+- Status data ditampilkan sebagai "menunggu dikirim", "gagal terkirim", dan
+  "perlu diputuskan", bukan outbox, failed, atau konflik.
+- Tombol tindakan menyebut hasilnya: "Simpan pelunasan", "Buat cadangan
+  sekarang", "Hubungkan perangkat", "Masuk dengan PIN".
+- Semua kolom nominal memberi contoh angka; kolom nama dan kode memberi
+  contoh isian dan keterangan asal nilai.
+- Tidak ada lagi em dash pada teks UI.
+
+## Cara memakai katalog
+
+Saat mengubah sebuah layar, cari nama berkasnya di bawah, periksa teks pada
+nomor baris yang tercatat, lalu samakan dengan aturan di atas. Bila teks
+dipindah atau ditambah, perbarui katalog ini pada perubahan yang sama.
+
+---
+
+Total teks unik yang tercatat: **3069** pada **42 berkas**.
+
+## Daftar teks per berkas
+
+### `entry_gate.dart`
+
+- L132: Masih ada data yang belum terkirim
+- L137: $total data belum terkirim: $pending menunggu dikirim, 
+- L138: $failed gagal.
+- L141: Data paling lama: ${_formatOutboxStamp(oldest)}.
+- L145: Data ini tetap tersimpan di perangkat setelah Anda keluar. 
+- L146: Ekspor data bila Anda perlu cadangan sebelum meninggalkan 
+- L147: perangkat ini.
+- L154: Batal (muncul 3x)
+- L158: Ekspor data
+- L162: Tetap keluar
+- L186: Simpan data yang belum terkirim
+- L196: Ekspor data dibatalkan.
+- L197: Data yang belum terkirim sudah disimpan.
+- L205: Ekspor data gagal. $error
+- L243: Hanya pemilik yang boleh mereset perangkat.
+- L275: Reset perangkat?
+- L277: Data toko, kunci identitas, dan data yang belum terkirim di 
+- L278: perangkat ini akan dihapus permanen. Tindakan ini tidak dapat 
+- L279: dibatalkan. Buat cadangan dan ekspor data yang belum terkirim 
+- L280: lebih dahulu bila masih diperlukan.
+- L289: Reset perangkat
+- L310: Pemilik
+- L312: Reset perangkat oleh pemilik
+- L365: Konfirmasi pemilik
+- L369: Masukkan PIN pemilik untuk melanjutkan reset.
+- L377: PIN pemilik
+- L378: PIN ini memastikan hanya pemilik yang boleh reset.
+- L393: Isi PIN pemilik.
+- L398: Periksa PIN
+- L413: PIN dikunci sementara karena terlalu banyak 
+- L414: percobaan. Tunggu sebentar, lalu coba lagi.
+- L415: PIN pemilik tidak cocok. Periksa lagi.
+- L416: PIN pemilik tidak dapat diperiksa. Coba lagi.
+
+### `error_messages.dart`
+
+- L26: Perbarui aplikasi, lalu buka ulang layar ini.
+- L32: Data akan dicoba kirim lagi otomatis saat sinkronisasi berikutnya.
+- L38: Buka Pengaturan > Pemulihan kunci untuk memeriksa frasa pemulihan 
+- L39: atau berkas kunci Anda.
+- L49: Data sedang dipakai aplikasi lain.
+- L50: Tutup aplikasi lain yang membuka data yang sama, lalu coba lagi.
+- L56: Minta pemilik mengirim ulang kunci toko, atau pulihkan kunci lewat 
+- L57: Pengaturan > Pemulihan kunci.
+- L63: Keluar lalu masuk kembali. Bila ini perangkat karyawan, minta 
+- L64: pemilik menghubungkan ulang perangkat.
+- L70: Hapus berkas yang tidak dipakai untuk mengosongkan penyimpanan, lalu 
+- L71: coba lagi. (muncul 2x)
+- L84: Pemilik mencabut akses perangkat ini, jadi sinkronisasi berhenti.
+- L85: Ekspor data yang belum terkirim, lalu hubungkan perangkat lagi. Data 
+- L86: di perangkat tidak dihapus otomatis.
+- L91: Versi aplikasi ini tidak didukung server lagi.
+- L92: Perbarui aplikasi. Data di perangkat tetap aman dan sinkronisasi 
+- L93: berjalan lagi setelah aplikasi diperbarui.
+- L97: Kunci toko di perangkat ini sudah tidak berlaku.
+- L98: Tunggu pemilik mengirim kunci baru, lalu tekan Sinkron lagi.
+- L103: Lisensi toko tidak aktif, jadi layanan server tidak bisa dipakai.
+- L104: Periksa masa berlaku lisensi di menu Premium. Penjualan dan data di 
+- L105: perangkat tetap bisa dipakai.
+- L109: Penyimpanan server penuh, jadi unggahan ditolak.
+- L110: Hubungi pengelola server untuk membersihkan ruang, lalu coba lagi. 
+- L111: Data tetap tersimpan di perangkat. (muncul 2x)
+- L115: Data terlalu besar untuk dikirim ke server.
+- L116: Periksa lampiran atau logo struk yang ukurannya tidak wajar, lalu 
+- L122: Server sedang sibuk atau permintaan terlalu sering.
+- L123: Tunggu beberapa saat. Percobaan berikutnya dijadwalkan otomatis.
+- L127: Data toko di server belum lengkap.
+- L128: Minta pemilik menyelesaikan unggahan cadangan data toko, lalu 
+- L129: sinkronkan lagi.
+- L133: Permintaan ditolak oleh pengaturan keamanan server.
+- L134: Gunakan alamat server resmi yang diberikan pengelola.
+- L139: Server tidak merespons dalam batas waktu.
+- L140: Periksa koneksi internet dan alamat server, lalu tekan Sinkron lagi. 
+- L146: Server tidak mengenali sesi perangkat ini.
+- L147: Masuk ulang, atau minta pemilik menghubungkan ulang perangkat.
+- L152: Server menolak akses perangkat ini.
+- L153: Keluar lalu masuk kembali. Bila berulang, minta pemilik 
+- L154: memeriksa daftar perangkat.
+- L159: Ada data yang bentrok dengan server.
+- L160: Buka layar Konflik untuk memilih data yang dipakai. Data tidak 
+- L166: Server meminta versi aplikasi yang lebih baru.
+- L167: Perbarui aplikasi lalu sinkronkan lagi.
+- L172: Server sedang bermasalah.
+- L173: Coba lagi beberapa saat. Bila masih gagal, hubungi pengelola server.
+- L176: Permintaan ke server gagal.
+
+### `home_shell.dart`
+
+- L153: Tagihan supplier mendekati jatuh tempo
+- L164: LEWAT (muncul 2x)
+- L183: Tutup
+- L199: Toko belum dipilih
+- L228: Toko aktif sekarang ${selected.nama}. Semua layar memakai data 
+- L229: toko ini.
+- L235: Toko tidak bisa diganti. $error
+- L244: Ringkasan
+- L245: Kasir
+- L246: Riwayat
+- L247: Pelanggan
+- L248: Stok
+- L249: Order
+- L250: Jasa
+- L251: Laporan
+- L252: Supplier dan reseller
+- L253: Pengingat pelanggan
+- L254: Karyawan
+- L255: Pengaturan
+- L256: Premium
+- L357: Menu belum dibuka
+- L371: Akun Anda belum punya menu yang bisa dibuka.
+- L377: Minta pemilik membuka menu untuk akun Anda di Pengaturan, 
+- L378: lalu masuk lagi.
+- L385: Keluar dari akun
+- L396: Aplikasi terkunci
+- L410: Sesi Anda sudah berakhir atau terkunci.
+- L416: Masuk lagi dengan PIN Anda. Menu toko hanya terbuka setelah 
+- L417: PIN diperiksa.
+- L430: Masuk dengan PIN
+- L473: ${appState.operator?.label ??  (muncul 2x)
+- L483: Ganti tampilan terang atau gelap
+- L563: Menu lain
+- L601: ${appState.storeAddress.isEmpty ? 
+- L601:  : appState.storeAddress}
+- L620: Ganti toko aktif
+
+### `onboarding.dart`
+
+- L36: Catat penjualan bengkel di satu aplikasi
+- L38: Kasir, stok, pelanggan, dan laporan tersimpan di perangkat ini. 
+- L39: Tidak perlu buku catatan terpisah.
+- L43: Penjualan tetap jalan tanpa internet
+- L45: Data disimpan di perangkat. Saat internet tersedia, data dikirim 
+- L46: ke server secara otomatis.
+- L50: Pemilik dan karyawan memakai aplikasi yang sama
+- L52: Pemilik mengatur toko dan melihat laporan. Karyawan hanya membuka 
+- L53: menu sesuai izin yang diberikan.
+- L107: Kode pemulihan pemilik (muncul 2x)
+- L110: aman atau kirim ke email Anda sendiri. Kode dipakai untuk 
+- L111: membuka akses pemilik bila sesi di perangkat ini hilang.
+- L116: Sudah saya simpan
+- L125: Pemilik (muncul 3x)
+- L151: Perangkat ini sudah memiliki pemilik
+- L156: ID pemilik ${ownerId.isEmpty ? 
+- L156:  : ownerId} dan datanya 
+- L157: masih tersimpan. Masukkan kode pemulihan pemilik untuk 
+- L158: melanjutkan. Karyawan bisa masuk lewat pilihan akun karyawan.
+- L166: Tempel kode yang Anda simpan.
+- L174: Batal (muncul 3x)
+- L178: Verifikasi
+- L187: Kode pemulihan pemilik wajib diisi.
+- L192: Kode pemulihan pemilik tidak cocok. Periksa huruf dan angkanya.
+- L202: Masuk dengan Google belum tersedia di aplikasi ini. 
+- L203: Gunakan mode tanpa akun.
+- L240: Mode ringkasan belum tersedia di build ini. 
+- L241: Hubungi penjual.
+- L250: Akun tidak mengirim ID pemilik.
+- L326: Ganti password awal
+- L334: Password saat ini
+- L335: Password yang Anda pakai untuk masuk.
+- L343: Password baru
+- L344: Minimal 8 karakter.
+- L352: Ulangi password baru
+- L378: Isi password baru minimal 8 karakter 
+- L379: dan ulangi dengan sama.
+- L399: Simpan
+- L419: Buat PIN pemilik
+- L419: Buat PIN karyawan
+- L421: PIN dipakai setiap membuka aplikasi. 
+- L422: Simpan di tempat yang hanya Anda ketahui.
+- L423: PIN dipakai setiap membuka aplikasi di perangkat ini.
+- L469: Lewati panduan
+- L519: Pilih cara masuk (muncul 2x)
+- L520: Lihat halaman berikutnya
+- L617: Pilih sesuai cara toko Anda memakai PusatkuPOS.
+- L623: Mulai gratis tanpa akun
+- L624: Data tersimpan di perangkat ini
+- L630: Masuk dengan Google
+- L631: Untuk pemilik premium dengan lisensi per toko
+- L637: Masuk karyawan (muncul 2x)
+- L639: Pakai ID pemilik, nama pengguna, dan password dari 
+- L646: Ringkasan laporan toko
+- L648: Khusus pemilik yang sudah masuk Google. Hanya membaca 
+- L649: laporan dan mengatur akses.
+- L755: PIN minimal 6 angka.
+- L759: PIN yang diulang tidak sama.
+- L798: PIN baru
+- L799: Minimal 6 angka. Jangan pakai tanggal lahir.
+- L812: Ulangi PIN
+- L829: Simpan PIN
+- L870: Isi ID pemilik, nama pengguna, dan password.
+- L896: Layanan akun belum siap. Hubungi penjual.
+- L917: id = ?
+- L922: Akun hasil penghubungan tidak ditemukan.
+- L966: ${raw ?? 
+- L992: Masuk dengan akun karyawan
+- L1000: Akun dibuat dan diatur oleh pemilik toko.
+- L1008: ID pemilik
+- L1009: Contoh: OWNER-01
+- L1010: Minta ID ini kepada pemilik toko.
+- L1018: Nama pengguna
+- L1019: Contoh: budi
+- L1028: Password
+- L1029: Password yang diberikan pemilik toko.
+- L1051: Masuk
+- L1057: Punya kode hubungkan perangkat
+- L1061: Kode hubungkan perangkat dibuat pemilik, berlaku 
+- L1062: singkat, dan hanya bisa dipakai di satu perangkat.
+- L1093: Perangkat karyawan (muncul 2x)
+- L1106: Masukkan kode dari pemilik.
+- L1122: Kode hubungkan perangkat
+- L1127: Minta kode dari pemilik. Kode berlaku sebentar dan hanya bisa 
+- L1128: dipakai di satu perangkat.
+- L1140: Kode dari pemilik
+- L1141: Contoh: AB12CD
+- L1149: Nama perangkat
+- L1150: Contoh: HP kasir Budi
+- L1151: Nama ini muncul di daftar perangkat pemilik.
+- L1163: Hubungkan perangkat
+
+### `owner_viewer.dart`
+
+- L35: LUNAS
+- L35: Lunas
+- L36: KREDIT
+- L36: Belum lunas
+- L41: ${value ?? 
+- L41: Pemilik
+- L41: Karyawan
+- L66: dd/MM/yyyy HH:mm
+- L141: Pilih ringkasan pemilik
+- L162: Ringkasan tidak lengkap: tanda tangan tidak ditemukan.
+- L168: Kunci lisensi server belum tersedia, jadi ringkasan belum bisa 
+- L174: Ringkasan dibuat oleh kunci yang tidak dikenal. Minta salinan 
+- L175: baru dari pemilik.
+- L190: Tanda tangan ringkasan tidak cocok. Minta salinan baru dari 
+- L198: Ringkasan milik akun lain. Keluar lalu masuk dengan akun tersebut.
+- L258: Ringkasan pemilik belum tersedia.
+- L264: Sesi sudah berakhir. Masuk ulang dengan akun Google.
+- L283: Ringkasan pemilik (muncul 2x)
+- L289: Perangkat terdaftar. Kunci toko akan dikirim menyusul.
+- L290: Perangkat ringkasan sudah terhubung.
+- L346: Belum ada salinan toko yang bisa dipasang.
+- L435: Toko utama
+- L469: Akun karyawan baru
+- L469: Ubah akun (muncul 2x)
+- L478: Nama pengguna
+- L479: Dipakai untuk masuk, tanpa spasi. 
+- L480: Contoh: budi.
+- L487: Nama lengkap
+- L488: Contoh: Budi Santoso.
+- L493: KASIR (muncul 2x)
+- L495: Peran
+- L496: Menentukan menu dan tindakan yang bisa 
+- L516: Password awal
+- L517: Password baru (kosongkan jika tetap)
+- L519: Minimal 8 huruf atau angka. Berikan ke karyawan.
+- L520: Kosongkan jika password tidak diganti.
+- L526: Akun aktif
+- L528: Karyawan bisa masuk dan memakai aplikasi.
+- L540: Izin tambahan
+- L544: Centang hanya izin yang benar-benar dibutuhkan.
+- L572: Toko
+- L600: Batal (muncul 3x)
+- L624: Password awal: $temp. Catat sekarang.
+- L630: Akun gagal disimpan: $error
+- L636: Simpan akun
+- L655: Akun ini belum diberi toko. Pilih toko dulu saat mengubah 
+- L670: Kode hubungkan perangkat
+- L686: Buka aplikasi PusatkuPOS di HP karyawan, pilih 
+- L687: Hubungkan perangkat karyawan, lalu masukkan kode ini.
+- L700: Salin
+- L704: Tutup (muncul 2x)
+- L710: Kode gagal dibuat: $error
+- L720: Cabut perangkat
+- L723: untuk mengirim data.
+- L732: Cabut (muncul 2x)
+- L742: Perangkat gagal dicabut: $error
+- L750: Keluar dari ringkasan?
+- L752: PIN dan sesi akan dihapus. Salinan ringkasan di perangkat ini juga 
+- L753: dihapus. Untuk masuk lagi, Anda perlu salinan baru dari server 
+- L763: Keluar (muncul 2x)
+- L792: Ringkasan toko
+- L797: ${profile.nama} · hanya baca
+- L817: Kunci layar
+- L831: Ringkasan
+- L832: Riwayat
+- L833: Laporan
+- L834: Data dan cadangan
+- L835: Akses
+- L836: Pengaturan
+- L867: Salinan toko belum tersedia. Pastikan perangkat toko 
+- L868: sudah mengunggah cadangan data.
+- L876: Muat salinan toko
+- L897: Omzet hari ini
+- L904: Jumlah nota (muncul 3x)
+- L914: Piutang (muncul 3x)
+- L918: Stok menipis
+- L927: Nota terbaru
+- L950: Mode ini hanya membaca pembukuan dan mengelola akses karyawan. 
+- L951: Transaksi dilakukan di aplikasi utama.
+- L986: Cari no. nota atau nama pelanggan
+- L990: Muat ulang daftar
+- L1000: Belum ada data. Muat salinan toko dulu.
+- L1028: Dibatalkan (muncul 2x)
+- L1055: Pelanggan
+- L1056: Unit
+- L1057: Waktu
+- L1059: Status nota
+- L1065: Jasa
+- L1066: Part
+- L1067: Diskon (muncul 2x)
+- L1069: Retur (muncul 3x)
+- L1070: Total
+- L1072: Sudah dibayar (muncul 3x)
+- L1075: Sisa tagihan
+- L1103: Hari ini
+- L1107: Omzet sebelum retur (muncul 2x)
+- L1109: Omzet setelah retur (muncul 2x)
+- L1110: Uang diterima
+- L1123: Semua data
+- L1127: Penjualan jasa
+- L1128: Penjualan part
+- L1140: Data lain
+- L1143: Jumlah pelanggan
+- L1144: Jumlah barang di stok
+- L1158: Belum pernah
+- L1170: Status salinan
+- L1173: Perangkat
+- L1173: belum terhubung (muncul 2x)
+- L1175: Kunci toko (muncul 2x)
+- L1176: menunggu dari perangkat toko (muncul 2x)
+- L1178: Nomor urut data
+- L1179: Data menunggu dikirim
+- L1180: Sinkron terakhir
+- L1182: Data bermasalah / gagal
+- L1189: Ada perubahan yang belum terkirim lebih dari 24 jam.
+- L1207: Perbarui salinan
+- L1212: Muat salinan
+- L1229: Cadangan
+- L1231: Mode ringkasan hanya membaca pembukuan dan memuat cadangan data. 
+- L1232: Unggah cadangan dilakukan dari perangkat toko agar semua data 
+- L1233: ikut lengkap.
+- L1250: Masuk dengan Google untuk mengelola akun dan perangkat.
+- L1263: Akun karyawan
+- L1270: Muat ulang akses
+- L1276: Tambah akun
+- L1286: Belum ada akun. Tambahkan akun untuk membuka akses karyawan.
+- L1296: ${roleDisplayName(
+- L1306: Buat kode undangan
+- L1320: Perangkat terdaftar
+- L1335: .isEmpty ?  (muncul 2x)
+- L1352: Undangan
+- L1386: ID pemilik
+- L1387: Paket
+- L1389: Berlaku sampai
+- L1392: Jumlah toko
+- L1398: Akun Google
+- L1403: Email terhubung
+- L1408: Mode ini hanya membaca pembukuan dan mengelola akses 
+- L1409: karyawan. Transaksi tetap dilakukan di aplikasi utama.
+- L1416: Perangkat ini
+- L1420: Status
+- L1433: Perbarui koneksi
+- L1433: Hubungkan perangkat
+- L1438: Impor ringkasan pemilik
+- L1451: Mode ringkasan tidak dapat membuat atau mengubah pembukuan.
+- L1465: Ada masalah: ${_error ?? 
+- L1466: Periksa koneksi lalu coba lagi.
+
+### `pin_gate.dart`
+
+- L41: Ringkasan laporan toko
+- L43: Pemilik premium
+- L43: Pemilik
+- L57: Isi PIN terlebih dahulu.
+- L68: PIN dikunci sementara karena terlalu banyak 
+- L69: percobaan. Tunggu sebentar, lalu coba lagi.
+- L74: PIN tidak cocok. Periksa lagi.
+- L92: sync_id = ?
+- L98: Akun karyawan ini sudah dinonaktifkan pemilik.
+- L129: VIEWER
+- L154: Gagal membuka aplikasi: $error
+- L172: PIN perlu diperbarui
+- L177: PIN di perangkat ini masih kurang dari 6 angka. Buat PIN 
+- L178: baru minimal 6 angka untuk melanjutkan.
+- L187: PIN baru
+- L188: Minimal 6 angka.
+- L197: Ulangi PIN baru
+- L211: Keluar (muncul 2x)
+- L221: Isi PIN minimal 6 angka di kedua kolom.
+- L232: Simpan PIN baru
+- L247: Keluar dari akun ini?
+- L250: Sesi ditutup. Data toko, data yang belum terkirim, dan PIN 
+- L251: pemilik tetap tersimpan di perangkat ini. Buka lagi dengan 
+- L252: PIN yang sama. Untuk menghapus data, pakai Reset perangkat 
+- L253: di Pengaturan.
+- L254: PIN dan sesi karyawan di perangkat ini akan dihapus. Data 
+- L255: transaksi dan data yang belum terkirim tetap tersimpan 
+- L256: untuk pemilik.
+- L261: Batal
+- L311: PUSATKU POS
+- L327: $_roleLabel · ${profile.storeIds.length} toko
+- L340: PIN
+- L341: Masukkan PIN yang Anda buat saat 
+- L342: pertama membuka aplikasi.
+- L365: Masuk ke aplikasi
+- L370: Ganti akun atau keluar
+- L374: Transaksi tersimpan di perangkat ini.
+
+### `receipt_dialog.dart`
+
+- L18: Struk
+- L95: Nomor HP pelanggan belum diisi, jadi struk tidak bisa dikirim.
+- L112: WhatsApp tidak bisa dibuka. Pastikan aplikasinya terpasang.
+- L118: WhatsApp tidak bisa dibuka. $error
+- L152: Struk gagal dicetak. ${friendlyError(error)}
+- L182: 58 mm
+- L183: 80 mm
+- L200: Tutup
+- L206: WhatsApp
+- L215: Mencetak...
+- L216: Cetak ulang
+- L216: Cetak
+- L233: Struk gagal disiapkan: ${snapshot.error}
+- L300: Cetak: ${job.label}$detail
+- L309: ${job.attempts}x
+
+### `screens/archive_search_screen.dart`
+
+- L70: Isi nomor nota, nama pelanggan, nopol, atau pilih tanggal dulu.
+- L121: Arsip tidak bisa dibuka: ${friendlyError(error)}
+- L132: Simpan salinan arsip
+- L142: Ekspor arsip dibatalkan.
+- L143: Salinan arsip tersimpan. Isi nota tetap terkunci dan hanya 
+- L144: bisa dibuka dari aplikasi ini.
+- L148: Ekspor arsip gagal: ${friendlyError(error)}
+- L159: Cari arsip di server
+- L170: Ekspor semua arsip
+- L185: Contoh: INV-0001, Budi, atau B 1234 XY
+- L186: Ketik nomor nota, nama pelanggan, atau nopol 
+- L201: Mulai tanggal
+- L202: Mulai ${dateId.format(_dari!)}
+- L215: Sampai tanggal
+- L216: Sampai ${dateId.format(_sampai!)}
+- L230: Cari arsip
+- L254: Arsip belum ditemukan
+- L255: Nota lama yang tersimpan di server akan tampil di sini. 
+- L256: Coba kata kunci lain atau pilih rentang tanggal.
+- L270: Muat 50 hasil lagi
+- L284: Tanggal tidak diketahui
+- L338: VOID (muncul 2x)
+- L360: Total ${formatRupiah(total)}
+- L375: Sembunyikan struk
+- L375: Tampilkan struk
+- L392: Retur barang
+- L411: Struk tidak tersimpan, tetapi data nota tetap 
+- L412: lengkap di arsip.
+- L442: CASH (muncul 3x)
+- L495: Sesi pengguna tidak tersedia. Masuk ulang lalu coba lagi.
+- L508: Isi angka lebih dari 0, misalnya 1 atau 0,5.
+- L540: Retur tersimpan. Stok dan kas sudah diperbarui.
+- L562: Retur barang dari arsip
+- L567: Isi jumlah yang dikembalikan. Kosongkan baris yang tidak 
+- L568: diretur. Nota asli tidak diubah.
+- L577: Semua barang di nota ini sudah diretur.
+- L600: Sisa yang bisa diretur 
+- L602:  · ${_lineLabel(
+- L622: Jumlah
+- L635: Alasan retur (wajib)
+- L636: Contoh: barang rusak saat dipasang.
+- L644: Uang dikembalikan lewat
+- L647: Tunai
+- L648: TRANSFER
+- L648: Transfer
+- L666: Batal
+- L678: Simpan retur barang
+- L689: Jasa
+- L689: Part
+
+### `screens/customers_screen.dart`
+
+- L48: Peran ini tidak boleh menambah pelanggan.
+- L75: Pelanggan sudah ada
+- L76: $duplicate. Pakai pelanggan "${duplicate.existingName}"?
+- L77: Pakai yang ada
+- L89: Gagal menyimpan: $error (muncul 2x)
+- L95: Peran ini tidak boleh mengubah pelanggan.
+- L131: Peran ini tidak boleh menggabung pelanggan.
+- L137: Belum ada pelanggan lain untuk digabung.
+- L145: Gabung pelanggan (muncul 2x)
+- L150: Unit dan nota milik "${source.nama}" akan dipindahkan ke 
+- L151: pelanggan tujuan, lalu pelanggan asal dihapus.
+- L157: Tujuan
+- L176: Batal (muncul 4x)
+- L180: Gabungkan
+- L200: Pelanggan digabungkan.
+- L202: Gagal menggabung: $error
+- L218: Cari nama atau nomor HP
+- L229: Tambah
+- L243: Gagal memuat pelanggan
+- L248: Coba lagi (muncul 2x)
+- L255: Belum ada pelanggan
+- L256: Tambahkan pelanggan untuk mulai membuat nota.
+- L261: Tambah pelanggan
+- L308: Ubah pelanggan (muncul 2x)
+- L334: Fitur unit/kendaraan dinonaktifkan pemilik.
+- L395: Nama minimal 2 karakter.
+- L399: Nomor HP wajib diisi.
+- L405: Limit kredit tidak valid. (muncul 2x)
+- L424: Pelanggan baru
+- L433: Nama pelanggan (muncul 2x)
+- L434: Contoh: Budi Santoso (muncul 2x)
+- L442: Nomor HP (muncul 2x)
+- L443: Contoh: 081234567890 (muncul 2x)
+- L444: Dipakai untuk WhatsApp dan follow up. (muncul 2x)
+- L451: Alamat (opsional) (muncul 2x)
+- L452: Contoh: Jl. Merdeka No. 10, Bandung (muncul 2x)
+- L461: Limit kredit (Rp) (muncul 2x)
+- L462: Contoh: 500000 (muncul 2x)
+- L463: Batas utang yang boleh berjalan. Isi 0 untuk  (muncul 2x)
+- L464: tanpa limit. (muncul 2x)
+- L470: Setuju dihubungi lewat WhatsApp (muncul 2x)
+- L476: Jangan kirim promo atau follow up (muncul 2x)
+- L495: Simpan pelanggan (muncul 2x)
+- L529: Peran ini tidak boleh menambah unit.
+- L552: Gagal menyimpan unit: $error
+- L580: Unit terdaftar
+- L589: Unit
+- L605: Gagal memuat unit
+- L617: Belum ada unit
+- L618: Tambahkan kendaraan atau barang pelanggan.
+- L674: MOBIL (muncul 3x)
+- L689: Tambah unit
+- L697: Jenis unit
+- L698: Pilih kendaraan atau barang yang diservis.
+- L701: Mobil
+- L703: MOTOR_LENGKAP
+- L704: Motor lengkap
+- L707: PART_MOBIL
+- L708: Part mobil
+- L711: PART_MOTOR
+- L712: Part motor
+- L715: RADIATOR_ONLY
+- L716: Radiator saja
+- L719: SPAREPART
+- L720: Sparepart
+- L729: Nomor polisi
+- L730: Contoh: B 1234 XYZ
+- L737: Jenis kendaraan/barang
+- L738: Contoh: Honda Beat 2020
+- L746: Tahun
+- L747: Contoh: 2020
+- L754: Tipe radiator
+- L755: Contoh: Denso
+- L762: Label radiator (opsional)
+- L763: Contoh: Radiator depan
+- L791: Simpan unit
+- L940: Nama dan nomor HP wajib diisi.
+
+### `screens/dashboard_screen.dart`
+
+- L56: Ringkasan gagal dimuat
+- L61: Coba lagi
+- L72: Ringkasan
+- L96: Penjualan hari ini
+- L104: Penjualan setelah retur
+- L112: Uang masuk hari ini
+- L121: Jumlah nota hari ini
+- L130: Barang hampir habis
+- L142: Piutang pelanggan
+- L155: Stok bermasalah
+- L170: Pintasan
+- L180: Kasir
+- L187: Pelanggan
+- L194: Stok
+- L201: Laporan
+- L209: Nota terbaru
+- L210: 8 nota terakhir
+- L213: Belum ada nota
+- L214: Buka menu Kasir untuk membuat nota pertama.
+- L246: VOID
+
+### `screens/diagnostics_screen.dart`
+
+- L38: Laporan diagnostik gagal dibuat: $error
+- L55: Laporan diagnostik disalin.
+- L66: Laporan diagnostik disimpan: $path
+- L69: Laporan gagal diekspor: $error
+- L80: Diagnostik perangkat
+- L83: Muat ulang
+- L95: Ringkasan
+- L96: Laporan untuk meminta bantuan teknis. Tidak 
+- L97: memuat kata sandi, token, atau frasa sandi.
+- L100: Dibuat
+- L101: Sistem
+- L102: Versi skema
+- L104: Integritas
+- L112: Ukuran data
+- L113: Ukuran berkas data di perangkat ini.
+- L120: Antrean sinkronisasi
+- L121: Data yang menunggu dikirim ke server dan diterima 
+- L122: dari server.
+- L125: Akan dikirim
+- L126: Sudah diterima
+- L132: Data yang perlu diputuskan
+- L133: Data yang berbeda antar perangkat dan menunggu 
+- L139: Integritas data
+- L140: Hanya laporan, tidak mengubah data. Duplikat 
+- L141: berarti data tercatat dua kali. Selisih berarti saldo 
+- L142: tidak sama dengan riwayat.
+- L152: Salin laporan
+- L161: Salin (web)
+- L161: Ekspor berkas
+- L180: Berkas data
+- L181: Jurnal WAL
+- L182: Memori bersama
+- L202: Tidak ada data yang perlu diputuskan.
+- L235: Tidak ada selisih atau duplikat terdeteksi.
+- L241: Duplikat: ${duplicates.length}
+- L251: Selisih saldo stok: ${stock.length}
+- L262: Selisih kas: ${cash.length}
+- L273: Stok negatif: ${negative.length}
+- L300: 0 B
+- L301: $value B
+- L302: ${(value / 1024).toStringAsFixed(1)} KB
+- L303: ${(value / (1024 * 1024)).toStringAsFixed(1)} MB
+
+### `screens/employees_screen.dart`
+
+- L86: Peran ini tidak boleh mengatur kompensasi.
+- L112: Kompensasi disimpan.
+- L115: Gagal menyimpan: $error (muncul 2x)
+- L123: Peran ini tidak boleh membayar gaji.
+- L133: Bonus tidak valid. Isi angka rupiah atau kosongkan.
+- L140: Bayar gaji (muncul 2x)
+- L142: Bayar imbalan siklus ini untuk ${_summary?.nama ?? 
+- L143: Hutang karyawan akan dipotong otomatis.
+- L144: Bayar
+- L158: Pembayaran gaji dicatat.
+- L160: Gagal membayar: $error
+- L168: Peran ini tidak boleh menambah hutang.
+- L178: Tambah hutang (muncul 2x)
+- L186: Nominal hutang
+- L187: Contoh: 200000
+- L194: Catatan
+- L195: Contoh: pinjam untuk biaya sekolah
+- L203: Batal (muncul 2x)
+- L207: Simpan hutang
+- L221: Nominal hutang harus berupa angka lebih dari 0.
+- L236: Hutang dicatat.
+- L251: Fitur karyawan khusus premium
+- L253: Aktifkan lisensi di menu Premium untuk mengelola komisi, 
+- L254: gaji, dan hutang karyawan.
+- L265: Belum ada karyawan
+- L267: Buat akun karyawan di menu Premium, lalu atur kompensasinya 
+- L268: di sini.
+- L279: Karyawan (muncul 2x)
+- L280: Komisi dan gaji
+- L281: Hutang (muncul 2x)
+- L321: ${roleDisplayName(
+- L332: Atur imbalan
+- L351: Siklus ${summary.periode.toLowerCase()}
+- L357: Komisi siklus
+- L358: Gaji pokok
+- L360: Potongan hutang
+- L362: Dibayarkan
+- L368: Gaji siklus ini sudah dibayar.
+- L377: Bonus (opsional)
+- L378: Contoh: 100000
+- L379: Kosongkan bila tidak ada bonus.
+- L402: Riwayat gaji
+- L408: .trim().isEmpty ? 
+- L435: Hutang karyawan
+- L436: Total sisa ${formatRupiah(total)}
+- L445: Belum ada hutang.
+- L470: Pilih karyawan untuk melihat komisi dan gajinya.
+- L610: Isi gaji, komisi barang, dan komisi jasa dengan angka.
+- L616: Isi tanggal atau hari gaji dengan angka yang benar.
+- L640: PERSEN (muncul 3x)
+- L650: Jenis imbalan
+- L651: Komisi dihitung dari penjualan, gaji dibayar tetap.
+- L654: KOMISI (muncul 2x)
+- L654: Komisi
+- L655: GAJI
+- L655: Gaji bulanan (muncul 2x)
+- L665: Contoh: 3000000
+- L666: Isi 0 bila hanya memakai komisi.
+- L673: Mode komisi
+- L674: Persen dari penjualan atau nominal tetap per nota.
+- L677: Persen
+- L678: NOMINAL
+- L678: Nominal tetap
+- L688: Komisi barang (%)
+- L689: Komisi barang per nota
+- L690: Contoh: 5
+- L690: Contoh: 5000
+- L698: Komisi jasa (%)
+- L698: Komisi jasa per nota
+- L699: Contoh: 10
+- L699: Contoh: 10000
+- L706: Periode gaji
+- L707: Seberapa sering gaji dibayarkan.
+- L710: MINGGUAN
+- L710: Mingguan
+- L711: BULANAN (muncul 3x)
+- L711: Bulanan
+- L722: Tanggal gaji (1-31)
+- L723: Contoh: 25
+- L731: Hari gaji
+- L732: 1 = Senin, 7 = Minggu
+- L739: Bank
+- L740: Contoh: BCA
+- L748: Nomor rekening
+- L749: Contoh: 1234567890
+- L756: Pemilik rekening
+- L757: Contoh: Budi Santoso
+- L780: Simpan kompensasi
+
+### `screens/escrow_screen.dart`
+
+- L84: Gagal diproses: ${friendlyError(error)}
+- L93: Lanjutkan
+- L103: Batal
+- L119: Hanya pemilik yang bisa membuat cadangan kunci.
+- L125: Buat cadangan kunci baru?
+- L126: Cadangan lama akan diganti. Frasa dan share admin yang lama 
+- L127: tidak berlaku lagi setelah cadangan baru dibuat.
+- L128: Buat cadangan
+- L139: Cadangan kunci dibuat. Salin frasa dan share admin sekarang sebelum 
+- L140: meninggalkan layar ini.
+- L146: Masukkan frasa pemulihan.
+- L155: Frasa cocok. Cadangan kunci ditandai terverifikasi.
+- L166: Isi dua share admin dari orang yang berbeda.
+- L179: Share cocok. Cadangan kunci ditandai terverifikasi.
+- L184: Pulihkan dengan frasa?
+- L185: Kunci pemilik dan kunci toko di perangkat ini akan diganti  (muncul 2x)
+- L186: dengan isi cadangan. Pastikan cadangan ini milik toko yang sedang 
+- L188: Pulihkan (muncul 2x)
+- L195: Kunci berhasil dipulihkan dari cadangan. (muncul 2x)
+- L204: Isi minimal dua share admin.
+- L208: Pulihkan dengan share admin?
+- L210: dengan isi cadangan.
+- L225: Cadangan kunci diunggah ke Google Drive.
+- L230: Unduh cadangan kunci dari Google Drive?
+- L231: Berkas cadangan ini menggantikan cadangan di perangkat. 
+- L232: Pemulihan tetap memerlukan frasa atau share admin.
+- L233: Unduh
+- L239: Cadangan kunci berhasil diunduh dari Google Drive.
+- L250: Simpan berkas cadangan kunci
+- L255: Berkas cadangan kunci disimpan.
+- L260: Pilih berkas cadangan kunci
+- L269: Berkas cadangan kunci diimpor.
+- L275: $label disalin.
+- L284: Cadangan kunci pemulihan
+- L289: Status cadangan kunci
+- L290: Cadangan ini menyimpan kunci pemilik dan kunci tiap 
+- L291: toko. Untuk membukanya, gunakan frasa pemulihan atau 2 dari 
+- L292: 3 share admin.
+- L310: Terverifikasi. Pemulihan sudah diuji.
+- L312: Belum diverifikasi. Uji frasa atau share 
+- L314: Belum ada cadangan kunci di perangkat ini.
+- L322: Dibuat ${dateTimeId.format(_createdAt!.toLocal())}
+- L329: Salinan Google Drive tersedia.
+- L343: Buat cadangan kunci
+- L350: Unggah ke Google Drive
+- L355: Unduh dari Google Drive
+- L369: Simpan sekarang juga
+- L370: Hanya ditampilkan sekali. Tanpa frasa atau share 
+- L371: admin, cadangan di Google Drive tidak bisa dibuka.
+- L377: Frasa pemulihan (muncul 3x)
+- L393: Salin frasa
+- L399: Share admin (2 dari 3)
+- L413: Salin share
+- L414: Share admin
+- L425: Ulangi frasa untuk verifikasi
+- L426: Minimal 6 kata, urutan bebas.
+- L435: Verifikasi frasa
+- L444: Pulihkan kunci
+- L445: Dipakai di perangkat pengganti. Data lokal tidak 
+- L446: dihapus, hanya kunci pemilik dan kunci toko yang dipulihkan.
+- L456: Minimal 6 kata.
+- L465: Pulihkan dengan frasa
+- L470: Atau pakai dua share admin
+- L480: Share admin ${i + 1}
+- L481: shamir:v1:...
+- L492: Verifikasi share
+- L497: Pulihkan dengan share
+- L506: Berkas cadangan kunci
+- L507: Simpan salinan terenkripsi di tempat yang aman. Berkas 
+- L508: tetap tidak bisa dibuka tanpa frasa atau share admin.
+- L516: Ekspor berkas
+- L521: Impor berkas
+
+### `screens/estimates_screen.dart`
+
+- L98: Data estimasi tidak lengkap. Muat ulang halaman ini. (muncul 3x)
+- L104: Batalkan estimasi?
+- L106: } akan ditandai batal 
+- L107: dan tidak dapat dikonversi menjadi nota.
+- L112: Tidak
+- L116: Batalkan estimasi
+- L131: Estimasi dibatalkan.
+- L145: estimate_sync_id = ? AND deleted_at IS NULL (muncul 2x)
+- L151: Estimasi ini tidak punya rincian, jadi belum bisa direvisi.
+- L169: sync_id = ? AND deleted_at IS NULL (muncul 2x)
+- L258: Penyimpanan estimasi dimatikan pemilik.
+- L259: Revisi ${created.nomorEstimasi} v${created.versi} disimpan.
+- L284: ${syncId ?? 
+- L289: sync_id = ?
+- L334: } menjadi nota.
+- L336: Nota konversi
+- L375: Estimasi belum dapat dimuat
+- L376: Coba buka kembali halaman ini.
+- L391: Estimasi
+- L397: Estimasi aktif yang belum menjadi nota.
+- L398: Semua estimasi, termasuk yang sudah 
+- L407: Aktif (muncul 2x)
+- L408: Semua
+- L425: Tidak ada estimasi aktif
+- L426: Belum ada estimasi
+- L428: Estimasi yang sudah menjadi nota tampil di 
+- L429: filter Semua.
+- L430: Buat estimasi dari menu Kasir untuk mulai.
+- L486: Sudah jadi nota
+- L487: Kedaluwarsa
+- L488: Direvisi
+- L489: Dibatalkan
+- L507: ${value ?? 
+- L533: ${rows.length} konversi estimasi 30 hari terakhir 
+- L534: dengan selisih total ${formatRupiah(total)}.
+- L554: Tanpa nomor
+- L557: Tanpa pelanggan
+- L574: $nomor v$versi
+- L614: s.d. $expiry
+- L622: Nota $nota
+- L732: Pelanggan
+- L733: Unit kendaraan
+- L735: Berlaku sampai
+- L736: Tanpa batas
+- L739: DPP
+- L741: PPN ${formatPersenBp(pajak.persenBp)}
+- L746: PPN diserap bengkel
+- L750: Dibuat oleh
+- L752: Disetujui
+- L754: Total nota
+- L755: Selisih
+- L759: Rincian
+- L776: Rincian estimasi tidak tersedia.
+- L814: Tutup
+- L819: Batalkan
+- L825: Revisi
+- L831: Jadikan nota (muncul 2x)
+- L957: Jumlah ${line.deskripsi} harus lebih dari 0.
+- L978: Diskon harus berupa angka dan tidak melebihi total.
+- L997: Revisi estimasi
+- L1030: Jumlah
+- L1044: Diskon total
+- L1045: Contoh: 10000
+- L1046: Rp  (muncul 2x)
+- L1047: Potongan dalam rupiah, bukan persen.
+- L1054: Total revisi ${formatRupiah(total < 0 ? 0 : total)}
+- L1061: Alasan revisi (opsional)
+- L1062: Contoh: pelanggan menambah pekerjaan
+- L1072: Batal (muncul 3x)
+- L1074: Simpan revisi
+- L1097: CASH (muncul 3x)
+- L1115: Nominal harus berupa angka tanpa titik atau huruf.
+- L1119: TRANSFER (muncul 2x)
+- L1120: Transfer tidak boleh melebihi total.
+- L1136: Total estimasi ${formatRupiah(widget.totalCents)}
+- L1140: Cara bayar
+- L1142: Tunai
+- L1143: Transfer
+- L1155: Dibayar
+- L1156: Contoh: 150000
+- L1159: Ubah bila pelanggan membayar sebagian atau belum bayar.
+- L1167: Isi nominal pembayaran terlebih dahulu.
+- L1169: Sisa ${formatRupiah(sisa)}
+- L1171: Kembalian ${formatRupiah(-sisa)}
+- L1172: Lunas
+- L1182: Buat nota
+- L1210: Isi PIN terlebih dahulu.
+- L1219: Persetujuan diperlukan
+- L1225: Konversi ini memerlukan persetujuan penanggung jawab.
+- L1226: Konversi ini memerlukan persetujuan pemilik.
+- L1236: PIN penanggung jawab
+- L1237: PIN pemilik
+- L1239: Minta penanggung jawab memasukkan PIN.
+- L1240: Masukkan PIN pemilik untuk menyetujui.
+- L1252: Setujui
+
+### `screens/followup_screen.dart`
+
+- L56: Gagal memuat follow up: $error
+- L85: Fitur WhatsApp dinonaktifkan pemilik.
+- L97: Ingatkan lewat WhatsApp
+- L100: Satu kredit kuota WhatsApp akan terpakai saat tautan dibuat.
+- L101: Buat pesan
+- L123: Kuota follow up habis
+- L125: Kuota gratis 20 kredit WhatsApp sudah terpakai. Data lama tetap 
+- L126: dapat dibaca dan diekspor. Aktifkan Premium untuk follow up tanpa 
+- L132: Tutup (muncul 3x)
+- L140: Lihat Premium
+- L151: Pesan untuk ${attempt.nomorMasked}
+- L164: Salin pesan
+- L174: Buka WhatsApp
+- L181: Pesan disalin. Tempel di WhatsApp.
+- L188: WhatsApp dibuka.
+- L192: WhatsApp tidak terbuka. Tautan disalin.
+- L209: ARSIP (muncul 7x)
+- L212: JANJI_BAYAR (muncul 4x)
+- L212: MASIH_KENDALA (muncul 3x)
+- L212: SUDAH_BAYAR
+- L216: AKAN_DATANG (muncul 5x)
+- L218: TIDAK_DATANG
+- L219: SELESAI (muncul 2x)
+- L232: Arsipkan pengingat
+- L233: Alasan arsip (muncul 2x)
+- L244: Tanggal kedatangan
+- L255: Tanggal janji bayar
+- L298: Batal
+- L302: Simpan
+- L317: Detail follow up
+- L325: Pelanggan (muncul 2x)
+- L326: Nomor
+- L327: Jenis
+- L328: Status (muncul 2x)
+- L329: Unit
+- L330: Nota
+- L331: Jatuh tempo
+- L333: Sisa bayar
+- L335: Janji bayar
+- L337: Tanggal service
+- L340: Follow up terakhir
+- L346: Catatan
+- L349: Riwayat
+- L354: Belum ada riwayat.
+- L441: Fitur follow up sedang dimatikan. Aktifkan melalui 
+- L442: Pengaturan › Follow up.
+- L455: Belum ada pengingat diarsipkan
+- L456: Belum ada pengingat
+- L458: Pengingat yang selesai atau tidak aktif akan tampil di sini.
+- L459: Pengingat dibuat otomatis dari servis, garansi, piutang, 
+- L460: dan prospek pelanggan.
+- L464: Sinkronkan
+- L496: Follow up pelanggan
+- L501: Memuat kuota…
+- L512: Sinkronkan pengingat
+- L525: Aktifkan Premium
+- L532: Hari ini (muncul 2x)
+- L534: Terlambat (muncul 2x)
+- L536: Arsip (muncul 2x)
+- L572: Semua
+- L600: Jenis pengingat
+- L606: Semua jenis
+- L696: Sisa bayar ${formatRupiah(row.sisaBayar)}
+- L703: Tahap ${row.stage}
+- L726: WA
+- L733: Detail
+- L739: Ubah status
+- L781: Diarsipkan ${_fmtDate(row.jatuhTempo)}
+- L784: Service ${_fmtDate(row.tanggalService!)}
+- L787: Janji bayar ${_fmtDate(row.janjiBayar!)}
+- L789: Jatuh tempo hari ini
+- L791: Jatuh tempo dalam ${row.sisaHari} hari 
+- L794: Terlambat ${-row.sisaHari} hari 
+
+### `screens/followup_settings_screen.dart`
+
+- L96: $label wajib diisi.
+- L101: $label harus berupa angka.
+- L106: $label tidak boleh negatif.
+- L107: $label minimal $min.
+- L111: $label maksimal $max.
+- L125: Jam mulai pengingat
+- L125: Jam selesai pengingat
+- L129: ${picked.hour.toString().padLeft(2, 
+- L130: ${picked.minute.toString().padLeft(2, 
+- L142: Jeda tindak lanjut
+- L146: Batas pesan per hari (muncul 2x)
+- L153: Batas pesan per bulan
+- L160: Jeda prospek setelah servis
+- L165: Jumlah tindak lanjut tanpa balasan
+- L172: Hari pengingat garansi
+- L177: Hari arsip garansi
+- L182: Hari tampil servis berkala
+- L187: Jeda pengingat piutang
+- L189: Prospek tahap 1
+- L190: Prospek tahap 2
+- L191: Prospek tahap 3
+- L195: Jeda setelah pelanggan masih terkendala
+- L203: Tahap 3 harus lebih besar dari tahap 2, dan tahap 2 dari tahap 1.
+- L211: Periksa kembali isian yang ditandai.
+- L242: Pengaturan pengingat disimpan.
+- L247: Pengaturan gagal disimpan: $error
+- L281: Pengaturan pengingat
+- L286: Status fitur
+- L289: Pengingat pelanggan aktif
+- L291: Jika dimatikan, aplikasi berhenti membuat pengingat dan 
+- L292: tautan WhatsApp.
+- L300: Jam dan batas pesan
+- L301: Memakai jam perangkat ini. Pengingat hanya dibuat 
+- L302: dalam rentang jam tersebut.
+- L308: Jam mulai
+- L310: Pengingat hanya dibuat setelah jam ini.
+- L318: Jam selesai
+- L320: Pengingat berhenti dibuat setelah jam ini.
+- L326: Jeda tindak lanjut (hari)
+- L328: Contoh: 7. Jarak hari sebelum pelanggan yang sama 
+- L329: boleh dihubungi lagi.
+- L334: Contoh: 20. Batas pesan tindak lanjut per hari.
+- L337: Batas pesan prospek dan servis per bulan
+- L339: Contoh: 200. Batas pesan prospek dan servis per 
+- L343: Jeda prospek setelah servis (hari)
+- L345: Contoh: 3. Jeda sebelum menawarkan servis 
+- L349: Arsip otomatis setelah tidak merespons
+- L351: Contoh: 3. Setelah 3 tindak lanjut tanpa balasan, 
+- L352: pelanggan diarsipkan.
+- L359: Interval pengingat
+- L360: Jarak hari untuk setiap jenis pengingat. Isi angka 
+- L361: hari, misalnya 7 untuk satu minggu.
+- L365: Pengingat garansi H- (hari)
+- L367: Contoh: 7. Pengingat dibuat 7 hari sebelum garansi 
+- L371: Arsip garansi setelah berakhir (hari)
+- L373: Contoh: 30. Garansi diarsipkan 30 hari setelah 
+- L377: Servis berkala tampil sebelum jatuh tempo (hari)
+- L379: Contoh: 14. Layanan servis muncul 14 hari sebelum 
+- L380: jatuh tempo.
+- L383: Jeda pengingat piutang (hari)
+- L385: Contoh: 7. Jarak hari antar pengingat piutang.
+- L388: Prospek tahap 1 (hari)
+- L390: Contoh: 3. Tindak lanjut pertama setelah pelanggan 
+- L394: Prospek tahap 2 (hari)
+- L396: Contoh: 14. Tindak lanjut kedua bila belum ada 
+- L400: Prospek tahap 3 (hari)
+- L402: Contoh: 30. Tindak lanjut terakhir sebelum 
+- L406: Jeda setelah pelanggan masih terkendala (hari)
+- L408: Contoh: 7. Jeda sebelum menghubungi lagi setelah 
+- L409: pelanggan masih terkendala.
+- L418: Simpan pengaturan
+
+### `screens/history_screen.dart`
+
+- L23: Jual sparepart
+- L24: Servis langsung
+- L25: Order kerja
+- L26: Pelunasan order
+- L30: LUNAS
+- L30: Lunas
+- L31: KREDIT
+- L31: Belum lunas (muncul 2x)
+- L32: ARSIP
+- L32: Di arsip
+- L37: AKTIF
+- L38: KEDALUWARSA
+- L43: CASH (muncul 7x)
+- L43: Tunai (muncul 3x)
+- L44: TRANSFER (muncul 5x)
+- L44: Transfer (muncul 3x)
+- L49: DP
+- L49: Uang muka
+- L50: PELUNASAN
+- L50: Pelunasan
+- L51: REFUND
+- L51: Uang kembali
+- L160: Cari no. nota atau nama pelanggan
+- L170: Muat ulang daftar
+- L180: Cari di server
+- L190: Semua nota
+- L209: Pilih rentang tanggal
+- L238: Riwayat belum bisa dimuat
+- L239: Data riwayat tidak bisa dibaca: $_error. 
+- L240: Coba muat ulang daftar.
+- L246: Belum ada riwayat
+- L247: Nota yang tersimpan akan tampil di sini. Ubah kata kunci 
+- L248: atau pilih rentang tanggal lain.
+- L270: Muat 50 nota lagi
+- L302: ${row.unitLabel.isEmpty ? 
+- L304: ${row.bergaransi ? 
+- L305: ${row.jatuhTempoLewat ? 
+- L318: Arsip
+- L334: Dibatalkan (muncul 2x)
+- L372: Nota ini tidak punya salinan arsip di server.
+- L400: Arsip tidak bisa dibuka: $error
+- L408: Nota tidak ditemukan. Muat ulang daftar lalu 
+- L409: coba lagi.
+- L449: Nota ${detail.record.noNota} dibatalkan.
+- L454: Nota gagal dibatalkan: $error
+- L488: Retur tersimpan. Stok dan kas sudah diperbarui.
+- L493: Retur gagal disimpan: $error
+- L523: Retur ${retur.noRetur} dibatalkan.
+- L530: Pembatalan retur gagal: $error
+- L559: Pelunasan tersimpan.
+- L563: Pelunasan gagal disimpan: $error
+- L597: Koreksi nota tersimpan.
+- L606: Koreksi gagal disimpan: $error
+- L629: Klaim garansi (muncul 3x)
+- L631: Klaim garansi untuk nota ${detail.record.noNota}? 
+- L632: Garansi hanya bisa diklaim satu kali.
+- L648: Klaim garansi tersimpan.
+- L652: Klaim garansi gagal disimpan: 
+- L676: Unit ditandai sudah diambil.
+- L682: Status unit gagal disimpan: $error
+- L716: Komisi diperbarui.
+- L722: Komisi gagal disimpan: $error
+- L739: settle-${newSyncId()}
+- L747: Terima pelunasan
+- L751: Sisa piutang ${formatRupiah(sisaCents)}
+- L758: Jumlah dibayar
+- L759: Contoh: 150000 atau 150.000.
+- L766: Cara bayar (muncul 2x)
+- L782: Batal (muncul 7x)
+- L789: Isi jumlah antara 1 dan sisa piutang 
+- L799: Simpan pelunasan
+- L823: Koreksi total nota (muncul 2x)
+- L827: Total saat ini ${formatRupiah(currentCents)}
+- L834: Total baru
+- L835: Contoh: 250000. Isi total akhir nota setelah 
+- L847: Alasan koreksi
+- L848: Contoh: salah input harga jasa
+- L864: Isi total baru dengan angka, misalnya 
+- L871: Total baru masih sama. Ubah angkanya 
+- L878: Isi alasan minimal 3 huruf. (muncul 3x)
+- L884: Simpan koreksi
+- L904: PIN penanggung jawab
+- L904: PIN pemilik
+- L911: PIN
+- L912: PIN dari pemilik atau penanggung jawab.
+- L926: Setujui koreksi
+- L942: Batalkan nota (muncul 3x)
+- L947: Alasan pembatalan (muncul 3x)
+- L948: Contoh: salah input pelanggan.
+- L988: Batalkan retur $noRetur
+- L994: Contoh: salah pilih barang.
+- L1017: Batalkan retur (muncul 2x)
+- L1135: Ringkasan
+- L1138: Jasa (muncul 2x)
+- L1139: Part (muncul 2x)
+- L1142: Diskon
+- L1148: Retur (muncul 2x)
+- L1154: Total
+- L1160: Sudah dibayar
+- L1165: Sisa tagihan
+- L1171: Jatuh tempo
+- L1173: ${record.jatuhTempoLewat ? 
+- L1177: Dibuat oleh
+- L1179: Mekanik
+- L1186: Koreksi
+- L1187: Nota asli tidak diubah. Setiap koreksi tercatat 
+- L1193: Total nota asli
+- L1204: ${correction.nilaiSelisihCents >= 0 ? 
+- L1211: Total setelah koreksi
+- L1224: Garansi
+- L1229: Status garansi
+- L1235: Berlaku sampai
+- L1241: Tanggal klaim
+- L1245: Syarat
+- L1249: Unit
+- L1251: Masih di bengkel
+- L1252: Sudah diambil ${dateId.format(record.diambilAt!)}
+- L1266: ${job.diskonAlokasiCents > 0 ? 
+- L1284: ${part.diskonAlokasiCents > 0 ? 
+- L1296: Komisi mekanik
+- L1301: Ubah nominal
+- L1321: Pembayaran
+- L1342: Total retur mengurangi penjualan setelah retur.
+- L1348: ${retur.noRetur}${retur.isVoid ? 
+- L1360:   Alasan
+- L1368: reversal-${retur.id}
+- L1389: Terima pelunasan (sisa ${formatRupiah(detail.sisaCents)})
+- L1395: Keluhan
+- L1400: Catatan
+- L1426: Tandai unit sudah diambil
+- L1437: Struk ${record.noNota}
+- L1440: Lihat struk
+- L1448: Cetak
+- L1455: Nota ini sudah dibatalkan.
+- L1462: Retur penjualan (muncul 2x)
+- L1559: Isi nominal komisi dengan angka, misalnya 25000.
+- L1571: Atur komisi
+- L1600: Simpan komisi
+- L1644: Menunggu
+- L1645: Tersinkron
+- L1646: Gagal
+- L1648: Gagal permanen
+- L1730: jasa:$syncId
+- L1747: part:$syncId
+- L1779: Jumlah retur ${line.label} tidak valid. Isi 
+- L1780: angka lebih dari 0.
+- L1787: Jumlah retur ${line.label} melebihi sisa yang bisa diretur 
+- L1803: Centang minimal satu barang yang akan diretur.
+- L1811: Isi alasan retur minimal 3 huruf, misalnya "barang rusak".
+- L1811: barang rusak
+- L1833: Semua barang di nota ini sudah diretur.
+- L1850: ${line.lineType == 
+- L1854: Sisa yang bisa diretur ${line.remainingLabel} 
+- L1855: · ${formatRupiah(line.unitNetCents)} per unit
+- L1871: Jumlah
+- L1884: Alasan retur
+- L1885: Contoh: barang rusak saat dipasang.
+- L1893: Uang dikembalikan lewat
+- L1922: Simpan retur
+
+### `screens/jasa_screen.dart`
+
+- L42: Izin ubah harga jasa tidak tersedia.
+- L64: Gagal menyimpan: $error
+- L78: Daftar tarif jasa
+- L90: Tambah jasa (muncul 2x)
+- L105: Belum ada tarif jasa
+- L106: Tambahkan jasa agar cepat dipilih di kasir.
+- L137: Modal ${formatRupiah(item.hargaModalCents)}
+- L138: ${item.intervalBulan > 0 ? 
+- L141: ${item.intervalBulan} bulan
+- L225: Jasa baru
+- L225: Ubah jasa
+- L233: Nama jasa
+- L234: Contoh: Ganti oli mesin
+- L242: Tarif jual (Rp)
+- L243: Contoh: 50000
+- L244: Harga yang ditagih ke pelanggan.
+- L253: Modal (opsional)
+- L254: Contoh: 30000
+- L255: Batas bawah harga saat kasir menjual.
+- L264: Interval servis (bulan)
+- L265: Contoh: 3
+- L266: Kosongkan bila jasa ini tidak berkala.
+- L281: Batal
+- L286: Nama jasa minimal 2 karakter.
+- L291: Tarif jual wajib diisi lebih dari 0.
+- L299: Modal harus berupa angka tanpa titik atau huruf.
+- L303: Modal tidak boleh melebihi tarif jual.
+- L310: Interval servis harus berupa angka bulan.
+- L323: Simpan jasa
+
+### `screens/opening_balance_screen.dart`
+
+- L15: STOK
+- L16: UTANG_SUPPLIER
+- L17: PIUTANG_PELANGGAN
+- L79: Pilih barang
+- L97: Stok awal ${stock.nama}
+- L106: Jumlah
+- L107: Contoh: 10
+- L109: Satuan ${stock.satuan}. Desimal ${stock.desimal}.
+- L117: Modal per satuan
+- L118: Contoh: 45000
+- L119: Boleh berbeda dari modal barang yang tersimpan.
+- L127: Batal (muncul 4x)
+- L131: Tambah ke daftar (muncul 2x)
+- L145: Modal per satuan harus berupa angka tanpa titik atau huruf.
+- L181: Belum ada supplier.
+- L181: Belum ada pelanggan.
+- L189: Pilih supplier
+- L189: Pilih pelanggan
+- L207: Utang awal ${picked.$2}
+- L207: Piutang awal ${picked.$2}
+- L217: Nominal (muncul 2x)
+- L218: Contoh: 500000
+- L226: Jatuh tempo (opsional)
+- L227: Contoh: 2026-12-31
+- L228: Format tahun-bulan-tanggal.
+- L270: CASH (muncul 2x)
+- L289: Contoh: 250000
+- L290: Sisa ${formatRupiah(sisa)}
+- L297: Metode pembayaran
+- L300: Tunai
+- L301: TRANSFER
+- L301: Transfer
+- L316: Bayar
+- L316: Tagih
+- L349: Utang awal dibayar.
+- L349: Piutang awal ditagih.
+- L352: Gagal membayar: $error
+- L360: Saldo awal hanya dicatat pemilik.
+- L364: Tambahkan minimal satu baris saldo awal.
+- L390: Saldo awal disimpan.
+- L392: Gagal menyimpan saldo awal: $error
+- L404: Koreksi saldo awal (muncul 2x)
+- L409: Alasan koreksi
+- L410: Contoh: salah hitung stok awal
+- L420: Koreksi
+- L437: Saldo awal dikoreksi.
+- L439: Gagal mengoreksi saldo awal: $error
+- L448: Saldo awal toko
+- L455: Sekali per toko
+- L457: Saldo awal mencatat stok, utang supplier, dan piutang 
+- L458: pelanggan yang sudah ada sebelum aplikasi dipakai. 
+- L459: Mekanisme ini tidak membuat nota atau pembelian palsu. 
+- L460: Koreksi dilakukan dengan membatalkan saldo awal lalu 
+- L461: mencatat ulang.
+- L484: Saldo awal aktif
+- L489: Stok
+- L490: Utang supplier (muncul 4x)
+- L491: Piutang pelanggan (muncul 4x)
+- L535: Utang awal belum lunas
+- L544: Tanpa jatuh tempo (muncul 2x)
+- L559: Bayar utang
+- L575: Piutang awal belum lunas
+- L599: Tagih piutang
+- L627: Belum ada saldo awal
+- L628: Hanya pemilik yang dapat mencatat saldo awal toko.
+- L634: Baris saldo awal
+- L635: Tambahkan stok, utang supplier, dan piutang pelanggan.
+- L645: Stok awal
+- L663: Belum ada baris saldo awal.
+- L672: Stok ${formatQuantity(item.jumlahMilli, 0)} · 
+- L673: modal ${formatRupiah(item.unitCostCents ?? 0)}
+- L693: Catatan
+- L694: Contoh: saldo per 1 November 2026
+- L703: Simpan saldo awal
+
+### `screens/orders_screen.dart`
+
+- L18: Dibuka
+- L19: Antre
+- L20: Diagnosa
+- L21: Menunggu persetujuan
+- L22: Menunggu sparepart
+- L23: Dikerjakan
+- L24: Selesai
+- L25: Diambil
+- L26: Batal (muncul 2x)
+- L116: Order $label dibuat.
+- L148: Order belum dapat dimuat
+- L149: Coba buka kembali halaman ini.
+- L168: Order kerja bengkel
+- L175: Antrian hari ini dan riwayat status.
+- L189: Daftar estimasi
+- L196: Order baru (muncul 2x)
+- L214: Order kerja sedang dimatikan pemilik. 
+- L215: Aktifkan di Pengaturan → Aturan transaksi.
+- L225: Belum ada order aktif
+- L227: Buka order baru saat kendaraan masuk untuk 
+- L228: mendapat nomor antrian.
+- L277: ${value ?? 
+- L334: Tanpa nomor
+- L362: ${customer ?? 
+- L452: Pilih pelanggan terlebih dahulu.
+- L456: Isi keluhan atau pekerjaan yang diminta.
+- L461: Pilih unit kendaraan terlebih dahulu.
+- L487: Order kerja baru
+- L498: Pelanggan (muncul 2x)
+- L499: Pilih pelanggan yang kendaraannya masuk.
+- L525: Unit kendaraan
+- L526: Unit kendaraan (opsional)
+- L528: Pelanggan ini belum punya unit terdaftar.
+- L535: Tanpa unit
+- L554: Keluhan atau pekerjaan
+- L555: Contoh: rem depan berdecit
+- L556: Tulis apa yang dikeluhkan pelanggan.
+- L565: Mekanik yang mengerjakan
+- L566: Boleh dikosongkan bila belum ditentukan.
+- L569: Tanpa mekanik
+- L590: Nomor order otomatis
+- L591: Nomor antrian harian
+- L593: Status pengerjaan dimatikan
+- L607: Buat order
+- L646: ${raw ?? 
+- L679: Status di luar alur
+- L681: bukan alur normal. Perubahan tetap disimpan dan dicatat 
+- L682: sebagai data yang perlu ditinjau.
+- L683: Tetap ubah
+- L705: Status order: ${_statusLabel(status)}.
+- L750: Antrian #${order.nomorAntrian}
+- L755: Tanpa pelanggan
+- L756: Unit
+- L757: Mekanik
+- L757: Belum ditentukan
+- L759: Masuk
+- L762: Keluhan
+- L765: Ubah status
+- L774: Peran ini tidak berhak mengubah status order.
+- L779: Tidak ada status lanjutan dari tahap ini.
+- L794:  (di luar alur)
+- L804: Riwayat status
+- L823: Belum ada catatan status.
+- L865: Dicatat dari perangkat 
+- L866: ${row.perangkat ?? 
+- L891: Tutup
+
+### `screens/pajak_screen.dart`
+
+- L74: Pilih bulan
+- L87: Rekap disimpan: $path
+- L90: Ekspor gagal: $error
+- L104: Rekap disalin. Tempel di WhatsApp atau dokumen.
+- L116: Belum ada printer. Tambahkan printer di menu Printer lebih dulu.
+- L123: PUSATKU POS
+- L127: REKAP PPN ${PajakReportService.masaLabel(rekap.masa)}
+- L128: Rekap internal - bukan e-Faktur resmi
+- L130: PPN keluaran: ${formatRupiah(rekap.pajakKeluaranCents)}
+- L131: DPP keluaran: ${formatRupiah(rekap.dppKeluaranCents)}
+- L133: Retur PPN: ${formatRupiah(rekap.returPajakCents)}
+- L134: PPN masukan: ${formatRupiah(rekap.pajakMasukanNetoCents)}
+- L135: PPN ditanggung toko: ${formatRupiah(rekap.diserapNetoCents)}
+- L137: PPN neto: ${formatRupiah(rekap.pajakNetoCents)}
+- L138: Sudah dibayar: ${formatRupiah(rekap.pajakDibayarCents)}
+- L139: Sisa yang harus dibayar: 
+- L146: AKTIF
+- L167: Pembayaran PPN dicatat.
+- L173: Batalkan pembayaran PPN
+- L174: Alasan pembatalan
+- L187: Pembayaran PPN dibatalkan.
+- L190: Pembayaran gagal dibatalkan: $error
+- L209: Contoh: salah input nominal
+- L215: Batal (muncul 2x)
+- L223: Batalkan pembayaran
+- L236: PPN (muncul 2x)
+- L238: Khusus pemilik toko
+- L239: Rekap dan pembayaran PPN hanya bisa dibuka oleh pemilik.
+- L251: Rekap PPN bulanan
+- L257: Rekap internal untuk pembukuan toko. Bukan e-Faktur resmi, jadi 
+- L258: jangan dipakai sebagai faktur pajak.
+- L263: PPN keluaran: pajak dari penjualan. PPN masukan: pajak dari 
+- L264: pembelian. PPN neto: selisih yang perlu disetor.
+- L273: Bulan sebelumnya
+- L285: Bulan berikutnya
+- L297: Rekap gagal dimuat
+- L302: Rekap tidak tersedia
+- L316: PPN keluaran (muncul 2x)
+- L324: PPN masukan
+- L333: PPN neto (muncul 2x)
+- L342: PPN ditanggung toko
+- L354: Rincian masa ${PajakReportService.masaLabel(_masa)}
+- L356: ${rekap.jumlahNota} nota · ${rekap.jumlahRetur} retur · 
+- L357: ${rekap.jumlahPembelian} pembelian
+- L360: DPP keluaran
+- L363: Retur DPP
+- L365: Retur PPN keluaran
+- L371: PPN masukan pembelian
+- L376: Retur PPN masukan
+- L386: Sudah dibayar
+- L390: Sisa kewajiban
+- L398: Pembayaran melebihi kewajiban masa ini. Periksa 
+- L399: kembali data retur dan pembelian sebelum masa 
+- L411: Rincian mode, tarif, dan penanggung
+- L412: Nilai dihitung dari tarif yang tersimpan di setiap 
+- L413: nota, bukan dari pengaturan PPN saat ini.
+- L415: Tidak ada nota ber-PPN pada masa ini.
+- L424: ${row.jumlahNota} nota · DPP 
+- L426: ${row.diserapCents == 0 ? 
+- L427: toko ${formatRupiah(row.diserapCents)}
+- L441: Pembayaran PPN
+- L442: Pembayaran kas atau transfer beserta bukti setornya.
+- L448: Catat pembayaran
+- L451: Belum ada pembayaran PPN pada masa ini.
+- L467: VOID
+- L469: Dibatalkan
+- L481: Batalkan
+- L494: Ekspor CSV
+- L502: Salin rekap
+- L511: Cetak rekap
+- L523: Ref: $referensi
+- L526:  · ${parts.join(
+- L559: CASH (muncul 2x)
+- L592: Isi nominal pembayaran lebih dari 0.
+- L597: Nominal melebihi sisa kewajiban 
+- L634: Catat pembayaran PPN ${PajakReportService.masaLabel(widget.masa)}
+- L642: Sisa PPN yang harus dibayar ${formatRupiah(widget.sisa)}. Isi 
+- L643: nominal sesuai yang disetor, tidak boleh lebih dari sisa.
+- L651: Nominal (Rp)
+- L652: Contoh: 110000
+- L659: Cara bayar
+- L661: Kas
+- L662: TRANSFER
+- L662: Transfer
+- L672: Referensi
+- L673: Contoh: BPN-12345
+- L674: Nomor bukti setor atau transaksi bank.
+- L682: Tanggal bayar
+- L693: Catatan
+- L694: Contoh: setor lewat teller BCA
+- L708: Menyimpan...
+- L708: Simpan pembayaran
+
+### `screens/pos_screen.dart`
+
+- L51: CASH (muncul 5x)
+- L60: HARI (muncul 3x)
+- L225: jenis_$type
+- L261: KASIR
+- L290: Peran ini tidak diizinkan menambah atau mengubah pelanggan. (muncul 2x)
+- L316: Pelanggan sudah ada
+- L317: $duplicate. Pakai pelanggan "${duplicate.existingName}"?
+- L318: Pakai yang ada
+- L325: Gagal menyimpan: $error (muncul 3x)
+- L340: Pilih pelanggan terlebih dahulu. (muncul 2x)
+- L366: Mode sparepart saja tidak boleh memuat jasa. (muncul 2x)
+- L383: Peran ini tidak berhak mengeluarkan stok.
+- L389: Belum ada sparepart. Tambahkan di menu Stok.
+- L418: Stok ${stockItem.nama} tidak cukup. Tersisa ${stockItem.jumlahLabel}.
+- L443: Peran ini tidak diizinkan membuat estimasi.
+- L444: Peran ini tidak diizinkan membuat nota.
+- L458: Pilih unit kendaraan terlebih dahulu.
+- L462: Tambahkan minimal satu jasa atau part.
+- L470: Peran ini tidak berhak mengeluarkan stok. Hapus part atau minta 
+- L471: izin stok keluar.
+- L479: Diskon harus berupa angka tanpa titik atau huruf.
+- L487: Diskon tidak boleh melebihi total tagihan 
+- L496: Diskon maksimal ${formatRupiah(_maxDiscountCents)} 
+- L497: (selisih harga jual dan modal).
+- L505: Alasan negosiasi/diskon wajib diisi.
+- L513: Nominal bayar harus berupa angka tanpa titik atau huruf.
+- L518: TRANSFER (muncul 2x)
+- L521: Pembayaran transfer tidak boleh melebihi tagihan.
+- L531: Peran ini tidak berhak memberi kredit. (muncul 2x)
+- L539: Jatuh tempo wajib diisi untuk nota dengan sisa bayar.
+- L556: Mode sparepart saja membutuhkan minimal satu part.
+- L563: Durasi garansi minimal 1 bulan.
+- L571: Durasi garansi barang minimal 1 hari atau 1 bulan.
+- L632: Nota tersimpan, tetapi daftar gagal dimuat ulang: $error
+- L644: Nota tersimpan, tetapi struk gagal dibuka: $error
+- L696: Diskon estimasi
+- L730: Estimasi hanya dicetak karena penyimpanan estimasi dimatikan.
+- L736: Estimasi tersimpan
+- L739: Total ${formatRupiah(record.totalCents)}
+- L744: Tutup (muncul 2x)
+- L752: Cetak (muncul 2x)
+- L785: Belum ada printer. Tambahkan printer di Pengaturan.
+- L792: PUSATKU POS
+- L795: ESTIMASI - bukan bukti pembayaran
+- L797: No: ${record.nomorEstimasi}
+- L801: ${job.deskripsi} ${job.jumlah}x = ${formatRupiah(job.subtotalCents)}
+- L803: ${part.nama} ${part.qtyLabel}x = ${formatRupiah(part.subtotalCents)}
+- L806: DPP: ${formatRupiah(_pajak.dppCents)}
+- L807: PPN ${formatPersenBp(_pajak.persenBp)}: 
+- L809: ${_pajak.penanggung == pajakPenanggungBengkel ? 
+- L811: Total: ${formatRupiah(record?.totalCents ?? _total)}
+- L813: Harga dapat berubah sebelum pekerjaan disetujui.
+- L852: Servis di kasir
+- L916: Nota tersimpan
+- L921: No. nota
+- L922: Pelanggan (muncul 2x)
+- L923: Unit (muncul 2x)
+- L925: Total (muncul 2x)
+- L926: Dibayar
+- L927: Sisa
+- L931: Kembalian (muncul 2x)
+- L934: Status
+- L937: Garansi
+- L938: s.d. ${dateId.format(record.garansiSampai!)}
+- L940: Masih di bengkel
+- L948: Struk ${record.noNota}
+- L951: Lihat struk
+- L997: Kasir
+- L1005: Total ${formatRupiah(_total)}
+- L1016: Jenis transaksi
+- L1025: Jual sparepart
+- L1027: Estimasi saja
+- L1028: Servis langsung
+- L1042: Pelanggan dan unit
+- L1044: Pelanggan wajib dipilih. Unit dipakai untuk mencatat servis 
+- L1056: Pilih nama pelanggan yang membeli.
+- L1088: Pelanggan baru (muncul 2x)
+- L1102: Unit kendaraan
+- L1103: Unit kendaraan (opsional)
+- L1105: Pelanggan ini belum punya unit. Tekan tombol 
+- L1106: sebelah kanan untuk menambah.
+- L1107: Pilih kendaraan yang sedang diservis.
+- L1128: Unit baru (muncul 2x)
+- L1137: Keluhan atau keterangan
+- L1138: Contoh: radiator bocor sejak kemarin
+- L1140: Tulis keluhan pelanggan atau pekerjaan yang diminta.
+- L1148: Mekanik yang mengerjakan (boleh lebih dari satu)
+- L1177: Perkiraan komisi: ${formatRupiah(_estimatedCommission)}
+- L1188: Jasa (muncul 2x)
+- L1192: Tambah (muncul 2x)
+- L1196: Belum ada jasa. Tekan Tambah untuk mencatat pekerjaan.
+- L1232: Sparepart (muncul 3x)
+- L1240: Belum ada sparepart. Tekan Tambah untuk mengambil dari stok.
+- L1276: Garansi dan unit
+- L1281: Unit ditinggal di bengkel
+- L1283: Aktifkan bila kendaraan belum diambil; masuk daftar 
+- L1284: kendaraan selesai di menu Tindak lanjut.
+- L1292: Garansi servis
+- L1305: Garansi (bulan)
+- L1306: Contoh: 1 (muncul 2x)
+- L1307: 1 bulan = 30 hari
+- L1316: Syarat garansi (opsional)
+- L1317: Contoh: tidak berlaku untuk kecelakaan
+- L1326: Garansi barang
+- L1338: Durasi garansi
+- L1339: Contoh: 7
+- L1347: Satuan
+- L1351: Hari
+- L1354: BULAN
+- L1355: Bulan
+- L1371: Pembayaran
+- L1382: Diskon (Rp)
+- L1383: Contoh: 5000
+- L1385: Format tidak valid (muncul 2x)
+- L1387: Maks. ${formatRupiah(_bruto)}
+- L1389: Maks. ${formatRupiah(_maxDiscountCents)}
+- L1393: Maks. ${formatRupiah(_maxDiscountCents)} 
+- L1394: (selisih modal)
+- L1404: Cara bayar
+- L1407: Tunai
+- L1410: Transfer
+- L1424: Alasan negosiasi/diskon (wajib)
+- L1425: Contoh: pelanggan langganan (muncul 2x)
+- L1438: Dibayar (Rp)
+- L1439: Contoh: 150000
+- L1442: Kosongkan bila pelanggan belum membayar.
+- L1453: Bayar penuh
+- L1460: Diskon
+- L1462: DPP
+- L1465: PPN ditanggung bengkel
+- L1466: PPN ${formatPersenBp(_pajak.persenBp)}
+- L1479: Sisa belum dibayar
+- L1488: Jatuh tempo (wajib)
+- L1490: Tanggal terakhir pelanggan harus melunasi sisa.
+- L1495: Belum ditentukan
+- L1526: Menyimpan...
+- L1528: Simpan estimasi
+- L1529: Simpan nota
+- L1592: Nama pelanggan
+- L1593: Contoh: Budi Santoso
+- L1601: Nomor HP
+- L1602: Contoh: 081234567890
+- L1609: Alamat (opsional)
+- L1610: Contoh: Jl. Merdeka No. 10
+- L1618: Batal (muncul 5x)
+- L1632: Simpan pelanggan
+- L1664: MOBIL (muncul 3x)
+- L1684: Jenis unit
+- L1685: Pilih kendaraan atau barang yang diservis.
+- L1688: Mobil
+- L1690: MOTOR_LENGKAP
+- L1691: Motor lengkap
+- L1694: RADIATOR_ONLY
+- L1695: Radiator saja
+- L1698: SPAREPART
+- L1708: Nomor polisi
+- L1709: Contoh: B 1234 XYZ
+- L1716: Jenis kendaraan
+- L1717: Contoh: Honda Beat 2020
+- L1725: Tahun
+- L1726: Contoh: 2020
+- L1747: Simpan unit
+- L1793: Tambah jasa (muncul 2x)
+- L1802: Pilih dari daftar tarif
+- L1803: Opsional. Isi sendiri bila jasa belum terdaftar.
+- L1835: Deskripsi pekerjaan
+- L1836: Contoh: ganti oli mesin
+- L1847: Jumlah (muncul 2x)
+- L1859: Harga normal (muncul 2x)
+- L1860: Contoh: 50000
+- L1862: Harga acuan sebelum nego
+- L1863: Dari daftar tarif
+- L1874: Harga disepakati (muncul 2x)
+- L1875: Contoh: 45000
+- L1877: Boleh di bawah harga normal dengan alasan
+- L1886: Alasan nego (wajib) (muncul 2x)
+- L1906: Isi deskripsi pekerjaan dan jumlah minimal 1.
+- L1911: Harga normal belum diisi dengan benar.
+- L1915: Harga disepakati belum diisi. (muncul 2x)
+- L1919: Harga disepakati melebihi harga normal.
+- L1923: Alasan nego wajib diisi. (muncul 2x)
+- L1929: Harga jasa nol
+- L1931: Jasa ini akan dicatat dengan harga Rp 0. 
+- L1932: Lanjutkan bila memang gratis.
+- L1933: Simpan harga nol
+- L2004: Tambah sparepart (muncul 2x)
+- L2012: Barang dari stok
+- L2013: Stok berkurang setelah nota disimpan.
+- L2020: ${item.nama} · stok ${item.jumlahLabel}
+- L2049: Dari daftar stok
+- L2060: Contoh: 60000
+- L2062: Boleh kurang dari harga normal dengan alasan.
+- L2075: Contoh: pembelian banyak
+- L2085: Contoh: 1 atau 0,5
+- L2087: Pilih barang dulu untuk melihat stok tersedia.
+- L2088: Stok tersedia: ${selected.jumlahLabel}
+- L2100: Harga jual ${formatRupiah(selected.hargaJualCents)} · 
+- L2101: stok ${selected.jumlahLabel}
+- L2123: Pilih barang dan isi jumlah lebih dari 0.
+- L2128: Harga normal belum tersedia.
+- L2136: Harga melebihi harga normal.
+- L2146: Stok tidak cukup. Tersisa ${item.jumlahLabel}.
+- L2196: PIN penanggung jawab
+- L2196: PIN pemilik
+- L2198: Persetujuan diperlukan
+- L2204: Transaksi ini memerlukan persetujuan penanggung jawab.
+- L2205: Transaksi ini memerlukan persetujuan pemilik.
+- L2216: Minta penanggung jawab memasukkan PIN.
+- L2217: Masukkan PIN pemilik untuk menyetujui.
+- L2229: Setujui
+- L2237: Isi PIN terlebih dahulu.
+
+### `screens/premium_screen.dart`
+
+- L114: Perangkat ini belum terhubung ke server akun. Sambungkan  (muncul 3x)
+- L115: perangkat lebih dulu. (muncul 3x)
+- L136: Daftar akses gagal dimuat: $error
+- L191: ${count} akun sudah dikirim ke server akun.
+- L195: Akun gagal dikirim ke server: $error
+- L206: ${raw ?? 
+- L240: Kode hubungkan perangkat
+- L255: Kode hanya dapat dipakai sekali.
+- L256: Berlaku sampai 
+- L257: ${DateFormat(
+- L257: ).format(expires.toLocal())}.
+- L261: Buka aplikasi di HP karyawan, pilih "Hubungkan perangkat 
+- L262: karyawan", lalu masukkan kode ini. Kode hangus setelah 
+- L276: Salin
+- L280: Tutup (muncul 5x)
+- L288: Kode gagal dibuat: $error
+- L304: Perangkat yang sedang dipakai tidak bisa dicabut dari sini.
+- L312: Cabut perangkat
+- L314: }? Perangkat itu harus 
+- L315: dihubungkan ulang sebelum bisa mengirim data.
+- L320: Batal (muncul 7x)
+- L324: Cabut (muncul 3x)
+- L334: Perangkat dicabut.
+- L337: Perangkat gagal dicabut: $error
+- L348: Data yang perlu dicocokkan
+- L378: Pasang lisensi server
+- L383: Tempel token lisensi dari server. Aplikasi memeriksa 
+- L384: keaslian dan masa berlaku lisensi di perangkat ini.
+- L392: Token lisensi
+- L393: Tempel seluruh token. Bentuknya panjang dan 
+- L394: tanpa spasi.
+- L406: Pasang lisensi (muncul 2x)
+- L423: Kode pemulihan pemilik
+- L426: aman. Setelah Anda menekan "Sudah disimpan", kode dihapus dari 
+- L426: Sudah disimpan (muncul 2x)
+- L441: Lisensi gagal dipasang: $error
+- L461: Lisensi Google gagal diaktifkan: $error
+- L496: Akun ${input.username} dibuat. Password awal: 
+- L497: ${input.password}. Catat sekarang.
+- L502: Akun gagal dibuat: $error
+- L535: Akun ${input.username} diperbarui.
+- L538: Akun gagal diperbarui: $error
+- L547: Perangkat ini
+- L557: Perangkat gagal didaftarkan: $error (muncul 2x)
+- L568: Buat akun karyawan dulu sebelum mendaftarkan 
+- L573: Perangkat karyawan (muncul 2x)
+- L585: Nama perangkat
+- L586: Contoh: HP kasir toko.
+- L593: Akun karyawan (muncul 2x)
+- L615: Daftarkan
+- L633: Token perangkat
+- L658: Perangkat PusatkuPOS
+- L665: Perangkat tersambung. Tunggu pemilik membagikan akses toko.
+- L668: Perangkat tersambung.
+- L672: Perangkat gagal disambungkan: $error
+- L689: Perangkat ini tertinggal. Minta pemilik mengunggah cadangan 
+- L693: Cadangan data sudah dipasang. Sinkronkan lagi 
+- L694: untuk mengambil perubahan terbaru.
+- L704: Sinkronisasi gagal: $error
+- L715: Ganti kunci toko?
+- L717: Semua perangkat aktif akan menerima kunci baru. Perangkat yang 
+- L718: sudah dicabut tidak bisa membuka data baru, tetapi data lama tetap 
+- L719: bisa dibaca dengan kunci sebelumnya.
+- L728: Ganti kunci
+- L746: Kunci toko gagal diganti: $error
+- L761: Semua perangkat aktif sudah memakai kunci toko terbaru.
+- L762: Kunci toko dibagikan ke $count perangkat aktif.
+- L766: Kunci toko gagal dibagikan: $error
+- L779: Cadangan toko berhasil diunggah.
+- L790: Cadangan data dipasang sampai urutan 
+- L793: Belum ada cadangan data yang bisa dipasang.
+- L797: Cadangan data gagal diambil: $error
+- L810: Pulihkan akses dengan kode (muncul 2x)
+- L815: Masukkan kode pemulihan pemilik. Jika cocok, minta token 
+- L816: lisensi baru ke server memakai ID pemilik.
+- L823: Kode pemulihan
+- L824: Kode dari penyedia lisensi atau pemilik 
+- L837: Verifikasi
+- L848: Kode pemulihan tidak cocok. Periksa huruf dan 
+- L857: Kode pemulihan valid
+- L859: ID pemilik: ${ownerId ?? 
+- L860: Hubungi penyedia lisensi untuk menerbitkan token baru, lalu pasang 
+- L861: token itu di layar ini.
+- L891: Premium (muncul 2x)
+- L915: Lisensi sudah kedaluwarsa. Data dan kasir offline 
+- L916: tetap bisa dipakai. Sinkronisasi dan multi-toko 
+- L917: mati sampai lisensi diperbarui.
+- L918: Belum ada lisensi server yang aktif. Kasir offline 
+- L919: tetap gratis. Sinkronisasi dan multi-toko 
+- L920: memerlukan lisensi.
+- L927: Lisensi dan ID pemilik
+- L937: ID pemilik
+- L938: Paket
+- L939: Berlaku sampai
+- L940: Jumlah toko
+- L942: Akun Google
+- L952: Pulihkan lisensi dengan Google
+- L953: Masuk dengan Google
+- L959: Masuk dengan Google belum tersedia di versi ini. 
+- L960: Gunakan token lisensi manual.
+- L961: Masuk dengan Google hanya tersedia di Android, 
+- L962: iOS, macOS, dan web.
+- L980: Kunci publik pemilik
+- L992: Lisensi hanya diterbitkan server. Token berisi ID 
+- L993: pemilik, masa berlaku, dan jumlah toko.
+- L1007: Tambah akun
+- L1010: Belum ada akun karyawan.
+- L1027: Ubah peran dan akses
+- L1031: Reset password (muncul 2x)
+- L1035: Reset PIN
+- L1039: Riwayat audit
+- L1051: Perangkat
+- L1061: Daftarkan perangkat pemilik
+- L1065: Daftarkan perangkat karyawan
+- L1070: Belum ada perangkat terdaftar. (muncul 2x)
+- L1106: Akses karyawan
+- L1108: Kode untuk menghubungkan perangkat berlaku 10 menit dan 
+- L1109: hangus setelah dipakai satu perangkat.
+- L1111: Muat akses
+- L1117: Perangkat ini belum terhubung ke server akun. 
+- L1118: Sambungkan perangkat lebih dulu.
+- L1128: Kirim akun ke server
+- L1133: Belum ada akun karyawan di server.
+- L1149: Buat kode
+- L1155: Perangkat terdaftar
+- L1202: Sinkronisasi
+- L1204: Data toko dikirim terenkripsi antar perangkat milik akun Anda.
+- L1213: Sambungkan perangkat ini
+- L1217: Sinkron sekarang
+- L1221: Bagikan kunci ke perangkat
+- L1225: Ganti kunci toko
+- L1229: Unggah cadangan data
+- L1233: Ambil cadangan data
+- L1242: Perlu diputuskan 
+- L1249: Sinkron terakhir
+- L1250: Menunggu dikirim
+- L1252: Data bermasalah / gagal
+- L1256: Nomor urut data terakhir
+- L1260: Data perlu dicocokkan
+- L1268: Lihat data
+- L1274: Penyimpanan server hampir penuh. Data lama dihapus 
+- L1275: otomatis setelah semua perangkat menerimanya. Cabut 
+- L1276: perangkat yang sudah tidak dipakai.
+- L1286: Ada perubahan yang belum terkirim lebih dari 24 jam. 
+- L1287: Periksa koneksi atau buka daftar data yang perlu 
+- L1312: Belum pernah
+- L1315: dd/MM/yyyy HH:mm (muncul 2x)
+- L1320: belum pernah terhubung
+- L1326: $label (lama tidak terhubung)
+- L1331:  · belum punya kunci
+- L1332:  · kunci versi $version
+- L1371: Password baru (minimal 8)
+- L1372: Minta karyawan menggantinya setelah masuk.
+- L1386: Password minimal 8 huruf atau angka.
+- L1392: Simpan password
+- L1407: Password sudah direset.
+- L1412: Password gagal direset: $resetError
+- L1427: PIN direset; karyawan membuat PIN baru saat login.
+- L1432: PIN gagal direset: $resetError
+- L1445: Belum ada catatan audit.
+- L1541: Ubah akun karyawan
+- L1541: Akun karyawan baru
+- L1551: Nama pengguna
+- L1552: Dipakai untuk masuk, tanpa spasi. 
+- L1553: Contoh: budi.
+- L1560: Nama lengkap
+- L1561: Contoh: Budi Santoso.
+- L1568: Peran
+- L1569: Menentukan menu dan tindakan yang bisa dibuka.
+- L1588: Password baru (kosongkan jika tetap)
+- L1589: Password awal (minimal 8)
+- L1591: Kosongkan jika password tidak diganti.
+- L1592: Minimal 8 huruf atau angka. Berikan ke karyawan.
+- L1598: Akun aktif
+- L1600: Karyawan bisa masuk dan memakai aplikasi.
+- L1609: Izin tambahan di atas akses peran
+- L1615: Centang hanya izin yang benar-benar dibutuhkan.
+- L1660: Simpan akun
+
+### `screens/printer_settings_screen.dart`
+
+- L62: Printer gagal disimpan: $error
+- L79: Printer ${printer.nama} terhubung.
+- L86: Printer gagal dihubungkan: $error
+- L99: Printer ${printer.nama} diputus.
+- L102: Gagal memutus printer: $error
+- L111: BLUETOOTH (muncul 8x)
+- L112: USB (muncul 6x)
+- L124: Uji cetak gagal: $error
+- L135: Hapus printer (muncul 2x)
+- L136: Printer "${printer.nama}" akan dihapus dari daftar perangkat 
+- L137: ini. Printer lain tetap bisa dipakai.
+- L151: Printer
+- L157: Tambah printer (muncul 2x)
+- L167: Belum ada printer
+- L169: Tambahkan printer kasir lewat Bluetooth, Wi-Fi/LAN, 
+- L170: USB OTG, atau cetak lewat layanan Android. Setelah 
+- L171: tersimpan, coba Uji cetak.
+- L178: Maksimal $maxPrinters printer. Hapus salah satu untuk 
+- L179: menambah printer baru.
+- L185: Alamat printer disimpan di perangkat ini dan tidak ikut 
+- L186: cadangan atau sinkronisasi. Setiap perangkat yang mencetak 
+- L187: perlu mengatur printer sendiri.
+- L198: CONNECTED (muncul 2x)
+- L257: Hubungkan
+- L262: Putuskan
+- L267: Jadikan utama
+- L271: Uji cetak
+- L275: Ubah
+- L279: Hapus
+- L296: CONNECTING
+- L298: ERROR
+- L300: UNAVAILABLE
+- L301: tidak tersedia
+- L338: SPP (muncul 3x)
+- L346: NETWORK (muncul 3x)
+- L365: ESCPOS (muncul 2x)
+- L395: Printer tidak ditemukan. Pastikan printer menyala, sudah 
+- L396: dipasangkan, dan berada dekat perangkat ini.
+- L403: Pilih printer
+- L424: Batal (muncul 2x)
+- L445: Pencarian printer gagal: $error
+- L454: Port harus berupa angka, misalnya 9100.
+- L482: Ubah printer
+- L492: Nama printer
+- L493: Contoh: Printer Kasir
+- L494: Nama ini hanya tampil di pengaturan printer.
+- L501: Jenis koneksi
+- L502: Pilih cara printer tersambung ke perangkat ini.
+- L519: transport-$_transport
+- L522: Jenis Bluetooth
+- L523: Bluetooth Classic untuk printer kasir umum. 
+- L524: Pilih Bluetooth LE bila printer hanya mendukung BLE.
+- L548: Alamat IP
+- L550: Identitas USB
+- L551: Alamat Bluetooth
+- L553: Contoh: 192.168.1.50
+- L555: Contoh: usb:0416:5011
+- L556: Contoh: AA:BB:CC:DD:EE:FF
+- L558: Lihat alamat ini di menu jaringan printer.
+- L559: Tekan Cari printer untuk memilih dari daftar.
+- L574: Cari printer
+- L586: Port
+- L587: Contoh: 9100
+- L588: Port jaringan printer. Umumnya 9100.
+- L596: Ukuran kertas
+- L597: Pilih sesuai lebar kertas struk yang dipakai.
+- L611: mode-$_type
+- L616: Mode cetak
+- L617: ESC/POS untuk printer struk. Pilih Teks biasa 
+- L618: bila hasil cetak berantakan.
+- L633: Jadikan printer utama
+- L635: Printer utama dipakai otomatis saat mencetak struk.
+- L660: Simpan printer
+
+### `screens/purchase_screen.dart`
+
+- L69: Tambahkan supplier pada tab Supplier sebelum mencatat pembelian.
+- L79: Belum ada barang di layar Stok. Tambahkan barang dulu 
+- L80: sebelum mencatat pembelian.
+- L110: Pembelian disimpan.
+- L112: Gagal menyimpan: $error
+- L120: Pembelian tidak ditemukan.
+- L157: Tutup
+- L166: Peran ini tidak boleh membayar utang.
+- L175: CASH (muncul 10x)
+- L184: Sisa utang: ${formatRupiah(sisa)}
+- L190: Nominal
+- L191: Contoh: 500000
+- L192: Boleh sebagian atau seluruh sisa utang.
+- L199: Metode pembayaran
+- L202: Tunai (muncul 3x)
+- L203: TRANSFER (muncul 5x)
+- L203: Transfer (muncul 3x)
+- L212: Catatan (muncul 2x)
+- L213: Contoh: transfer BCA
+- L214: Boleh dikosongkan.
+- L222: Batal (muncul 5x)
+- L226: Simpan pembayaran
+- L250: Pembayaran disimpan.
+- L252: Gagal membayar: $error
+- L258: Peran ini tidak boleh membuat retur.
+- L304: Qty
+- L316: Alasan retur
+- L317: Contoh: barang rusak saat dikirim
+- L324: Uang retur dikembalikan lewat
+- L347: Simpan retur
+- L384: Retur pembelian disimpan.
+- L386: Gagal retur: $error
+- L392: Reversal retur hanya untuk pemilik.
+- L406: Alasan pembatalan (muncul 2x)
+- L407: Contoh: salah input jumlah retur
+- L423: Alasan minimal 3 karakter.
+- L428: Batalkan retur
+- L446: Retur pembelian dibatalkan.
+- L449: Gagal reversal: $error
+- L456: Peran ini tidak boleh membatalkan pembelian.
+- L470: Contoh: barang tidak jadi dibeli
+- L480: Batalkan nota
+- L497: Pembelian dibatalkan.
+- L499: Gagal membatalkan: $error
+- L511: Pembelian dan utang dimatikan
+- L513: Aktifkan lewat Pengaturan › Fitur toko bila toko mencatat 
+- L514: pembelian dari supplier.
+- L525: Akses pembelian terbatas
+- L527: Hubungi pemilik agar akun Anda diberi izin melihat 
+- L528: pembelian dan utang supplier.
+- L543: ${_purchases.length} nota pembelian
+- L551: Catat pembelian
+- L557: Ringkasan
+- L560: Total pembelian
+- L561: Utang pembelian
+- L562: Utang awal
+- L563: Total utang
+- L564: Sudah dibayar
+- L570: Utang supplier
+- L572: Tidak ada utang berjalan.
+- L573: ${_debts.length} nota memiliki sisa utang
+- L599: Bayar utang
+- L614: Umur utang per supplier
+- L615: Dihitung dalam hari sejak nota pembelian dibuat.
+- L641: Nota pembelian
+- L643: Belum ada pembelian.
+- L644: ${_purchases.length} nota terakhir
+- L648: Belum ada pembelian
+- L650: Catat pembelian agar stok masuk dan utang supplier 
+- L731: ${status == 
+- L755: Subtotal
+- L759: Diskon (muncul 2x)
+- L763: Ongkir (muncul 2x)
+- L765: PPN (muncul 2x)
+- L768: Total
+- L774: Dibayar
+- L777: Sisa utang
+- L780: Pembayaran
+- L794: Retur (muncul 2x)
+- L805: AKTIF (muncul 2x)
+- L808: Batalkan (muncul 2x)
+- L822: Bayar
+- L832: VOID
+- L907: KREDIT (muncul 5x)
+- L946: Pilih barang terlebih dahulu.
+- L952: Jumlah harus lebih dari 0.
+- L956: Harga beli tidak valid.
+- L971: Tambahkan minimal satu barang.
+- L1006: Pembelian baru
+- L1017: Supplier
+- L1018: Hanya supplier aktif yang bisa dipilih.
+- L1055: Cara bayar
+- L1057: Kredit
+- L1058: TUNAI
+- L1072: Jatuh tempo
+- L1073: Batas waktu membayar utang ke supplier.
+- L1076: 0 hari
+- L1077: 7 hari
+- L1078: 14 hari
+- L1079: 30 hari
+- L1080: 60 hari
+- L1090: Barang dibeli
+- L1108: Jumlah
+- L1109: Contoh: 12
+- L1111: Pilih barang untuk melihat satuannya.
+- L1112: Desimal ${_selectedStock?.desimal ?? 0}
+- L1122: Harga beli
+- L1123: Contoh: 45000
+- L1124: Harga per satuan dari supplier.
+- L1130: Tambah barang
+- L1162: Contoh: 10000
+- L1163: Potongan dalam rupiah.
+- L1174: Contoh: 15000
+- L1175: Biaya kirim ke toko.
+- L1186: Contoh: 11000
+- L1187: Isi nominal, bukan persen.
+- L1201: Dibayar sekarang
+- L1202: Contoh: 200000
+- L1203: Kosongkan bila belum ada pembayaran.
+- L1211: Sumber dana
+- L1213: Kas tunai
+- L1230: Contoh: barang datang besok pagi
+- L1252: Simpan pembelian
+
+### `screens/receipt_settings_screen.dart`
+
+- L215: Invalid argument(s):  (muncul 2x)
+- L270: Pengaturan struk disimpan.
+- L276: Pengaturan struk gagal disimpan: $error
+- L287: Kembalikan tampilan struk ke awal?
+- L288: Semua pengaturan tampilan struk kembali ke awal. Nama toko, 
+- L289: alamat, dan data transaksi tidak berubah.
+- L290: Kembalikan
+- L300: Tampilan struk dikembalikan ke awal.
+- L306: Tampilan struk gagal dikembalikan: $error
+- L319: Belum ada printer. Tambahkan printer di menu Printer lebih dulu.
+- L336: Uji cetak gagal: $error
+- L345: Logo struk tersedia di aplikasi Android/desktop.
+- L352: Pilih logo struk
+- L361: Logo gagal dipilih: $error
+- L370: Ekspor template tersedia di aplikasi Android/desktop.
+- L383: Simpan template struk
+- L389: Berkas template struk disimpan.
+- L394: Template struk gagal diekspor: $error
+- L405: Impor template tersedia di aplikasi Android/desktop.
+- L412: Pilih template struk
+- L429: Versi template ini tidak didukung aplikasi. Minta berkas template 
+- L446: Template dimuat. Simpan untuk menerapkan ke struk berikutnya.
+- L453: Template struk gagal diimpor: $error
+- L464: Pengaturan struk
+- L471: Tampilan
+- L472: Kepala struk
+- L473: Isi nota
+- L474: Pembayaran
+- L475: Penutup
+- L476: Pratinjau (muncul 2x)
+- L481: Ekspor atau impor template
+- L488: Ekspor template
+- L489: Impor template
+- L493: Reset
+- L498: Simpan
+- L608: Kertas dan salinan
+- L609: Lebar ini dipakai saat menyusun struk. Printer tetap 
+- L610: menyesuaikan lebar saat mencetak.
+- L614: Lebar kertas default
+- L615: Pilih sesuai kertas struk yang dipakai.
+- L617: 58 mm (32 kolom)
+- L617: 80 mm (48 kolom)
+- L624: Jumlah salinan
+- L625: Berapa lembar dicetak untuk satu nota.
+- L627: 1 salinan
+- L627: 2 salinan
+- L627: 3 salinan
+- L631: Baris kosong sebelum potong
+- L632: Ruang kosong sebelum kertas dipotong.
+- L635: $i baris
+- L640: Codepage printer
+- L641: Biarkan Ikuti printer, kecuali huruf di struk tercetak 
+- L652: Penanda
+- L656: Tampilkan tanda VOID
+- L659: Tanda dan alasan tampil pada nota yang dibatalkan.
+- L662: Tampilkan banner pelunasan
+- L665: Muncul saat sisa pembayaran sudah lunas.
+- L679: Identitas di struk
+- L681: Nama toko dan alamat diatur di Pengaturan › Identitas toko.
+- L687: Tagline toko
+- L688: Contoh: Servis cepat, harga jujur
+- L689: Baris singkat di bawah nama toko.
+- L696: Telepon / WhatsApp
+- L697: Contoh: 081234567890
+- L698: Nomor yang bisa dihubungi pelanggan.
+- L703: Tampilkan tagline
+- L708: Tampilkan alamat
+- L713: Tampilkan kontak
+- L718: Nama toko tebal
+- L723: Nama toko huruf ganda
+- L726: Huruf diperbesar. Otomatis kembali normal bila nama 
+- L727: terlalu panjang.
+- L734: Logo struk
+- L735: Logo tampil di bagian paling atas struk. Lebar 10 sampai 
+- L736: 40 mm.
+- L748: Logo tidak dapat dibaca. Pilih ulang.
+- L773: Pilih logo
+- L774: Ganti logo
+- L785: Hapus logo
+- L791: Lebar logo: ${_template.logoWidthMm} mm
+- L797: ${_template.logoWidthMm} mm
+- L808: Baris tambahan kepala
+- L809: Maksimal 5 baris, 80 karakter per baris. (muncul 2x)
+- L810: Contoh: Melayani motor dan mobil
+- L822: Urutan bagian
+- L823: Nyalakan bagian yang ingin dicetak, lalu geser urutannya 
+- L824: dengan panah.
+- L863: Informasi nota
+- L864: Pilih data nota yang dicetak di bawah kepala struk.
+- L878: Rincian jasa dan sparepart
+- L879: Pilih bagian rincian yang dicetak.
+- L883: Tampilkan jasa
+- L888: Tampilkan sparepart
+- L893: Garis pemisah setelah rincian
+- L898: Diskon per baris
+- L901: Tampilkan potongan diskon di bawah baris barang 
+- L902: yang mendapat diskon.
+- L909: Total pembayaran
+- L910: Pilih baris total yang dicetak.
+- L924: Label
+- L925: Ganti sebutan yang dicetak, misalnya No. Nota menjadi 
+- L926: Nomor Nota.
+- L929: Ubah teks label
+- L946: Isi label atau kembalikan ke teks awal.
+- L973: Riwayat pembayaran
+- L974: Atur informasi pembayaran yang tampil di struk.
+- L978: Tampilkan riwayat pembayaran
+- L981: Muncul bila ada lebih dari satu pembayaran atau DP.
+- L984: Tampilkan sisa pembayaran
+- L987: Untuk nota yang belum lunas.
+- L994: Rekening bank
+- L995: Kosongkan semua isian untuk menyembunyikan rekening.
+- L1002: Nama bank
+- L1003: Contoh: BCA
+- L1011: Nomor rekening
+- L1012: Contoh: 1234567890
+- L1020: Atas nama
+- L1021: Contoh: Bengkel Jaya Motor
+- L1022: Nama pemilik rekening.
+- L1031: Catatan rekening (opsional)
+- L1032: Contoh: Transfer sesuai nominal nota
+- L1047: Penutup struk
+- L1048: Setiap baris di sini dicetak sebagai satu baris di struk.
+- L1054: Teks penutup
+- L1055: Contoh: Simpan struk ini sebagai bukti garansi.
+- L1061: Baris tambahan penutup
+- L1063: Contoh: Simpan struk sebagai bukti garansi
+- L1068: Garansi
+- L1069: Atur keterangan garansi yang tercetak di struk.
+- L1073: Tampilkan masa garansi
+- L1078: Tampilkan catatan garansi
+- L1088: Catatan garansi tambahan
+- L1089: Contoh: Garansi tidak berlaku untuk kerusakan 
+- L1090: akibat kecelakaan.
+- L1098: Tanda tangan
+- L1099: Nama penanggung jawab yang tercetak di bawah struk.
+- L1104: Teks tanda tangan (opsional)
+- L1105: Contoh: Hormat kami, Andi.
+- L1123: Tambah baris
+- L1134: Belum ada baris tambahan.
+- L1152: Baris ${index + 1}
+- L1164: Kiri
+- L1168: Tengah
+- L1172: Kanan
+- L1182: Tebal
+- L1188: Hapus baris
+- L1207: Contoh nota memakai pengaturan yang sedang diedit. 
+- L1208: Simpan untuk menerapkan.
+- L1214: 58 mm
+- L1215: 80 mm
+- L1230: Pratinjau gagal dibuat: $_previewError
+- L1271: Muat ulang
+- L1277: Cetak tes
+
+### `screens/reports_screen.dart`
+
+- L45: Jual sparepart
+- L46: Servis langsung
+- L47: Order kerja
+- L48: Pelunasan order
+- L71: ${anchor.year}-${anchor.month.toString().padLeft(2, 
+- L105: FINAL
+- L211: ${raw ?? 
+- L233: ${picked.year}-${picked.month.toString().padLeft(2, 
+- L241: Tutup buku gagal: $error
+- L273: Laporan
+- L282: Tutup buku bulanan
+- L290: Hari ini
+- L291: 7 hari terakhir
+- L292: Per bulan
+- L293: Semua waktu
+- L301: Bulan sebelumnya
+- L313: Bulan berikutnya
+- L334: Laporan belum bisa dimuat
+- L335: Data laporan tidak bisa dibaca: ${snapshot.error}. 
+- L336: Coba pilih ulang periode atau buka halaman ini lagi.
+- L359: Jumlah nota
+- L367: Omzet sebelum retur
+- L375: Omzet setelah retur
+- L384: Uang masuk dari nota periode ini
+- L393: Sisa piutang nota periode ini
+- L402: Uang diterima periode ini
+- L419: Penjualan, pembayaran, dan piutang dihitung dari tanggal 
+- L420: nota. Retur dihitung dari tanggal retur. Uang diterima 
+- L421: dihitung dari tanggal pembayaran.
+- L430: Rincian omzet dan laba
+- L434: Penjualan jasa
+- L438: Penjualan part
+- L441: Diskon
+- L444: Total
+- L450: Retur jasa (dikurangi)
+- L454: Retur part (dikurangi)
+- L458: Penjualan setelah retur
+- L465: Modal part (HPP)
+- L469: Laba kotor part setelah diskon
+- L473: Modal jasa (HPP)
+- L477: Laba kotor jasa setelah diskon
+- L481: Komisi
+- L482: Gaji dibayar
+- L484: Laba bersih setelah komisi dan gaji
+- L497: Per jenis transaksi
+- L498: Sudah termasuk koreksi nota, belum dikurangi retur
+- L500: Belum ada transaksi pada periode ini.
+- L506: (${entry.value}x)
+- L518: Penjualan di bawah harga patokan
+- L520: Tidak ada selisih harga pada periode ini.
+- L521: ${_below.length} baris perlu diperiksa
+- L536: Kasir: ${row.kasir ?? 
+- L537: ${row.disetujuiOleh == null ?  (muncul 2x)
+- L538: Disetujui: ${row.disetujuiOleh} (muncul 2x)
+- L556: Koreksi nota
+- L558: Belum ada koreksi pada periode ini.
+- L559: ${_corrections.length} koreksi
+- L571: ${row.dibuatOleh ?? 
+- L593: Estimasi
+- L594: Tidak dihitung sebagai penjualan.
+- L599: Margin per barang
+- L601: Memakai modal (HPP) yang tersimpan di baris nota.
+- L603: Belum ada penjualan part pada periode ini.
+- L630: Nilai persediaan
+- L631: Modal rata-rata per barang
+- L633: Belum ada barang.
+- L655: Total nilai persediaan
+- L673: Saldo awal toko
+- L674: Dicatat sebelum transaksi berjalan dimulai
+- L681: Uang diterima per metode
+- L682: Dihitung dari tanggal pembayaran, termasuk 
+- L683: uang kembali (refund).
+- L685: Belum ada pembayaran pada periode ini.
+- L697: Transaksi periode ini
+- L698: ${_rows.length} nota ditampilkan
+- L701: Belum ada nota
+- L702: Nota yang tercatat pada periode ini akan 
+- L703: tampil di sini.
+- L732: Memuat...
+- L733: Muat 50 nota lagi
+- L750: Belum ada estimasi pada periode ini.
+- L761: Tanpa nama
+- L766: Estimasi belum jadi nota
+- L767: Sudah kedaluwarsa
+- L768: Selisih estimasi dengan nota
+- L773: Belum jadi nota · ${entry.key}
+- L787: STOK
+- L789: UTANG_SUPPLIER
+- L791: PIUTANG_PELANGGAN
+- L797: Stok awal
+- L798: Utang supplier awal
+- L799: Piutang pelanggan awal
+- L800: Banyak baris saldo awal
+- L855: Tutup buku $periode (revisi $rev)
+- L873: Omzet ${formatRupiah(_value(
+- L878: DPP (dasar pajak) ${formatRupiah(_value(
+- L879: PPN ${formatRupiah(_value(
+- L885: Modal (HPP) ${formatRupiah(_value(
+- L886: Komisi ${formatRupiah(_value(
+- L892: Retur ${formatRupiah(_value(
+- L893: (HPP ${formatRupiah(_value(
+- L901: Kas: ${kas.entries.map((entry) => 
+
+### `screens/settings_screen.dart`
+
+- L91: Jam cadangan otomatis
+- L95: ${picked.hour.toString().padLeft(2, 
+- L96: ${picked.minute.toString().padLeft(2, 
+- L105: Kata sandi cadangan minimal 8 karakter.
+- L124: Pengaturan cadangan disimpan.
+- L129: Gagal menyimpan pengaturan cadangan. $error
+- L146: Cadangan gagal dibuat. $error (muncul 2x)
+- L178: Durasi garansi minimal 1 bulan.
+- L186: Pengaturan garansi disimpan.
+- L204: Identitas toko disimpan.
+- L234: Kata sandi cadangan (muncul 2x)
+- L237: Wajib diisi, minimal 8 karakter.
+- L238: Kosongkan untuk cadangan khusus perangkat ini.
+- L246: Batal (muncul 4x)
+- L253: Kata sandi minimal 8 karakter.
+- L259: Pakai kata sandi
+- L271: Masukkan PIN pemilik untuk menyalin kata sandi cadangan. 
+- L272: Kata sandi tidak ditampilkan di layar.
+- L280: Konfirmasi pemilik
+- L292: PIN pemilik
+- L293: PIN yang Anda buat saat membuka aplikasi.
+- L310: Isi PIN pemilik terlebih dahulu.
+- L315: Periksa PIN
+- L330: Atur PIN pemilik dulu agar kata sandi cadangan bisa dibuka.
+- L346: Kata sandi cadangan disalin. Hapus dari clipboard setelah 
+- L352: Perbarui PIN ke minimal 6 angka sebelum membuka kata sandi 
+- L359: PIN terkunci sementara karena terlalu banyak percobaan. 
+- L360: Tunggu sebentar, lalu coba lagi.
+- L366: PIN pemilik tidak cocok. Periksa lagi. (muncul 2x)
+- L376: Akun ini tidak punya izin membuat cadangan.
+- L382: Buat cadangan manual
+- L384: Isi kata sandi agar cadangan bisa dipulihkan di perangkat lain. 
+- L385: Tanpa kata sandi, cadangan tetap terkunci dengan kunci perangkat 
+- L386: ini dan hanya bisa dipulihkan di sini.
+- L409: Akun ini tidak punya izin memulihkan cadangan.
+- L417: Hanya pemilik yang bisa memulihkan cadangan.
+- L426: Memulihkan cadangan akan mengganti seluruh data di perangkat 
+- L427: ini. Masukkan PIN pemilik untuk melanjutkan.
+- L436: PIN terkunci sementara. Tunggu sebentar, lalu coba lagi.
+- L438: PIN pemilik tidak dapat diverifikasi.
+- L446: Pulihkan cadangan (muncul 2x)
+- L448: Seluruh data di perangkat ini akan diganti dengan isi cadangan. 
+- L449: Memulihkan ke perangkat kedua atau perangkat lama bisa membuat 
+- L450: nomor nota dan data kiriman bentrok. Kode perangkat baru akan 
+- L451: dibuat, jadi jalankan penyiapan perangkat sebelum sinkronisasi. 
+- L452: Buat cadangan terbaru dulu bila ragu.
+- L453: Pulihkan
+- L461: Cadangan ini dikunci kata sandi yang dibuat saat membuat 
+- L463: Kosongkan bila cadangan dibuat tanpa kata sandi.
+- L483: Pemulihan gagal: $error
+- L499: Ganti PIN (muncul 2x)
+- L508: PIN lama
+- L509: PIN yang sekarang dipakai.
+- L518: PIN baru
+- L519: Minimal 6 angka. Jangan pakai tanggal lahir.
+- L528: Ulangi PIN baru
+- L543: PIN baru minimal 6 angka.
+- L549: Ulangi PIN belum sama dengan PIN baru.
+- L559: Simpan PIN baru
+- L573: PIN diperbarui.
+- L574: PIN belum diubah. Periksa PIN lama Anda.
+- L591: Pengaturan
+- L599: Identitas toko
+- L605: Nama toko
+- L606: Contoh: Bengkel Jaya Motor
+- L607: Nama ini tampil di struk dan laporan.
+- L615: Alamat
+- L616: Contoh: Jl. Merdeka No. 10, Bandung
+- L625: Simpan identitas
+- L633: Toko
+- L635: Setiap toko memakai database terpisah. Akun gratis memakai 1 
+- L636: toko; toko tambahan memerlukan Premium dan login Google.
+- L640: Kelola toko
+- L642: Tambah toko baru atau pindah ke toko lain
+- L652: Struk dan printer
+- L653: Atur bagian struk serta printer thermal jaringan.
+- L659: Pengaturan struk
+- L661: Atur bagian yang tampil di struk pelanggan
+- L674: Printer thermal
+- L676: Hubungkan printer thermal lewat jaringan toko
+- L690: Garansi
+- L691: Nilai bawaan saat kasir membuat nota baru.
+- L698: Durasi garansi (bulan)
+- L699: Contoh: 1
+- L700: 1 bulan = 30 hari
+- L708: Syarat garansi standar
+- L710: Contoh: tidak berlaku untuk kerusakan akibat kecelakaan
+- L719: Simpan garansi
+- L727: Aturan transaksi
+- L729: Jenis transaksi, tahap order, persetujuan kasir, dan izin peran.
+- L733: Atur transaksi dan izin
+- L734: Preset, persetujuan, dan hak tiap peran
+- L743: PPN
+- L744: Rekap bulanan dan pencatatan pembayaran PPN.
+- L748: Rekap PPN
+- L750: PPN keluaran, masukan, diserap, dan pembayaran per masa
+- L760: Karyawan
+- L762: Jika dimatikan, nama kasir dan mekanik tidak dicetak di struk.
+- L765: Tampilkan data karyawan
+- L776: Fitur dan data toko
+- L778: Saklar modul opsional per toko dan saldo awal usaha. 
+- L779: Data lama tidak dihapus saat modul dimatikan.
+- L785: Fitur toko
+- L787: Estimasi, order kerja, supplier, tindak lanjut, unit, WhatsApp
+- L800: Saldo awal toko
+- L801: Stok, utang supplier, piutang pelanggan
+- L813: Diagnostik perangkat
+- L815: Integritas database, antrean sinkron, ekspor log
+- L829: Tindak lanjut
+- L830: Jam, interval, dan batas pesan WhatsApp.
+- L834: Pengaturan tindak lanjut
+- L835: Kuota gratis 20 kredit WhatsApp
+- L846: Tampilan
+- L853: Sistem
+- L858: Terang
+- L863: Gelap
+- L875: Keamanan
+- L877: PIN pemilik melindungi pembukaan aplikasi dan kunci otomatis.
+- L884: Kunci otomatis
+- L886: Aplikasi terkunci setelah tidak dipakai beberapa saat.
+- L889: Nonaktif
+- L890: 1 menit
+- L891: 2 menit
+- L892: 5 menit
+- L893: 10 menit
+- L894: 30 menit
+- L917: Kunci sekarang
+- L949: Pemulihan kunci
+- L951: Frasa pemulihan 12 kata dan bagian kunci admin untuk 
+- L952: memulihkan kunci bila perangkat atau akun Google hilang.
+- L956: Kelola pemulihan kunci
+- L957: Buat, verifikasi, dan pulihkan kunci
+- L966: Cadangan data
+- L968: Menyimpan seluruh data toko ke satu berkas ZIP. Memulihkan 
+- L969: cadangan akan mengganti data di perangkat ini.
+- L978: Buat cadangan
+- L1003: Hanya pemilik yang bisa mengekspor ringkasan.
+- L1010: Masukkan PIN pemilik untuk mengekspor ringkasan 
+- L1023: Ekspor dibatalkan.
+- L1024: Ringkasan pemilik tersimpan.
+- L1030: Ekspor gagal. $error
+- L1036: Ekspor ringkasan pemilik
+- L1044: Cadangan otomatis
+- L1046: Menyimpan cadangan harian ke folder aplikasi. Unggah ke 
+- L1047: Telegram opsional.
+- L1053: Cadangan otomatis tersedia di Android dan desktop. Di 
+- L1054: versi web, gunakan tombol Buat cadangan.
+- L1059: Aktifkan cadangan harian
+- L1061: Cadangan dibuat saat aplikasi dibuka bila jadwal 
+- L1072: Jam cadangan
+- L1084: Unggah ke Telegram
+- L1086: Bot mengirim berkas ZIP cadangan ke chat pemilik.
+- L1097: Chat ID Telegram
+- L1098: Contoh: 123456789
+- L1100: ID chat atau grup yang menerima berkas cadangan.
+- L1108: Token bot Telegram
+- L1109: Tempel token dari BotFather
+- L1111: Token tersimpan. Kosongkan untuk mempertahankan.
+- L1112: Belum ada token tersimpan.
+- L1117: Token disimpan di penyimpanan aman perangkat.
+- L1126: Kata sandi cadangan baru (opsional)
+- L1128: Kata sandi tersimpan tidak ditampilkan. Isi hanya 
+- L1129: bila ingin menggantinya, minimal 8 karakter.
+- L1130: Belum ada kata sandi tersimpan. Isi minimal 8 
+- L1131: karakter, atau kosongkan bila tidak perlu.
+- L1135: Salin kata sandi cadangan (perlu PIN pemilik)
+- L1148: Telegram hanya menerima arsip terenkripsi. Kata sandi 
+- L1149: tidak bisa dibaca dari layar. Tanpa kata sandi ini, 
+- L1150: cadangan tidak bisa dipulihkan di perangkat lain.
+- L1161: Simpan pengaturan
+- L1169: Buat cadangan sekarang
+- L1180: Status cadangan
+- L1185: Lokal terakhir: 
+- L1190: Telegram terakhir: 
+- L1217: Belum ada cadangan dalam 2 hari terakhir. Periksa folder 
+- L1218: cadangan atau jalankan Buat cadangan sekarang.
+- L1231: Sesi
+- L1243: Keluar akun?
+- L1246: Sesi ditutup, tetapi data toko, data yang belum terkirim, 
+- L1247: dan PIN pemilik tetap tersimpan di 
+- L1248: perangkat ini. Buka kembali dengan PIN 
+- L1249: yang sama.
+- L1250: Sesi karyawan ditutup. Data toko dan data yang belum 
+- L1251: terkirim tetap tersimpan untuk pemilik.
+- L1260: Keluar (muncul 2x)
+- L1276: Reset perangkat
+- L1287: Tentang
+- L1291: PusatkuPOS
+- L1294: Aplikasi kasir dan stok untuk UMKM. Data tersimpan di perangkat ini dan tidak memerlukan internet.
+
+### `screens/stock_screen.dart`
+
+- L51: Izin ubah stok tidak tersedia.
+- L57: Hanya pemilik yang dapat menambah barang beserta harganya.
+- L107: Gagal menyimpan: $error
+- L113: Izin stok masuk tidak tersedia.
+- L134: Gagal menambah stok: $error
+- L140: Izin stok keluar tidak tersedia.
+- L161: Gagal stok keluar: $error
+- L176: Izin opname tidak tersedia.
+- L200: Opname ditahan sampai perangkat sinkron: 
+- L201: ${gate.missing.join(
+- L204: Opname tersimpan.
+- L207: Gagal opname: $error
+- L223: Cari nama atau kode
+- L237: Barang
+- L269: Opname menunggu sinkron (${holds.length})
+- L277: Ada perangkat yang belum sinkron lebih dari 
+- L278: 24 jam. Opname diterapkan sementara 
+- L279: setelah 7 hari bila belum kembali.
+- L280: Hasil opname akan diterapkan setelah semua 
+- L281: perangkat menyelesaikan sinkronisasi.
+- L290: ${hold.provisional ? 
+- L312: Gagal memuat stok
+- L317: Coba lagi
+- L324: Belum ada sparepart
+- L325: Tambahkan barang agar bisa dipakai di kasir.
+- L331: Tambah barang (muncul 2x)
+- L397: Kartu stok
+- L402: Stok masuk
+- L407: Stok keluar
+- L412: Opname
+- L437: Ketuk barang untuk ubah; menu di kanan untuk kartu stok, 
+- L438: stok masuk, keluar, atau opname.
+- L463: Kartu stok · ${item.nama}
+- L471: Saldo ${item.jumlahLabel} · nilai 
+- L479: Selisih ledger ${formatQuantity(selisih, item.desimal, satuan: item.satuan)}. 
+- L480: Jalankan rekonsiliasi di Diagnostik.
+- L490: Belum ada mutasi stok.
+- L519: ${delta >= 0 ? 
+- L523: ${dateTimeId.format(waktu)} · saldo 
+- L525: HPP ${formatRupiah(cost)}
+- L526: ).toString().isEmpty ? 
+- L538: Tutup
+- L634: Kode dan nama wajib diisi.
+- L639: Jumlah stok tidak valid.
+- L649: Format harga tidak valid.
+- L671: Ubah barang
+- L680: Kode barang
+- L681: Contoh: OLI-01
+- L682: Kode unik barang. Boleh huruf, angka, atau 
+- L683: tanda hubung.
+- L690: Nama barang
+- L691: Contoh: Oli mesin 10W-40
+- L703: Harga modal
+- L704: Contoh: 45000
+- L714: Harga jual
+- L715: Contoh: 60000
+- L725: Harga hanya dapat diubah pemilik.
+- L738: Stok awal
+- L739: Contoh: 12 (muncul 2x)
+- L741: Jumlah barang yang ada saat ini.
+- L742: Gunakan opname stok untuk mengubah stok.
+- L752: Stok minimum
+- L753: Contoh: 3
+- L754: Peringatan muncul saat stok di bawah angka 
+- L768: Satuan
+- L769: pcs / liter / botol
+- L770: Satuan yang dipakai saat menjual barang.
+- L779: Desimal kuantitas
+- L780: Pilih 1 atau 2 bila barang dijual pecahan.
+- L799: Supplier
+- L841: Batal (muncul 4x)
+- L843: Simpan barang
+- L880: Stok masuk: ${widget.item.nama}
+- L889: Jumlah masuk
+- L891: Jumlah barang yang baru diterima.
+- L898: Keterangan
+- L899: Contoh: Kiriman supplier
+- L923: Jumlah masuk tidak valid.
+- L934: Tambah
+- L972: Stok keluar: ${widget.item.nama}
+- L981: Jumlah keluar
+- L982: Contoh: 2
+- L983: Stok tersedia: ${widget.item.jumlahLabel}. Isi 
+- L984: jumlah yang keluar.
+- L991: Alasan (wajib)
+- L992: Contoh: rusak / dipakai sendiri
+- L1016: Isi jumlah lebih dari 0.
+- L1020: Isi alasan stok keluar.
+- L1025: Keluarkan
+- L1064: Opname stok: ${widget.item.nama}
+- L1069: Stok menurut sistem: ${widget.item.jumlahLabel}
+- L1078: Jumlah fisik
+- L1079: Contoh: 8
+- L1080: Masukkan hasil hitung barang di rak atau gudang.
+- L1087: Catatan (opsional)
+- L1088: Contoh: selisih hitung
+- L1112: Jumlah fisik tidak valid.
+- L1117: Simpan
+
+### `screens/store_features_screen.dart`
+
+- L50: Konfirmasi pemilik
+- L55: Masukkan PIN pemilik untuk mengubah modul toko. Setiap 
+- L56: perubahan dicatat di riwayat fitur.
+- L65: PIN pemilik
+- L66: PIN yang dipakai pemilik saat membuka aplikasi.
+- L77: Batal (muncul 2x)
+- L83: Masukkan PIN pemilik.
+- L88: Periksa PIN
+- L107: Matikan fitur induk?
+- L109: ${feature.label} adalah induk dari $names yang masih aktif. Jika 
+- L110: induk dimatikan, $names tidak berlaku. Data lama tetap tersimpan 
+- L111: dan bisa dilihat di riwayat.
+- L120: Matikan induk
+- L132: Hanya pemilik yang boleh mengubah fitur toko.
+- L145: PIN pemilik masih lemah. Ganti ke minimal 6 digit.
+- L146: PIN pemilik tidak valid.
+- L171: ${feature.label} diaktifkan.
+- L172: ${feature.label} dinonaktifkan.
+- L176: Fitur gagal diubah: $error
+- L190: ${feature.label} aktif, tetapi induknya 
+- L192: sedang dimatikan. Fitur ini belum berlaku sampai induknya 
+- L201: Modul dan fitur toko (muncul 2x)
+- L213: Fitur opsional
+- L215: Matikan modul yang tidak dipakai toko ini. Data lama 
+- L216: tetap tersimpan, tampil di riwayat, dan ikut 
+- L218: Hanya pemilik yang bisa mengubah saklar fitur.
+- L232: Aktif
+- L232: Nonaktif
+- L241: Butuh induk: 
+- L244: Selalu aktif dan tidak bisa dimatikan.
+- L247: Induknya belum aktif, jadi fitur ini belum 
+- L258: Perlu diperiksa
+- L273: Riwayat perubahan
+- L274: Setiap perubahan memakai PIN pemilik dan tercatat di 
+- L278: Belum ada perubahan fitur.
+- L287: ${FeatureCatalog.definition(
+- L301: Catatan
+- L303: Fitur dasar selalu aktif: kasir, stok, pelanggan, pembayaran, 
+- L304: retur, laporan, cadangan, akun, sinkronisasi, lisensi, dan 
+- L305: pengaturan. Perubahan fitur opsional ikut tersinkron dan 
+- L306: tercatat di riwayat.
+
+### `screens/store_settings_screen.dart`
+
+- L13: Jual sparepart
+- L14: Servis langsung
+- L15: Order kerja
+- L16: Estimasi saja
+- L17: Pelunasan order
+- L21: Nomor order
+- L22: Nomor antrian
+- L23: Status pengerjaan
+- L24: Estimasi
+- L25: Persetujuan pelanggan
+- L70: $whole,${fraction.toString().padLeft(2, 
+- L176: KASIR (muncul 3x)
+- L181: Tambah peran (muncul 2x)
+- L190: Nama peran
+- L191: Contoh: Penanggung Jawab
+- L192: Nama ini tampil saat mengatur akun karyawan.
+- L199: Salin akses dari
+- L200: Akses awal disalin dari peran ini, lalu bisa 
+- L219: Batal (muncul 2x)
+- L227: Nama peran 2 sampai 32 karakter. Pakai huruf, angka, 
+- L228: spasi, garis bawah, atau tanda hubung.
+- L239: Nama peran itu sudah dipakai. Pilih nama lain.
+- L246: Buat peran
+- L281: Peran masih dipakai akun: ${users.join(
+- L281: )}. Ubah peran akun itu dulu.
+- L289: Hapus peran ${roleDisplayName(role)}?
+- L291: Peran ini akan dihapus beserta pengaturan aksesnya. Akun yang 
+- L292: memakai peran ini tidak terhapus.
+- L301: Hapus peran (muncul 2x)
+- L361: role-$role
+- L365: Peran bawaan
+- L365: Peran buatan toko
+- L373: Kembalikan akses bawaan
+- L382: Menu yang bisa dibuka
+- L387: Tindakan yang boleh dilakukan
+- L392: Jenis transaksi (muncul 2x)
+- L436: Tarif PPN belum valid. Perbaiki angka PPN sebelum menyimpan.
+- L453: Aturan transaksi disimpan.
+- L457: Aturan gagal disimpan: $error
+- L475: Aturan transaksi
+- L480: Pola pengaturan cepat
+- L481: Pilih pola yang paling dekat dengan cara toko bekerja, 
+- L482: lalu sesuaikan jenis transaksi di bawah.
+- L491: Layanan langsung
+- L496: Order lengkap
+- L501: Manual
+- L509: Layanan langsung: servis tanpa order kerja. Order lengkap: 
+- L510: semua tahap order aktif. Manual: atur sendiri setiap 
+- L520: Aktifkan jenis yang dipakai toko. Jenis yang dimatikan 
+- L521: tidak muncul di kasir.
+- L544: Tahap order kerja
+- L545: Hanya dipakai saat Order kerja aktif. Tahap yang 
+- L546: dimatikan dilewati pada order baru.
+- L572: Kasir dan persetujuan
+- L573: Atur apa yang harus diisi dan disetujui saat kasir 
+- L574: membuat nota.
+- L579: Simpan estimasi terpisah
+- L581: Hidup: kasir bisa menyimpan estimasi untuk dilihat lagi. 
+- L582: Mati: estimasi hanya dicetak.
+- L592: Kendaraan wajib untuk servis
+- L594: Hidup: kasir harus memilih unit kendaraan saat servis. 
+- L595: Mati: nota servis boleh dibuat tanpa unit.
+- L607: Kasir wajib persetujuan untuk diskon
+- L609: Hidup: diskon dari kasir menunggu persetujuan pemilik 
+- L610: atau penanggung jawab. Mati: diskon kasir langsung 
+- L611: dipakai selama harga tidak di bawah modal.
+- L625: Yang boleh menyetujui diskon
+- L632: Berlaku saat persetujuan diskon dihidupkan. Persetujuan 
+- L633: memakai PIN di perangkat ini.
+- L653: Pemilik
+- L655: Pemilik menyetujui dengan PIN pemilik di perangkat 
+- L664: Penanggung jawab
+- L666: Akun karyawan aktif yang punya izin menyetujui. 
+- L667: Pilih orangnya di bawah.
+- L681: Pilih penanggung jawab
+- L682: Hanya akun aktif dengan izin menyetujui 
+- L683: yang muncul di sini.
+- L691: ${roleDisplayName(
+- L706: Zona waktu
+- L707: Dipakai untuk batas hari laporan, nomor harian, dan 
+- L708: tanggal nota. Pilih sesuai lokasi toko.
+- L714: Zona waktu toko
+- L715: Contoh: WIB untuk Jakarta dan Bandung, WITA 
+- L716: untuk Makassar, WIT untuk Jayapura.
+- L734: PPN
+- L735: Tarif baru hanya berlaku untuk nota berikutnya. Nota 
+- L736: lama tetap memakai tarif saat nota dibuat.
+- L742: Aktifkan PPN
+- L744: Hidup: PPN dihitung di setiap nota. Mati: nota dibuat 
+- L745: tanpa PPN.
+- L768: Cara hitung PPN
+- L769: Ikuti aturan pajak yang berlaku di toko.
+- L791: Tarif PPN (%)
+- L792: Contoh: 11 atau 11,25. Rentang 0,01-100.
+- L794: Isi angka 0,01 sampai 100, misalnya 11 atau 11,25.
+- L803: PPN ditanggung oleh
+- L804: Pilih siapa yang membayar PPN pada nota.
+- L823: Dibayar pembeli: PPN ditambahkan ke total nota. 
+- L824: Ditanggung bengkel: PPN dicatat sebagai biaya toko dan 
+- L825: pembeli hanya membayar harga barang atau jasa.
+- L834: Peran dan akses
+- L835: Ketuk nama peran untuk mengatur menu dan tindakan yang 
+- L836: boleh dipakai. Peran baru dimulai tanpa akses, lalu pilih 
+- L837: aksesnya satu per satu.
+- L853: Menyimpan...
+- L853: Simpan aturan transaksi
+
+### `screens/stores_screen.dart`
+
+- L63: Akun Anda tidak punya akses ke toko ini. Minta pemilik menugaskan.
+- L79: Toko aktif: ${store.nama}.
+- L92: Akun gratis hanya memakai 1 toko. Menambah toko memerlukan 
+- L93: Premium dan login Google pemilik.
+- L101: Masuk dengan Google di menu Premium untuk menambah toko.
+- L116: Tambah toko (muncul 2x)
+- L127: Nama toko
+- L128: Contoh: Bengkel Jaya Motor Cabang Dago
+- L136: Alamat
+- L137: Contoh: Jl. Dago No. 21, Bandung
+- L145: Premium dihitung per toko. Kuota Anda $_storeLimit 
+- L146: toko dan saat ini terpakai ${_stores.length}.
+- L147: Akun gratis hanya memakai 1 toko. Toko tambahan 
+- L148: memerlukan Premium dan login Google pemilik.
+- L155: Fitur opsional
+- L174: Batal
+- L178: Buat toko
+- L198: Toko baru dibuat.
+- L210: Daftar toko
+- L217: ${_visibleStores.length} toko
+- L219: Setiap toko memakai berkas database terpisah. Data 
+- L220: pelanggan, nota, stok, dan kuota tidak bercampur.
+- L221: ${_premium ? 
+- L222: ${_premium && !_googleLinked ? 
+- L223: Hanya toko yang ditugaskan untuk akun Anda.
+- L229: Belum ada toko untuk akun ini.
+- L247: Alamat belum diisi
+- L252: Aktif
+
+### `screens/supplier_screen.dart`
+
+- L53: Peran ini tidak boleh mengelola supplier. (muncul 2x)
+- L74: Supplier disimpan.
+- L77: Gagal menyimpan: $error (muncul 2x)
+- L89: Hapus supplier
+- L92: supplier ini.
+- L93: Hapus (muncul 2x)
+- L103: Supplier dihapus.
+- L108: Peran ini tidak boleh mengubah status supplier.
+- L125: Status tindak lanjut disimpan.
+- L140: Fitur supplier khusus premium
+- L142: Aktifkan lisensi di menu Premium untuk mencatat supplier 
+- L143: dan menindaklanjuti barang yang menipis.
+- L154: Fitur supplier dimatikan
+- L156: Aktifkan kembali melalui Pengaturan › Fitur dan data toko.
+- L168: Supplier
+- L169: Tindak lanjut reseller
+- L170: Pembelian & Utang
+- L198: ${_suppliers.length} supplier
+- L206: Tambah supplier
+- L214: Belum ada supplier
+- L216: Tambahkan supplier, lalu hubungkan barang di layar Stok agar 
+- L217: barang menipis bisa segera dipesan ulang.
+- L247: Ubah
+- L265: Barang menipis / habis
+- L267: Batas memakai stok minimum barang, atau 3 jika belum diisi.
+- L269: Tidak ada barang supplier yang menipis.
+- L287: Ubah status
+- L291: BELUM
+- L296: ${entry.value} (aktif)
+- L376: Nama supplier minimal 2 karakter.
+- L395: Supplier baru
+- L395: Ubah supplier
+- L405: Nama supplier
+- L406: Contoh: Toko Oli Jaya
+- L407: Nama toko atau orang yang memasok barang.
+- L415: Nomor HP
+- L416: Contoh: 081234567890
+- L417: Dipakai saat menghubungi supplier lewat WhatsApp.
+- L425: Alamat
+- L426: Contoh: Jl. Industri No. 5, Bandung
+- L433: Catatan
+- L434: Contoh: Kirim setiap Senin
+- L435: Jadwal kirim, syarat bayar, atau info lain.
+- L440: Supplier aktif
+- L442: Supplier nonaktif tetap tersimpan, tetapi tidak bisa dipilih 
+- L443: saat mencatat pembelian baru.
+- L464: Batal
+- L468: Simpan supplier
+
+### `screens/sync_conflicts_screen.dart`
+
+- L12: Data di perangkat ini lebih baru
+- L13: Harga jasa dikunci pemilik
+- L14: Harga barang atau jasa tidak valid
+- L15: Harga di bawah batas modal
+- L16: Stok menjadi minus
+- L17: Tanda tangan data tidak cocok
+- L18: Data tidak bisa dibuka
+- L19: Data kembar dari perangkat lain
+- L20: Jenis data belum didukung versi ini
+- L21: Data induk belum diterima
+- L22: Perubahan gagal diterapkan
+- L23: Perubahan menunggu dicoba lagi
+- L24: Pembayaran lebih besar dari total nota
+- L25: Gaji siklus dibayar dua kali
+- L26: Retur pada nota yang sudah dibatalkan
+- L27: Retur lebih banyak dari yang terjual
+- L28: Baris retur tidak ditemukan
+- L29: Data retur tidak valid
+- L30: Koreksi pada nota yang sudah dibatalkan
+- L31: Koreksi di bawah batas
+- L32: Nota dibatalkan setelah ada retur
+- L33: Pembatalan nota dipakai
+- L34: Perlu penyesuaian saldo
+- L35: Penyesuaian saldo gagal
+- L36: Perangkat pengirim sudah tidak terdaftar
+- L37: Akun pengirim sudah nonaktif
+- L38: Peran pengirim hanya bisa melihat
+- L39: Hanya pemilik yang boleh
+- L40: Hapus order hanya oleh pemilik
+- L41: Akun mekanik penerima komisi tidak ditemukan
+- L42: Tarif komisi di nota tidak tersimpan
+- L43: Kode barang dipakai barang lain
+- L44: Barang belum punya kode
+- L45: Nomor nota sudah dipakai
+- L46: Hasil rekonsiliasi berbeda
+- L47: Pembelian tanpa supplier
+- L48: Nomor pembelian sudah dipakai
+- L49: Stok berubah setelah saldo awal
+- L54: Peran pengirim tidak berhak
+- L60: No. nota
+- L61: Karyawan (muncul 2x)
+- L62: Awal siklus
+- L63: Akhir siklus
+- L64: Tanggal
+- L65: Nominal masuk
+- L66: Nominal tersimpan
+- L67: Kas keluar
+- L68: Potongan hutang
+- L69: Total efektif
+- L70: Total dibayar
+- L71: Kelebihan bayar
+- L72: Retur aktif
+- L73: Refund void
+- L74: Stok sebelum (×1000)
+- L75: Stok sesudah (×1000)
+- L76: Terjual (×1000)
+- L77: Sudah diretur (×1000)
+- L78: Retur masuk (×1000)
+- L79: Harga modal
+- L80: Harga jual
+- L81: Kode asal
+- L82: Kode baru
+- L83: Perangkat pengirim
+- L84: Akun pengirim
+- L85: Jenis pengirim
+- L86: Pemenang
+- L87: Perlu bantuan pemilik
+- L88: Status penyesuaian
+- L89: Pesan kegagalan penyesuaian
+- L90: Retur yang disesuaikan
+- L91: Waktu pembatalan
+- L95: Nota servis (muncul 2x)
+- L97: Baris nota
+- L98: Pembayaran
+- L99: Barang (muncul 2x)
+- L101: Pergerakan stok
+- L102: Pelanggan
+- L103: Kendaraan (muncul 2x)
+- L105: Supplier
+- L106: Tindak lanjut reseller
+- L107: Pembelian
+- L108: Pembayaran utang
+- L109: Retur pembelian
+- L110: Estimasi
+- L111: Order kerja
+- L112: Status order
+- L113: Koreksi nota
+- L114: Ringkasan harian
+- L115: Permintaan data
+- L116: Jawaban permintaan data
+- L117: Pengaturan toko
+- L118: Modul toko
+- L119: Saldo awal
+- L121: Gaji karyawan
+- L122: Harga jasa
+- L123: Pembayaran PPN
+- L142: Ya
+- L142: Tidak
+- L154: Diabaikan
+- L155: Selesai (muncul 2x)
+- L157: Perlu tindakan
+- L158: Menunggu dicoba lagi
+- L159: Tercatat
+- L171: dd/MM/yyyy HH:mm
+- L200: Perubahan dicoba lagi.
+- L204: Masih belum bisa diterapkan: $error
+- L219: Selesaikan dengan bantuan pemilik
+- L220: Abaikan perubahan ini
+- L222: Perubahan ditandai selesai dengan bantuan pemilik dan dicatat di 
+- L223: riwayat. Nota atau data yang sudah ada tidak diubah.
+- L224: Perubahan ini tidak diterapkan di perangkat ini dan ditandai 
+- L225: selesai. Catatan masalah ini tetap tersimpan.
+- L226: Selesaikan
+- L226: Abaikan (muncul 2x)
+- L240: Perubahan diselesaikan dengan bantuan pemilik.
+- L241: Perubahan ditandai diabaikan.
+- L248: Perubahan gagal ditandai: $error
+- L265: Sinkronisasi gagal: $error
+- L277: Data yang perlu diputuskan
+- L282: Sinkron sekarang
+- L292: Ringkasan
+- L293: Jumlah data yang belum selesai dan antrean 
+- L297: Belum selesai
+- L298: Antrean kirim
+- L299: Gagal diterapkan
+- L316: Tidak ada data yang perlu diputuskan.
+- L353: ${_entityLabel(
+- L355: ${needsOwner ? 
+- L360: Waktu
+- L361: Percobaan
+- L363: Kompensasi
+- L384: Rincian
+- L409: Coba lagi
+- L416: Selesaikan dengan pemilik
+- L433: Data ini tidak bisa dipulihkan otomatis. Minta perangkat 
+- L434: pengirim mengirim ulang datanya, lalu sinkronkan lagi.
+- L439: Gagal, perlu bantuan pemilik
+- L440: Menunggu perangkat asal
+
+### `session_recovery.dart`
+
+- L36: Masukkan kode pemulihan pemilik.
+- L47: Kode pemulihan tidak cocok. Periksa huruf dan angkanya.
+- L54: ID pemilik tidak ditemukan di perangkat ini.
+- L62: Pemilik
+- L70: Buat PIN pemilik baru
+- L72: Kode pemulihan benar. Buat PIN baru untuk membuka aplikasi 
+- L73: di perangkat ini.
+- L89: Pemulihan gagal. $error
+- L122: Sesi pemilik tidak ditemukan
+- L128: Data toko tetap tersimpan di perangkat ini. Untuk 
+- L129: membuka akses pemilik, masukkan kode pemulihan yang 
+- L130: ditampilkan saat aplikasi pertama kali diaktifkan. 
+- L131: Kode itu hanya muncul sekali.
+- L139: Kode pemulihan pemilik
+- L140: Tempel kode yang Anda simpan.
+- L141: Kode ditampilkan sekali saat aplikasi 
+- L142: pertama kali diaktifkan.
+- L161: Pulihkan akses pemilik
+- L166: Masuk sebagai karyawan
+- L170: Karyawan tetap dapat masuk dengan akun dan password 
+
+### `startup_recovery.dart`
+
+- L52: Buka mode aman?
+- L54: Data yang gagal dibuka akan dipindahkan ke berkas "corrupt-..." 
+- L55: di folder aplikasi, lalu aplikasi mulai dengan data kosong. Berkas 
+- L56: lama tidak dihapus dan masih bisa diekspor atau dipulihkan.
+- L61: Batal (muncul 3x)
+- L65: Buka mode aman (muncul 2x)
+- L140: Kata sandi cadangan (muncul 2x)
+- L146: Cadangan ini dikunci kata sandi yang Anda buat saat 
+- L147: membuat cadangan.
+- L148: Kosongkan bila cadangan dibuat tanpa kata sandi.
+- L156: Ketik kata sandi yang sama seperti saat membuat 
+- L169: Buka cadangan
+- L191: Konfirmasi pemilik
+- L196: Memulihkan cadangan akan mengganti seluruh data di perangkat 
+- L197: ini. Masukkan PIN pemilik untuk melanjutkan.
+- L206: PIN pemilik
+- L221: Masukkan PIN pemilik.
+- L226: Lanjutkan pemulihan
+- L241: Terlalu banyak percobaan. Coba lagi nanti.
+- L242: PIN pemilik salah.
+- L243: PIN pemilik tidak dapat diverifikasi.
+- L264: Simpan berkas data
+- L274: Ekspor dibatalkan.
+- L275: Berkas data tersimpan. Jangan bagikan ke pihak lain.
+- L282: Ekspor gagal. $error
+- L291: PusatkuPOS
+- L318: Aplikasi gagal dibuka
+- L324: Data tidak dihapus. Pilih tindakan pemulihan di 
+- L325: bawah. Jika ragu, ekspor berkas data lebih dulu, 
+- L326: lalu hubungi dukungan.
+- L341: Diagnosis awal
+- L374: Versi data: v${AppDatabase.schemaVersion} · 
+- L375: versi aturan: 
+- L376: v${AppDatabase.schemaContractVersion}
+- L391: Coba buka ulang
+- L397: Pulihkan dari cadangan
+- L403: Ekspor berkas data
+
+### `theme.dart`
+
+_Tidak ada teks tampilan langsung (hanya logika atau gaya)._
+
+### `upload_backup_dialog.dart`
+
+- L48: Pemeriksaan gagal. $error (muncul 2x)
+- L97: Unggahan gagal. $error
+- L109: Periksa kelengkapan cadangan
+- L131: Memeriksa perangkat toko...
+- L137: Pemeriksaan tidak dapat dilakukan.
+- L153: Cadangan baru bisa diunggah setelah semua perangkat toko mengirim 
+- L154: data terbaru. Perangkat yang tidak terhubung internet akan menahan 
+- L155: proses ini.
+- L162: $synced dari $total perangkat sudah sinkron
+- L181: Ada data baru masuk setelah pemeriksaan. Periksa ulang sebelum 
+- L188: Minta karyawan membuka aplikasi, lalu menekan Sinkron sekarang. 
+- L189: Perangkat yang benar-benar hilang bisa dicabut di menu Akses.
+- L213: Sudah sinkron
+- L214: Akses dicabut
+- L215: Belum sinkron
+- L218: Karyawan
+- L219: Ringkasan
+- L220: Pemilik
+- L259: Tutup
+- L263: Memeriksa...
+- L263: Periksa lagi
+- L275: Unggah cadangan
+
+### `widgets.dart`
+
+- L207: Lanjutkan
+- L217: Batal
+- L230: MOBIL
+- L230: Mobil
+- L231: MOTOR_LENGKAP
+- L231: Motor lengkap
+- L232: PART_MOBIL
+- L232: Part mobil
+- L233: PART_MOTOR
+- L233: Part motor
+- L234: RADIATOR_ONLY
+- L234: Radiator saja
+- L235: SPAREPART
+- L235: Sparepart
+
+### `widgets/health_surface.dart`
+
+- L225: Cadangan belum ada
+- L226: Cadangan ${dateTimeId.format(snapshot.backupAt!.toLocal())}
+- L229: Arsip ${snapshot.archivePending} menunggu
+- L230: Arsip ${snapshot.archiveArchived} nota
+- L231: Cetak ${snapshot.printFailed} gagal
+- L301: Status perangkat
+- L311: Cadangan lokal
+- L317: Belum ada cadangan lokal yang berhasil dibuat.
+- L318: Terakhir berhasil:  (muncul 2x)
+- L321: Percobaan terakhir: 
+- L324: Status terakhir: ${_backupStatusLabel(s.backupStatus)}
+- L326: Kesalahan: ${friendlyError(s.backupError)}
+- L328: Cadangan terakhir sudah lebih dari 7 hari. Buat cadangan 
+- L329: baru di Pengaturan.
+- L334: Sinkronisasi
+- L341: Akun gratis: sinkronisasi server tidak dipakai.
+- L343: Perangkat belum terhubung ke server akun. Hubungkan 
+- L344: perangkat dari menu Premium.
+- L346: Server: ${s.syncHost}
+- L348: Belum pernah sinkron berhasil.
+- L351: Menunggu dikirim: ${s.syncPending} · 
+- L352: gagal: ${s.syncFailed} · 
+- L353: perlu diputuskan: ${s.syncConflicts}
+- L355: Kesalahan: ${friendlyError(s.syncError)}
+- L361: Arsip nota
+- L365: Arsip server hanya tersedia untuk akun premium.
+- L367: Tersimpan: ${s.archiveArchived} · 
+- L368: menunggu: ${s.archivePending} · 
+- L369: gagal: ${s.archiveFailed}
+- L371: Belum ada nota yang selesai diarsipkan.
+- L372: Arsip terakhir: 
+- L375: Kesalahan: ${friendlyError(s.archiveError)}
+- L381: Antrean cetak
+- L384: Menunggu dicetak: ${s.printPending} · 
+- L385: gagal: ${s.printFailed}
+- L387: Buka Riwayat atau struk nota, lalu tekan "Cetak ulang". 
+- L387: Cetak ulang
+- L388: Struk tidak hilang saat printer gagal.
+- L399: Periksa bagian yang ditandai merah. Pemeriksaan ini 
+- L400: tidak menghapus data di perangkat.
+- L411: Periksa lagi
+- L415: Tutup
+
+### `widgets/store_switcher.dart`
+
+- L18: Pilih toko aktif
+- L47: Batal
+
+### `widgets/sync_status_banner.dart`
+
+- L110: Perangkat ini belum pernah berhasil mengirim data ke server.
+- L111: Pengiriman terakhir 
+- L113: (sudah lebih dari 24 jam).
+- L115: $_outstanding data menunggu dikirim.
+- L116: Tidak ada data baru yang menunggu dikirim.
+- L133: Data belum terkirim ke server
+- L265: Perangkat sudah terhubung. Tunggu pemilik mengirim kunci toko 
+- L266: sebelum data bisa dikirim.
+- L271: Cadangan data dari server sudah dimuat. Tekan Sinkron lagi untuk 
+- L272: mengambil perubahan berikutnya.
+- L277: Data di perangkat ini tertinggal. Minta pemilik mengunggah 
+- L278: cadangan data dari perangkat utamanya.
+- L292: Sinkron gagal. ${friendlyError(error)}
+- L321: Pemilik mencabut akses perangkat ini. Sinkronisasi berhenti, 
+- L322: tetapi data di perangkat tidak dihapus. Ekspor data yang 
+- L323: belum terkirim, lalu hubungkan perangkat lagi.
+- L341: Ekspor lalu atur ulang
+- L341: Keluar dari akun
+- L361: Perbarui aplikasi. Versi ini tidak didukung server lagi, 
+- L362: jadi sinkronisasi berhenti sampai aplikasi diperbarui. 
+- L363: Data di perangkat tetap aman.
+- L374: Belum pernah sinkron
+- L375: Terakhir ${dateTimeId.format(_lastSuccess!)}
+- L378: $_pending menunggu dikirim
+- L379: $_failed gagal terkirim
+- L380: $_conflicts perlu diputuskan
+- L415: Sinkron
+- L439: Belum ada cadangan lokal. Buka Pengaturan untuk membuatnya.
+- L440: Cadangan lokal terakhir: ${dateTimeId.format(at)}
+
+---
+
+## Catatan verifikasi
+
+Katalog ini dihasilkan dari kode sumber, bukan dari tangkapan layar. Setelah
+perubahan copy, pemeriksaan statis dijalankan dengan `dart analyze`. Uji
+tampilan di perangkat belum dijalankan karena aturan proyek menunda build dan
+uji runtime sampai ada persetujuan.

@@ -150,7 +150,7 @@ class _HomeShellState extends State<HomeShell>
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Pengingat utang supplier'),
+          title: const Text('Tagihan supplier mendekati jatuh tempo'),
           content: SizedBox(
             width: 420,
             child: Column(
@@ -170,7 +170,7 @@ class _HomeShellState extends State<HomeShell>
                     ),
                     title: Text('${row['no_pembelian']}'),
                     subtitle: Text(
-                      '${row['supplier_nama_snapshot']} · jatuh tempo '
+                      '${row['supplier_nama_snapshot']} · batas bayar '
                       '${row['jatuh_tempo']}',
                     ),
                   ),
@@ -180,7 +180,7 @@ class _HomeShellState extends State<HomeShell>
           actions: [
             FilledButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Mengerti'),
+              child: const Text('Tutup'),
             ),
           ],
         ),
@@ -196,7 +196,7 @@ class _HomeShellState extends State<HomeShell>
         return store.nama;
       }
     }
-    return 'Pilih toko aktif';
+    return 'Toko belum dipilih';
   }
 
   Future<void> _openStoreSwitcher() async {
@@ -223,10 +223,18 @@ class _HomeShellState extends State<HomeShell>
       await AppState.instance.reloadStore();
       await _loadStores();
       if (!mounted) return;
-      showSnack(context, 'Toko aktif: ${selected.nama}.');
+      showSnack(
+        context,
+        'Toko aktif sekarang ${selected.nama}. Semua layar memakai data '
+        'toko ini.',
+      );
     } catch (error) {
       if (!mounted) return;
-      showSnack(context, '$error', error: true);
+      showSnack(
+        context,
+        'Toko tidak bisa diganti. $error',
+        error: true,
+      );
     } finally {
       AppState.instance.endStoreSwitch();
     }
@@ -241,8 +249,8 @@ class _HomeShellState extends State<HomeShell>
     'Order',
     'Jasa',
     'Laporan',
-    'Supplier & Reseller',
-    'Follow up',
+    'Supplier dan reseller',
+    'Pengingat pelanggan',
     'Karyawan',
     'Pengaturan',
     'Premium',
@@ -346,7 +354,7 @@ class _HomeShellState extends State<HomeShell>
 
   Widget _buildNoAccess() {
     return Scaffold(
-      appBar: AppBar(title: const Text('Akses terbatas')),
+      appBar: AppBar(title: const Text('Menu belum dibuka')),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -360,20 +368,21 @@ class _HomeShellState extends State<HomeShell>
               ),
               const SizedBox(height: 16),
               Text(
-                'Akun ini belum diberi akses menu apa pun.',
+                'Akun Anda belum punya menu yang bisa dibuka.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               const Text(
-                'Hubungi pemilik untuk mengatur menu dan tindakan yang boleh dibuka.',
+                'Minta pemilik membuka menu untuk akun Anda di Pengaturan, '
+                'lalu masuk lagi.',
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
               FilledButton.icon(
                 onPressed: () => signOutToOnboarding(context),
                 icon: const Icon(Icons.logout),
-                label: const Text('Keluar'),
+                label: const Text('Keluar dari akun'),
               ),
             ],
           ),
@@ -384,7 +393,7 @@ class _HomeShellState extends State<HomeShell>
 
   Widget _buildLocked() {
     return Scaffold(
-      appBar: AppBar(title: const Text('Sesi tidak aktif')),
+      appBar: AppBar(title: const Text('Aplikasi terkunci')),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -398,14 +407,14 @@ class _HomeShellState extends State<HomeShell>
               ),
               const SizedBox(height: 16),
               Text(
-                'Sesi operator tidak tersedia.',
+                'Sesi Anda sudah berakhir atau terkunci.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               const Text(
-                'Buka aplikasi kembali dan masukkan PIN. Tidak ada menu yang '
-                'dibuka tanpa identitas yang terverifikasi.',
+                'Masuk lagi dengan PIN Anda. Menu toko hanya terbuka setelah '
+                'PIN diperiksa.',
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
@@ -418,7 +427,7 @@ class _HomeShellState extends State<HomeShell>
                   );
                 },
                 icon: const Icon(Icons.login),
-                label: const Text('Buka kunci'),
+                label: const Text('Masuk dengan PIN'),
               ),
             ],
           ),
@@ -461,7 +470,7 @@ class _HomeShellState extends State<HomeShell>
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 Text(
-                  '${appState.operator?.label ?? 'Sesi tidak aktif'} · '
+                  '${appState.operator?.label ?? 'Belum masuk'} · '
                   '${appState.storeAddress.isEmpty ? appState.storeName : appState.storeAddress}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -471,7 +480,7 @@ class _HomeShellState extends State<HomeShell>
             ),
             actions: [
               IconButton(
-                tooltip: 'Ganti tema',
+                tooltip: 'Ganti tampilan terang atau gelap',
                 onPressed: () {
                   final dark = Theme.of(context).brightness == Brightness.dark;
                   appState.setThemeMode(
@@ -551,7 +560,7 @@ class _HomeShellState extends State<HomeShell>
                       ),
                     const NavigationDestination(
                       icon: Icon(Icons.menu),
-                      label: 'Menu',
+                      label: 'Menu lain',
                     ),
                   ],
                 ),
@@ -588,7 +597,7 @@ class _HomeShellState extends State<HomeShell>
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                         Text(
-                          '${appState.operator?.label ?? 'Sesi tidak aktif'} · '
+                          '${appState.operator?.label ?? 'Belum masuk'} · '
                           '${appState.storeAddress.isEmpty ? 'PusatkuPOS' : appState.storeAddress}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -608,7 +617,7 @@ class _HomeShellState extends State<HomeShell>
                   if (_stores.length > 1 && index == 0) {
                     return ListTile(
                       leading: const Icon(Icons.swap_horiz),
-                      title: const Text('Ganti toko'),
+                      title: const Text('Ganti toko aktif'),
                       subtitle: Text(_activeStoreName()),
                       onTap: () {
                         Navigator.of(context).pop();

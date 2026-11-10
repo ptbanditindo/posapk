@@ -23,8 +23,9 @@ class ProtocolVersionException implements Exception {
 
   @override
   String toString() =>
-      'Amplop memakai protokol v$received, perangkat ini hanya mengenal '
-      'v$requiredVersion. Perbarui aplikasi untuk melanjutkan sinkronisasi.';
+      'Data dari perangkat lain memakai versi sinkronisasi v$received, '
+      'sedangkan perangkat ini hanya mengenal v$requiredVersion. Perbarui '
+      'aplikasi untuk melanjutkan sinkronisasi.';
 }
 
 /// Konflik domain yang menuntut dokumen kompensasi. Transaksi penerapan
@@ -285,17 +286,17 @@ class SyncConflictRules {
         'Muat ulang kunci toko dari perangkat pemilik, lalu coba lagi.',
       'tanda_tangan_tidak_valid' || 'dekripsi_gagal' =>
         'Minta pemilik mengirim ulang kunci toko. Bila tetap gagal, '
-            'abaikan amplop ini dan minta perangkat pengirim mengirim ulang.',
+            'abaikan data ini dan minta perangkat pengirim mengirim ulang.',
       'amplop_tidak_lengkap' || 'petunjuk_tidak_cocok' ||
       'idempotency_tidak_valid' =>
-        'Amplop rusak dan tidak dapat dipulihkan. Minta perangkat pengirim '
-            'mengirim ulang dokumennya.',
+        'Data ini rusak dan tidak bisa dipulihkan. Minta perangkat pengirim '
+            'mengirim ulang datanya.',
       'konflik_unik' =>
         'Data bentrok dengan dokumen lain. Selesaikan bentrok lalu coba lagi.',
       'kompensasi_dibutuhkan' || 'kompensasi_gagal' =>
-        'Perangkat asal perlu menerbitkan dokumen kompensasi. Bila tidak '
-            'selesai dalam 7 hari, pemilik dapat menyelesaikannya dari layar '
-            'Konflik.',
+        'Perangkat asal perlu membuat penyesuaian data. Bila tidak selesai '
+            'dalam 7 hari, pemilik dapat menyelesaikannya dari layar Data '
+            'yang perlu diputuskan.',
       _ => '',
     };
   }

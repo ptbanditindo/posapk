@@ -31,6 +31,15 @@ import 'screens/sync_conflicts_screen.dart';
 const _summaryKey = 'owner.summary.signed';
 const _enrollKey = 'owner.enroll_token';
 
+String _statusBayarLabel(String value) => switch (value.toUpperCase()) {
+      'LUNAS' => 'Lunas',
+      'KREDIT' => 'Belum lunas',
+      _ => value,
+    };
+
+String _deviceKindLabel(Object? value) =>
+    '${value ?? ''}' == 'owner' ? 'Pemilik' : 'Karyawan';
+
 class OwnerViewerShell extends StatefulWidget {
   const OwnerViewerShell({super.key});
 
@@ -129,7 +138,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
 
   Future<void> _pickSummary() async {
     final file = await FilePicker.pickFile(
-      dialogTitle: 'Pilih ringkasan owner',
+      dialogTitle: 'Pilih ringkasan pemilik',
       type: FileType.custom,
       allowedExtensions: const ['json'],
     );
@@ -149,18 +158,21 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       final signature = data['signature'] as String? ?? '';
       final publicKey = data['public_key'] as String? ?? '';
       if (signature.isEmpty || publicKey.isEmpty) {
-        throw const FormatException('Tanda tangan ringkasan tidak ada.');
+        throw const FormatException(
+          'Ringkasan tidak lengkap: tanda tangan tidak ditemukan.',
+        );
       }
       final trustedKey = serverLicensePublicKey.trim();
       if (trustedKey.isEmpty) {
         throw const FormatException(
-          'Kunci lisensi server belum tersedia. Ringkasan tidak dapat '
-          'diverifikasi.',
+          'Kunci lisensi server belum tersedia, jadi ringkasan belum bisa '
+          'diperiksa.',
         );
       }
       if (trustedKey != publicKey) {
         throw const FormatException(
-          'Ringkasan ditandatangani kunci tak dikenal.',
+          'Ringkasan dibuat oleh kunci yang tidak dikenal. Minta salinan '
+          'baru dari pemilik.',
         );
       }
       final verified = await Ed25519().verify(
@@ -174,7 +186,10 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         ),
       );
       if (!verified) {
-        throw const FormatException('Tanda tangan ringkasan tidak valid.');
+        throw const FormatException(
+          'Tanda tangan ringkasan tidak cocok. Minta salinan baru dari '
+          'pemilik.',
+        );
       }
       final viewedOwner = '${payload['owner_id'] ?? ''}';
       final sessionOwner = _profile?.ownerId ?? '';
@@ -239,12 +254,15 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
 
   Future<void> _connectViewerBody({required bool silent}) async {
     if (_summary == null) {
-      if (!silent) _snack('Ringkasan belum tersedia.', error: true);
+      if (!silent) {
+        _snack('Ringkasan pemilik belum tersedia.', error: true);
+      }
       return;
     }
     if (_enrollToken.isEmpty) {
       if (!silent) {
-        _snack('Sesi sudah berakhir. Masuk ulang dengan Google.', error: true);
+        _snack('Sesi sudah berakhir. Masuk ulang dengan akun Google.',
+            error: true);
       }
       return;
     }
@@ -262,14 +280,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       final relayId = await SyncService.instance.relayDeviceId();
       if (device == null || relayId == null || relayId.isEmpty) {
         final result = await SyncService.instance.registerRelayDevice(
-          nama: 'Ringkasan owner',
+          nama: 'Ringkasan pemilik',
           viewer: true,
         );
         if (!silent) {
           _snack(
             result['key_pending'] == true
-                ? 'Perangkat terdaftar. Kunci toko akan menyusul.'
-                : 'Perangkat ringkasan terhubung.',
+                ? 'Perangkat terdaftar. Kunci toko akan dikirim menyusul.'
+                : 'Perangkat ringkasan sudah terhubung.',
           );
         }
       } else {
@@ -301,8 +319,8 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       if (mounted) {
         _snack(
           result['snapshot_applied'] == true
-              ? 'Salinan diterapkan sampai urutan ${result['cursor']}.'
-              : 'Sinkron: ${result['applied']} diterapkan.',
+              ? 'Salinan toko dipasang sampai urutan ${result['cursor']}.'
+              : 'Sinkron selesai: ${result['applied']} data diterima.',
         );
       }
     } catch (error) {
@@ -324,8 +342,8 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       if (mounted) {
         _snack(
           result['applied'] == true
-              ? 'Salinan diterapkan sampai urutan ${result['cursor']}.'
-              : 'Belum ada salinan yang dapat diterapkan.',
+              ? 'Salinan toko dipasang sampai urutan ${result['cursor']}.'
+              : 'Belum ada salinan toko yang bisa dipasang.',
         );
       }
     } catch (error) {
@@ -456,17 +474,28 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                 TextField(
                   controller: username,
                   enabled: account == null,
-                  decoration: const InputDecoration(labelText: 'Username'),
+                  decoration: const InputDecoration(
+                    labelText: 'Nama pengguna',
+                    helperText: 'Dipakai untuk masuk, tanpa spasi. '
+                        'Contoh: budi.',
+                  ),
                 ),
                 const SizedBox(height: 10),
                 TextField(
                   controller: nama,
-                  decoration: const InputDecoration(labelText: 'Nama'),
+                  decoration: const InputDecoration(
+                    labelText: 'Nama lengkap',
+                    helperText: 'Contoh: Budi Santoso.',
+                  ),
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
                   initialValue: roleOptions.contains(role) ? role : 'KASIR',
-                  decoration: const InputDecoration(labelText: 'Peran'),
+                  decoration: const InputDecoration(
+                    labelText: 'Peran',
+                    helperText: 'Menentukan menu dan tindakan yang bisa '
+                        'dibuka.',
+                  ),
                   items: roleOptions
                       .map(
                         (item) => DropdownMenuItem(
@@ -486,21 +515,36 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                     labelText: account == null
                         ? 'Password awal'
                         : 'Password baru (kosongkan jika tetap)',
+                    helperText: account == null
+                        ? 'Minimal 8 huruf atau angka. Berikan ke karyawan.'
+                        : 'Kosongkan jika password tidak diganti.',
                   ),
                 ),
                 const SizedBox(height: 10),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Aktif'),
+                  title: const Text('Akun aktif'),
+                  subtitle: const Text(
+                    'Karyawan bisa masuk dan memakai aplikasi.',
+                  ),
                   value: aktif,
                   onChanged: (value) => setDialogState(() => aktif = value),
                 ),
                 const SizedBox(height: 6),
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Izin tambahan',
-                    style: Theme.of(context).textTheme.titleSmall,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Izin tambahan',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      Text(
+                        'Centang hanya izin yang benar-benar dibutuhkan.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   ),
                 ),
                 Wrap(
@@ -577,17 +621,19 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                   );
                   if (context.mounted) Navigator.pop(context, true);
                   if (temp.isNotEmpty && mounted) {
-                    _snack('Password awal: $temp');
+                    _snack('Password awal: $temp. Catat sekarang.');
                   }
                 } catch (error) {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('$error')),
+                      SnackBar(
+                        content: Text('Akun gagal disimpan: $error'),
+                      ),
                     );
                   }
                 }
               },
-              child: const Text('Simpan'),
+              child: const Text('Simpan akun'),
             ),
           ],
         ),
@@ -606,7 +652,8 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         .map((e) => '$e')
         .toList();
     if (stores.isEmpty) {
-      _snack('Akun belum punya toko.', error: true);
+      _snack('Akun ini belum diberi toko. Pilih toko dulu saat mengubah '
+          'akun.', error: true);
       return;
     }
     final storeId = stores.first;
@@ -620,7 +667,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Kode undangan'),
+          title: const Text('Kode hubungkan perangkat'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -660,7 +707,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         ),
       );
     } catch (error) {
-      if (mounted) _snack('$error', error: true);
+      if (mounted) _snack('Kode gagal dibuat: $error', error: true);
     }
   }
 
@@ -671,7 +718,10 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Cabut perangkat'),
-        content: Text('Cabut ${device['nama']}?'),
+        content: Text(
+          'Cabut ${device['nama']}? Perangkat itu harus dihubungkan ulang '
+          'untuk mengirim data.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -689,7 +739,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       await api.revokeDevice('${device['id']}');
       await _refreshAccess();
     } catch (error) {
-      if (mounted) _snack('$error', error: true);
+      if (mounted) _snack('Perangkat gagal dicabut: $error', error: true);
     }
   }
 
@@ -699,8 +749,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       builder: (context) => AlertDialog(
         title: const Text('Keluar dari ringkasan?'),
         content: const Text(
-          'PIN dan sesi dihapus. Salinan ringkasan di perangkat ini juga '
-          'dihapus; masuk lagi memerlukan salinan baru dari server akun.',
+          'PIN dan sesi akan dihapus. Salinan ringkasan di perangkat ini juga '
+          'dihapus. Untuk masuk lagi, Anda perlu salinan baru dari server '
+          'akun.',
         ),
         actions: [
           TextButton(
@@ -780,7 +831,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                   Tab(text: 'Ringkasan'),
                   Tab(text: 'Riwayat'),
                   Tab(text: 'Laporan'),
-                  Tab(text: 'Data & Backup'),
+                  Tab(text: 'Data dan cadangan'),
                   Tab(text: 'Akses'),
                   Tab(text: 'Pengaturan'),
                 ],
@@ -814,7 +865,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
             Text(
               _error ??
                   'Salinan toko belum tersedia. Pastikan perangkat toko '
-                      'sudah mengunggah salinan.',
+                      'sudah mengunggah cadangan data.',
               textAlign: TextAlign.center,
             ),
             if (!_busy) ...[
@@ -843,14 +894,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           children: [
             Expanded(
               child: _metric(
-                'Omzet neto hari ini',
+                'Omzet hari ini',
                 dashboard.todayRevenueCents,
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
               child: _metric(
-                'Transaksi',
+                'Jumlah nota',
                 dashboard.todayCount,
                 money: false,
               ),
@@ -932,10 +983,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           child: TextField(
             controller: _search,
             decoration: InputDecoration(
-              hintText: 'Cari nota atau pelanggan',
+              hintText: 'Cari no. nota atau nama pelanggan',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: IconButton(
                 onPressed: _loadLocal,
+                tooltip: 'Muat ulang daftar',
                 icon: const Icon(Icons.refresh),
               ),
             ),
@@ -945,7 +997,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         Expanded(
           child: _records.isEmpty
               ? const Center(
-                  child: Text('Belum ada data. Muat salinan toko.'),
+                  child: Text('Belum ada data. Muat salinan toko dulu.'),
                 )
               : ListView.separated(
                   padding: const EdgeInsets.all(16),
@@ -971,7 +1023,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(formatRupiah(row.totalCents)),
-                            Text(row.isVoid ? 'VOID' : row.statusBayar),
+                            Text(
+                              row.isVoid
+                                  ? 'Dibatalkan'
+                                  : _statusBayarLabel(row.statusBayar),
+                            ),
                           ],
                         ),
                       ),
@@ -999,7 +1055,12 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               _row('Pelanggan', record.customerNama),
               _row('Unit', record.unitLabel),
               _row('Waktu', _dateFormat.format(record.waktu)),
-              _row('Status', record.isVoid ? 'VOID' : record.statusBayar),
+              _row(
+                'Status nota',
+                record.isVoid
+                    ? 'Dibatalkan'
+                    : _statusBayarLabel(record.statusBayar),
+              ),
               const Divider(),
               _row('Jasa', formatRupiah(record.jasaEfektifCents)),
               _row('Part', formatRupiah(record.partEfektifCents)),
@@ -1007,8 +1068,11 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               if (record.totalReturCents > 0)
                 _row('Retur', '-${formatRupiah(record.totalReturCents)}'),
               _row('Total', formatRupiah(record.totalCents)),
-              _row('Dibayar', formatRupiah(detail.totalDibayarCents)),
-              _row('Sisa', formatRupiah(detail.sisaCents)),
+              _row(
+                'Sudah dibayar',
+                formatRupiah(detail.totalDibayarCents),
+              ),
+              _row('Sisa tagihan', formatRupiah(detail.sisaCents)),
               if (record.keluhan.isNotEmpty) ...[
                 const Divider(),
                 Text(record.keluhan),
@@ -1039,17 +1103,17 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           'Hari ini',
           Column(
             children: [
-              _row('Transaksi', '${today.transaksi}'),
-              _row('Omzet bruto', formatRupiah(today.totalCents)),
+              _row('Jumlah nota', '${today.transaksi}'),
+              _row('Omzet sebelum retur', formatRupiah(today.totalCents)),
               _row('Retur', '-${formatRupiah(today.returCents)}'),
-              _row('Omzet neto', formatRupiah(today.totalNetCents)),
-              _row('Kas diterima', formatRupiah(
+              _row('Omzet setelah retur', formatRupiah(today.totalNetCents)),
+              _row('Uang diterima', formatRupiah(
                 today.cashByMethod.values.fold<int>(
                   0,
                   (sum, value) => sum + value,
                 ),
               )),
-              _row('Dibayar', formatRupiah(today.dibayarCents)),
+              _row('Sudah dibayar', formatRupiah(today.dibayarCents)),
               _row('Piutang', formatRupiah(today.piutangCents)),
             ],
           ),
@@ -1059,14 +1123,14 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           'Semua data',
           Column(
             children: [
-              _row('Transaksi', '${all.transaksi}'),
-              _row('Jasa', formatRupiah(all.totalJasaCents)),
-              _row('Part', formatRupiah(all.totalPartCents)),
+              _row('Jumlah nota', '${all.transaksi}'),
+              _row('Penjualan jasa', formatRupiah(all.totalJasaCents)),
+              _row('Penjualan part', formatRupiah(all.totalPartCents)),
               _row('Diskon', formatRupiah(all.diskonCents)),
-              _row('Omzet bruto', formatRupiah(all.totalCents)),
+              _row('Omzet sebelum retur', formatRupiah(all.totalCents)),
               _row('Retur', '-${formatRupiah(all.returCents)}'),
-              _row('Omzet neto', formatRupiah(all.totalNetCents)),
-              _row('Dibayar', formatRupiah(all.dibayarCents)),
+              _row('Omzet setelah retur', formatRupiah(all.totalNetCents)),
+              _row('Sudah dibayar', formatRupiah(all.dibayarCents)),
               _row('Piutang', formatRupiah(all.piutangCents)),
             ],
           ),
@@ -1076,8 +1140,8 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
           'Data lain',
           Column(
             children: [
-              _row('Pelanggan', '${_customers.length}'),
-              _row('Item stok', '${_stock.length}'),
+              _row('Jumlah pelanggan', '${_customers.length}'),
+              _row('Jumlah barang di stok', '${_stock.length}'),
             ],
           ),
         ),
@@ -1111,18 +1175,18 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                 'Kunci toko',
                 _keyReady ? 'tersedia' : 'menunggu dari perangkat toko',
               ),
-              _row('Kursor', '${status?['cursor'] ?? 0}'),
-              _row('Antrean', '${status?['pending'] ?? 0}'),
+              _row('Nomor urut data', '${status?['cursor'] ?? 0}'),
+              _row('Data menunggu dikirim', '${status?['pending'] ?? 0}'),
               _row('Sinkron terakhir', _lastSyncLabel(status)),
               _row(
-                'Konflik / gagal',
+                'Data bermasalah / gagal',
                 '${((status?['failed'] as int?) ?? 0) + ((status?['blocking'] as int?) ?? 0)}',
               ),
               if (status?['stale'] == true)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Perubahan belum terkirim lebih dari 24 jam.',
+                    'Ada perubahan yang belum terkirim lebih dari 24 jam.',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                       fontSize: 12,
@@ -1154,7 +1218,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                 ),
               ),
               icon: const Icon(Icons.warning_amber_outlined),
-              label: Text('Konflik (${status?['conflicts'] ?? 0})'),
+              label: Text(
+                'Perlu diputuskan (${status?['conflicts'] ?? 0})',
+              ),
             ),
           ],
         ),
@@ -1162,9 +1228,9 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
         _card(
           'Cadangan',
           const Text(
-            'Mode ringkasan hanya membaca pembukuan dan memuat salinan. '
+            'Mode ringkasan hanya membaca pembukuan dan memuat cadangan data. '
             'Unggah cadangan dilakukan dari perangkat toko agar semua data '
-            'perangkat ikut lengkap.',
+            'ikut lengkap.',
           ),
         ),
         if (_error != null) ...[
@@ -1207,7 +1273,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
             FilledButton.tonalIcon(
               onPressed: () => _editAccount(),
               icon: const Icon(Icons.person_add_alt_1),
-              label: const Text('Akun'),
+              label: const Text('Tambah akun'),
             ),
           ],
         ),
@@ -1265,7 +1331,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
               ),
               title: Text('${device['nama']}'),
               subtitle: Text(
-                '${device['kind']} · ${device['id']}\n'
+                '${_deviceKindLabel(device['kind'])} · ${device['id']}\n'
                 '${device['revoked_at'] == null || '${device['revoked_at']}'.isEmpty ? 'aktif' : 'dicabut'}'
                 '${device['kind'] == 'employee' ? ' · kunci ${device['has_key'] == true ? 'ada' : 'belum'}' : ''}',
               ),
@@ -1293,7 +1359,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                     title: Text('${invite['username']} · ${invite['store_id']}'),
                     subtitle: Text(
                       '${invite['claimed_at'] == null || '${invite['claimed_at']}'.isEmpty ? 'belum dipakai' : 'sudah dipakai'}'
-                      ' · berlaku ${invite['expires_at']}',
+                      ' · berlaku sampai ${invite['expires_at']}',
                     ),
                   ),
                 ),
@@ -1314,10 +1380,10 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       padding: const EdgeInsets.all(16),
       children: [
         _card(
-          'Ringkasan owner',
+          'Ringkasan pemilik',
           Column(
             children: [
-              _row('ID owner', '${summary?.payload['owner_id'] ?? '-'}'),
+              _row('ID pemilik', '${summary?.payload['owner_id'] ?? '-'}'),
               _row('Paket', '${summary?.payload['plan'] ?? '-'}'),
               _row(
                 'Berlaku sampai',
@@ -1369,7 +1435,7 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
                   ),
                   OutlinedButton(
                     onPressed: _busy ? null : _pickSummary,
-                    child: const Text('Impor ringkasan owner'),
+                    child: const Text('Impor ringkasan pemilik'),
                   ),
                 ],
               ),
@@ -1395,7 +1461,10 @@ class _OwnerViewerShellState extends State<OwnerViewerShell>
       color: Theme.of(context).colorScheme.errorContainer,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Text(_error ?? ''),
+        child: Text(
+          'Ada masalah: ${_error ?? ''}\n'
+          'Periksa koneksi lalu coba lagi.',
+        ),
       ),
     );
   }

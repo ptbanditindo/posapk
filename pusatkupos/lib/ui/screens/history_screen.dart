@@ -26,6 +26,32 @@ const _jenisLabels = {
   'pelunasan_order': 'Pelunasan order',
 };
 
+String _statusBayarLabel(String value) => switch (value.toUpperCase()) {
+      'LUNAS' => 'Lunas',
+      'KREDIT' => 'Belum lunas',
+      'ARSIP' => 'Di arsip',
+      _ => value,
+    };
+
+String _warrantyLabel(String value) => switch (value.toUpperCase()) {
+      'AKTIF' => 'aktif',
+      'KEDALUWARSA' => 'kedaluwarsa',
+      _ => value,
+    };
+
+String _metodeLabel(String value) => switch (value.toUpperCase()) {
+      'CASH' => 'Tunai',
+      'TRANSFER' => 'Transfer',
+      _ => value,
+    };
+
+String _paymentJenisLabel(String value) => switch (value.toUpperCase()) {
+      'DP' => 'Uang muka',
+      'PELUNASAN' => 'Pelunasan',
+      'REFUND' => 'Uang kembali',
+      _ => value,
+    };
+
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -131,7 +157,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     child: TextField(
                       controller: _search,
                       decoration: const InputDecoration(
-                        hintText: 'Cari nota atau pelanggan',
+                        hintText: 'Cari no. nota atau nama pelanggan',
                         prefixIcon: Icon(Icons.search),
                       ),
                       onChanged: (_) => _load(),
@@ -141,7 +167,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   IconButton.filledTonal(
                     onPressed: _reload,
                     icon: const Icon(Icons.refresh),
-                    tooltip: 'Muat ulang',
+                    tooltip: 'Muat ulang daftar',
                   ),
                   const SizedBox(width: 6),
                   IconButton.filledTonal(
@@ -161,7 +187,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 runSpacing: 8,
                 children: [
                   ChoiceChip(
-                    label: const Text('Semua'),
+                    label: const Text('Semua nota'),
                     selected: !_onlyReceivable,
                     onSelected: (_) {
                       setState(() => _onlyReceivable = false);
@@ -169,7 +195,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     },
                   ),
                   ChoiceChip(
-                    label: const Text('Piutang'),
+                    label: const Text('Belum lunas'),
                     selected: _onlyReceivable,
                     onSelected: (_) {
                       setState(() => _onlyReceivable = true);
@@ -180,8 +206,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     avatar: const Icon(Icons.date_range_outlined, size: 18),
                     label: Text(
                       _range == null
-                          ? 'Rentang tanggal'
-                          : '${dateId.format(_range!.start)} – '
+                          ? 'Pilih rentang tanggal'
+                          : '${dateId.format(_range!.start)} - '
                               '${dateId.format(_range!.end)}',
                     ),
                     selected: _range != null,
@@ -209,15 +235,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
     if (_error != null && _rows.isEmpty) {
       return EmptyState(
-        title: 'Riwayat gagal dimuat',
-        subtitle: _error!,
+        title: 'Riwayat belum bisa dimuat',
+        subtitle: 'Data riwayat tidak bisa dibaca: $_error. '
+            'Coba muat ulang daftar.',
         icon: Icons.error_outline,
       );
     }
     if (_rows.isEmpty) {
       return const EmptyState(
         title: 'Belum ada riwayat',
-        subtitle: 'Nota yang tersimpan akan tampil di sini.',
+        subtitle: 'Nota yang tersimpan akan tampil di sini. Ubah kata kunci '
+            'atau pilih rentang tanggal lain.',
         icon: Icons.history,
       );
     }
@@ -239,7 +267,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   : OutlinedButton.icon(
                       onPressed: () => _load(append: true),
                       icon: const Icon(Icons.expand_more),
-                      label: const Text('Muat lebih banyak'),
+                      label: const Text('Muat 50 nota lagi'),
                     ),
             );
           }
@@ -273,8 +301,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         '${_jenisLabels[row.jenisTransaksi] ?? row.jenisTransaksi}'
                         '${row.unitLabel.isEmpty ? '' : ' · ${row.unitLabel}'}\n'
                         '${dateTimeId.format(row.waktu)}'
-                        '${row.bergaransi ? ' · Garansi ${row.warrantyStatus}' : ''}'
-                        '${row.jatuhTempoLewat ? ' · JATUH TEMPO' : ''}',
+                        '${row.bergaransi ? ' · Garansi ${_warrantyLabel(row.warrantyStatus)}' : ''}'
+                        '${row.jatuhTempoLewat ? ' · Jatuh tempo' : ''}',
               ),
               isThreeLine: true,
               trailing: Column(
@@ -287,7 +315,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ),
                   if (row.purged)
                     Text(
-                      'ARSIP',
+                      'Arsip',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
@@ -303,7 +331,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
-                        'VOID',
+                        'Dibatalkan',
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
@@ -315,7 +343,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     )
                   else
                     Text(
-                      row.statusBayar,
+                      _statusBayarLabel(row.statusBayar),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   if (row.syncStatus.isNotEmpty) ...[
@@ -341,7 +369,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<void> _openArchived(ServiceRecordSummary row) async {
     if (row.archiveDocId.isEmpty) {
-      showSnack(context, 'Nota ini tidak memiliki arsip.', error: true);
+      showSnack(context, 'Nota ini tidak punya salinan arsip di server.',
+          error: true);
       return;
     }
     showDialog<void>(
@@ -368,7 +397,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     } catch (error) {
       if (!mounted) return;
       Navigator.pop(context);
-      showSnack(context, 'Gagal membuka arsip: $error', error: true);
+      showSnack(context, 'Arsip tidak bisa dibuka: $error', error: true);
     }
   }
 
@@ -376,7 +405,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final detail = await AppDatabase.instance.recordDetail(id);
     if (!mounted) return;
     if (detail == null) {
-      showSnack(context, 'Nota tidak ditemukan.', error: true);
+      showSnack(context, 'Nota tidak ditemukan. Muat ulang daftar lalu '
+          'coba lagi.', error: true);
       return;
     }
     final settings = await StoreSettingsService.instance.ensure();
@@ -416,12 +446,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (mounted) {
                     showSnack(
                       this.context,
-                      'Nota ${detail.record.noNota} di-void.',
+                      'Nota ${detail.record.noNota} dibatalkan.',
                     );
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal void: $error', error: true);
+                    showSnack(context, 'Nota gagal dibatalkan: $error',
+                        error: true);
                   }
                 }
               },
@@ -452,11 +483,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) Navigator.pop(context);
                   if (mounted) _load();
                   if (mounted) {
-                    showSnack(this.context, 'Retur dicatat.');
+                    showSnack(
+                      this.context,
+                      'Retur tersimpan. Stok dan kas sudah diperbarui.',
+                    );
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal retur: $error', error: true);
+                    showSnack(context, 'Retur gagal disimpan: $error',
+                        error: true);
                   }
                 }
               },
@@ -492,7 +527,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) {
                     showSnack(
                       context,
-                      'Gagal reversal retur: $error',
+                      'Pembatalan retur gagal: $error',
                       error: true,
                     );
                   }
@@ -521,11 +556,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) Navigator.pop(context);
                   if (mounted) _load();
                   if (mounted) {
-                    showSnack(this.context, 'Pelunasan dicatat.');
+                    showSnack(this.context, 'Pelunasan tersimpan.');
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal pelunasan: $error', error: true);
+                    showSnack(context, 'Pelunasan gagal disimpan: $error',
+                        error: true);
                   }
                 }
               },
@@ -558,7 +594,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     if (context.mounted) Navigator.pop(context);
                     if (mounted) _load();
                     if (mounted) {
-                      showSnack(this.context, 'Koreksi nota dicatat.');
+                      showSnack(this.context, 'Koreksi nota tersimpan.');
                     }
                     if (mounted) await _openDetail(id);
                     return;
@@ -567,7 +603,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       if (mounted) {
                         showSnack(
                           this.context,
-                          'Gagal koreksi: $error',
+                          'Koreksi gagal disimpan: $error',
                           error: true,
                         );
                       }
@@ -592,9 +628,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   context,
                   title: 'Klaim garansi',
                   message:
-                      'Klaim garansi nota ${detail.record.noNota}? Klaim hanya '
-                      'dapat dilakukan satu kali.',
-                  confirmLabel: 'Klaim',
+                      'Klaim garansi untuk nota ${detail.record.noNota}? '
+                      'Garansi hanya bisa diklaim satu kali.',
+                  confirmLabel: 'Klaim garansi',
                 );
                 if (!ok) return;
                 try {
@@ -609,11 +645,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) Navigator.pop(context);
                   if (mounted) _load();
                   if (mounted) {
-                    showSnack(this.context, 'Klaim garansi dicatat.');
+                    showSnack(this.context, 'Klaim garansi tersimpan.');
                   }
                 } catch (error) {
                   if (context.mounted) {
-                    showSnack(context, 'Gagal klaim: $error', error: true);
+                    showSnack(context, 'Klaim garansi gagal disimpan: '
+                        '$error', error: true);
                   }
                 }
               },
@@ -642,7 +679,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) {
                     showSnack(
                       context,
-                      'Gagal menandai unit: $error',
+                      'Status unit gagal disimpan: $error',
                       error: true,
                     );
                   }
@@ -682,7 +719,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   if (context.mounted) {
                     showSnack(
                       context,
-                      'Gagal mengubah komisi: $error',
+                      'Komisi gagal disimpan: $error',
                       error: true,
                     );
                   }
@@ -718,14 +755,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   keyboardType: TextInputType.number,
                   autofocus: true,
                   decoration: InputDecoration(
-                    labelText: 'Nominal',
+                    labelText: 'Jumlah dibayar',
+                    helperText: 'Contoh: 150000 atau 150.000.',
                     errorText: error,
                   ),
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
                   initialValue: metode,
-                  decoration: const InputDecoration(labelText: 'Metode'),
+                  decoration: const InputDecoration(labelText: 'Cara bayar'),
                   items: const [
                     DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                     DropdownMenuItem(
@@ -747,7 +785,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 onPressed: () {
                   final cents = tryParseRupiahToCents(nominal.text);
                   if (cents == null || cents <= 0 || cents > sisaCents) {
-                    setDialogState(() => error = 'Nominal tidak valid.');
+                    setDialogState(
+                      () => error = 'Isi jumlah antara 1 dan sisa piutang '
+                          '${formatRupiah(sisaCents)}.',
+                    );
                     return;
                   }
                   Navigator.pop(
@@ -755,7 +796,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     _SettlementInput(cents, metode, requestId),
                   );
                 },
-                child: const Text('Simpan'),
+                child: const Text('Simpan pelunasan'),
               ),
             ],
           );
@@ -791,6 +832,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 autofocus: true,
                 decoration: InputDecoration(
                   labelText: 'Total baru',
+                  helperText: 'Contoh: 250000. Isi total akhir nota setelah '
+                      'koreksi.',
                   errorText: error,
                 ),
                 onChanged: (_) {
@@ -817,22 +860,28 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 final cents = tryParseRupiahToCents(nominal.text);
                 final note = reason.text.trim();
                 if (cents == null || cents < 0) {
-                  setDialogState(() => error = 'Total baru tidak valid.');
+                  setDialogState(
+                    () => error = 'Isi total baru dengan angka, misalnya '
+                        '250000.',
+                  );
                   return;
                 }
                 if (cents == currentCents) {
                   setDialogState(
-                    () => error = 'Total baru sama dengan total saat ini.',
+                    () => error = 'Total baru masih sama. Ubah angkanya '
+                        'dulu.',
                   );
                   return;
                 }
                 if (note.length < 3) {
-                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
+                  setDialogState(
+                    () => error = 'Isi alasan minimal 3 huruf.',
+                  );
                   return;
                 }
                 Navigator.pop(context, _CorrectionInput(cents, note));
               },
-              child: const Text('Simpan'),
+              child: const Text('Simpan koreksi'),
             ),
           ],
         ),
@@ -858,7 +907,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
           autofocus: true,
           obscureText: true,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'PIN'),
+          decoration: const InputDecoration(
+            labelText: 'PIN',
+            helperText: 'PIN dari pemilik atau penanggung jawab.',
+          ),
         ),
         actions: [
           TextButton(
@@ -871,7 +923,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               if (value.isEmpty) return;
               Navigator.pop(context, value);
             },
-            child: const Text('Setujui'),
+            child: const Text('Setujui koreksi'),
           ),
         ],
       ),
@@ -887,13 +939,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Void nota'),
+          title: const Text('Batalkan nota'),
           content: TextField(
             controller: controller,
             autofocus: true,
             decoration: InputDecoration(
-              labelText: 'Alasan',
-              hintText: 'Contoh: salah input',
+              labelText: 'Alasan pembatalan',
+              hintText: 'Contoh: salah input pelanggan.',
               errorText: error,
             ),
             onChanged: (_) {
@@ -909,12 +961,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
               onPressed: () {
                 final value = controller.text.trim();
                 if (value.length < 3) {
-                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
+                  setDialogState(
+                    () => error = 'Isi alasan minimal 3 huruf.',
+                  );
                   return;
                 }
                 Navigator.pop(context, value);
               },
-              child: const Text('Void'),
+              child: const Text('Batalkan nota'),
             ),
           ],
         ),
@@ -936,8 +990,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
             controller: controller,
             autofocus: true,
             decoration: InputDecoration(
-              labelText: 'Alasan reversal',
-              hintText: 'Contoh: salah pilih barang',
+              labelText: 'Alasan pembatalan',
+              hintText: 'Contoh: salah pilih barang.',
               errorText: error,
             ),
             onChanged: (_) {
@@ -953,7 +1007,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
               onPressed: () {
                 final value = controller.text.trim();
                 if (value.length < 3) {
-                  setDialogState(() => error = 'Alasan minimal 3 karakter.');
+                  setDialogState(
+                    () => error = 'Isi alasan minimal 3 huruf.',
+                  );
                   return;
                 }
                 Navigator.pop(context, value);
@@ -1058,7 +1114,11 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                   ),
                 ),
                 Chip(
-                  label: Text(record.isVoid ? 'VOID' : record.statusBayar),
+                  label: Text(
+                    record.isVoid ? 'Dibatalkan' : _statusBayarLabel(
+                      record.statusBayar,
+                    ),
+                  ),
                   backgroundColor: record.isVoid
                       ? Theme.of(context).colorScheme.errorContainer
                       : null,
@@ -1097,10 +1157,14 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                   ),
                   _row(
                     context,
-                    'Dibayar',
+                    'Sudah dibayar',
                     formatRupiah(detail.totalDibayarCents),
                   ),
-                  _row(context, 'Sisa', formatRupiah(detail.sisaCents)),
+                  _row(
+                    context,
+                    'Sisa tagihan',
+                    formatRupiah(detail.sisaCents),
+                  ),
                   if (record.jatuhTempo != null)
                     _row(
                       context,
@@ -1108,7 +1172,7 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                       '${dateId.format(record.jatuhTempo!)}'
                           '${record.jatuhTempoLewat ? ' (lewat)' : ''}',
                     ),
-                  _row(context, 'Metode', record.metodeBayar),
+                  _row(context, 'Cara bayar', _metodeLabel(record.metodeBayar)),
                   if ((detail.createdBy ?? '').isNotEmpty)
                     _row(context, 'Dibuat oleh', detail.createdBy!),
                   if ((detail.mechanic ?? '').isNotEmpty)
@@ -1120,7 +1184,8 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
               const SizedBox(height: 12),
               SectionCard(
                 title: 'Koreksi',
-                subtitle: 'Nota asli tidak diubah; koreksi tercatat terpisah.',
+                subtitle: 'Nota asli tidak diubah. Setiap koreksi tercatat '
+                    'terpisah.',
                 child: Column(
                   children: [
                     _row(
@@ -1159,7 +1224,11 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
               title: 'Garansi',
               child: Column(
                 children: [
-                  _row(context, 'Status', record.warrantyStatus),
+                  _row(
+                    context,
+                    'Status garansi',
+                    _warrantyLabel(record.warrantyStatus),
+                  ),
                   if (record.garansiSampai != null)
                     _row(
                       context,
@@ -1229,7 +1298,7 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                       ? TextButton(
                           onPressed: () =>
                               _run('commission', onEditCommission!),
-                          child: const Text('Atur'),
+                          child: const Text('Ubah nominal'),
                         )
                       : null,
                   child: Column(
@@ -1255,7 +1324,8 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                         .map(
                           (payment) => _line(
                             context,
-                            '${payment.jenis} · ${payment.metode} · '
+                            '${_paymentJenisLabel(payment.jenis)} · '
+                            '${_metodeLabel(payment.metode)} · '
                             '${dateTimeId.format(payment.waktu)}',
                             formatRupiah(payment.nominalCents),
                           ),
@@ -1269,13 +1339,13 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                 padding: const EdgeInsets.only(top: 12),
                 child: SectionCard(
                   title: 'Retur',
-                  subtitle: 'Total retur dikurangkan dari penjualan neto.',
+                  subtitle: 'Total retur mengurangi penjualan setelah retur.',
                   child: Column(
                     children: [
                       for (final retur in detail.returns) ...[
                         _row(
                           context,
-                          '${retur.noRetur}${retur.isVoid ? ' · VOID' : ''}'
+                          '${retur.noRetur}${retur.isVoid ? ' · Dibatalkan' : ''}'
                           ' · ${dateId.format(retur.waktu)}',
                           '-${formatRupiah(retur.totalCents)}',
                           bold: true,
@@ -1332,7 +1402,7 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
             if (detail.voidReason != null) ...[
               const SizedBox(height: 12),
               SectionCard(
-                title: 'Alasan void',
+                title: 'Alasan pembatalan',
                 child: Text(detail.voidReason!),
               ),
             ],
@@ -1382,7 +1452,7 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
             ),
             const SizedBox(height: 12),
             if (record.isVoid)
-              const Center(child: Text('Nota ini sudah di-void.'))
+              const Center(child: Text('Nota ini sudah dibatalkan.'))
             else ...[
               FilledButton.tonalIcon(
                 onPressed: _available('return', onReturn)
@@ -1405,7 +1475,7 @@ class _RecordDetailSheetState extends State<_RecordDetailSheet> {
                     ? () => _run('void', onVoid!)
                     : null,
                 icon: _actionIcon('void', Icons.block_outlined),
-                label: const Text('Void nota'),
+                label: const Text('Batalkan nota'),
               ),
             ],
           ],
@@ -1484,7 +1554,10 @@ class _CommissionDialogState extends State<_CommissionDialog> {
     for (final entry in _controllers.entries) {
       final cents = tryParseRupiahToCents(entry.value.text);
       if (cents == null || cents < 0) {
-        setState(() => _error = 'Nominal komisi tidak valid.');
+        setState(
+          () => _error =
+              'Isi nominal komisi dengan angka, misalnya 25000.',
+        );
         return;
       }
       values[entry.key] = cents;
@@ -1524,7 +1597,7 @@ class _CommissionDialogState extends State<_CommissionDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Batal'),
         ),
-        FilledButton(onPressed: _save, child: const Text('Simpan')),
+        FilledButton(onPressed: _save, child: const Text('Simpan komisi')),
       ],
     );
   }
@@ -1702,14 +1775,17 @@ class _ReturnDialogState extends State<_ReturnDialog> {
       if (!line.selected) continue;
       final qtyMilli = parseQuantityToMilli(line.qty.text.trim(), desimal: 3);
       if (qtyMilli == null || qtyMilli <= 0) {
-        setState(() => _error = 'Jumlah retur ${line.label} tidak valid.');
+        setState(
+          () => _error = 'Jumlah retur ${line.label} tidak valid. Isi '
+              'angka lebih dari 0.',
+        );
         return;
       }
       if (qtyMilli > line.remainingMilli) {
         setState(
           () => _error =
-              'Jumlah retur ${line.label} melebihi sisa '
-              '${line.remainingLabel}.',
+              'Jumlah retur ${line.label} melebihi sisa yang bisa diretur '
+              '(${line.remainingLabel}).',
         );
         return;
       }
@@ -1723,12 +1799,17 @@ class _ReturnDialogState extends State<_ReturnDialog> {
       );
     }
     if (items.isEmpty) {
-      setState(() => _error = 'Pilih minimal satu baris yang diretur.');
+      setState(
+        () => _error = 'Centang minimal satu barang yang akan diretur.',
+      );
       return;
     }
     final alasan = _alasan.text.trim();
     if (alasan.length < 3) {
-      setState(() => _error = 'Alasan retur minimal 3 karakter.');
+      setState(
+        () => _error =
+            'Isi alasan retur minimal 3 huruf, misalnya "barang rusak".',
+      );
       return;
     }
     Navigator.pop(
@@ -1749,7 +1830,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (_lines.isEmpty)
-                const Text('Semua baris nota sudah diretur.')
+                const Text('Semua barang di nota ini sudah diretur.')
               else
                 for (final line in _lines)
                   Padding(
@@ -1770,8 +1851,8 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                                 ' · ${line.label}',
                               ),
                               Text(
-                                'Sisa ${line.remainingLabel} · '
-                                '${formatRupiah(line.unitNetCents)}/unit',
+                                'Sisa yang bisa diretur ${line.remainingLabel} '
+                                '· ${formatRupiah(line.unitNetCents)} per unit',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
@@ -1787,7 +1868,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                             ),
                             textAlign: TextAlign.center,
                             decoration: const InputDecoration(
-                              labelText: 'Qty',
+                              labelText: 'Jumlah',
                               isDense: true,
                             ),
                           ),
@@ -1801,6 +1882,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
                 maxLines: 2,
                 decoration: const InputDecoration(
                   labelText: 'Alasan retur',
+                  hintText: 'Contoh: barang rusak saat dipasang.',
                   isDense: true,
                 ),
               ),
@@ -1808,7 +1890,7 @@ class _ReturnDialogState extends State<_ReturnDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _metodeRefund,
                 decoration: const InputDecoration(
-                  labelText: 'Metode refund',
+                  labelText: 'Uang dikembalikan lewat',
                   isDense: true,
                 ),
                 items: const [

@@ -87,7 +87,7 @@ class _JasaScreenState extends State<JasaScreen> {
                 FilledButton.icon(
                   onPressed: () => _openForm(),
                   icon: const Icon(Icons.add),
-                  label: const Text('Jasa'),
+                  label: const Text('Tambah jasa'),
                 ),
             ],
           ),
@@ -135,7 +135,7 @@ class _JasaScreenState extends State<JasaScreen> {
                         subtitle: AppState.instance.isOwner
                             ? Text(
                                 'Modal ${formatRupiah(item.hargaModalCents)}'
-                                '${item.intervalBulan > 0 ? ' · ${item.intervalBulan} bln' : ''}',
+                                '${item.intervalBulan > 0 ? ' · tiap ${item.intervalBulan} bulan' : ''}',
                               )
                             : item.intervalBulan > 0
                                 ? Text('${item.intervalBulan} bulan')
@@ -229,13 +229,20 @@ class _CatalogDialogState extends State<_CatalogDialog> {
           TextField(
             controller: _nama,
             autofocus: true,
-            decoration: const InputDecoration(labelText: 'Nama jasa'),
+            decoration: const InputDecoration(
+              labelText: 'Nama jasa',
+              hintText: 'Contoh: Ganti oli mesin',
+            ),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _harga,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Tarif'),
+            decoration: const InputDecoration(
+              labelText: 'Tarif jual (Rp)',
+              hintText: 'Contoh: 50000',
+              helperText: 'Harga yang ditagih ke pelanggan.',
+            ),
           ),
           if (_isOwner) ...[
             const SizedBox(height: 10),
@@ -244,6 +251,7 @@ class _CatalogDialogState extends State<_CatalogDialog> {
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
                 labelText: 'Modal (opsional)',
+                hintText: 'Contoh: 30000',
                 helperText: 'Batas bawah harga saat kasir menjual.',
               ),
             ),
@@ -254,7 +262,8 @@ class _CatalogDialogState extends State<_CatalogDialog> {
             keyboardType: TextInputType.number,
             decoration: const InputDecoration(
               labelText: 'Interval servis (bulan)',
-              helperText: 'Kosongkan bila tidak berkala.',
+              hintText: 'Contoh: 3',
+              helperText: 'Kosongkan bila jasa ini tidak berkala.',
             ),
           ),
           if (_error != null) ...[
@@ -274,12 +283,12 @@ class _CatalogDialogState extends State<_CatalogDialog> {
         FilledButton(
           onPressed: () {
             if (_nama.text.trim().length < 2) {
-              setState(() => _error = 'Nama minimal 2 karakter.');
+              setState(() => _error = 'Nama jasa minimal 2 karakter.');
               return;
             }
             final harga = tryParseRupiahToCents(_harga.text);
             if (harga == null || harga <= 0) {
-              setState(() => _error = 'Tarif wajib diisi dan lebih dari 0.');
+              setState(() => _error = 'Tarif jual wajib diisi lebih dari 0.');
               return;
             }
             final modalText = _modal.text.trim();
@@ -287,18 +296,18 @@ class _CatalogDialogState extends State<_CatalogDialog> {
                 ? (modalText.isEmpty ? 0 : tryParseRupiahToCents(modalText))
                 : (widget.item?.hargaModalCents ?? 0);
             if (modal == null || modal < 0) {
-              setState(() => _error = 'Modal tidak valid.');
+              setState(() => _error = 'Modal harus berupa angka tanpa titik atau huruf.');
               return;
             }
             if (modal > harga) {
-              setState(() => _error = 'Modal tidak boleh melebihi tarif.');
+              setState(() => _error = 'Modal tidak boleh melebihi tarif jual.');
               return;
             }
             final intervalText = _interval.text.trim();
             final interval =
                 intervalText.isEmpty ? 0 : int.tryParse(intervalText);
             if (interval == null || interval < 0) {
-              setState(() => _error = 'Interval servis tidak valid.');
+              setState(() => _error = 'Interval servis harus berupa angka bulan.');
               return;
             }
             Navigator.pop(
@@ -311,7 +320,7 @@ class _CatalogDialogState extends State<_CatalogDialog> {
               ),
             );
           },
-          child: const Text('Simpan'),
+          child: const Text('Simpan jasa'),
         ),
       ],
     );

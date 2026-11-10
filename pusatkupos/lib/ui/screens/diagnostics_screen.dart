@@ -32,7 +32,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       final data = await DiagnosticsService.instance.collect();
       if (mounted) setState(() => _data = data);
     } catch (error) {
-      if (mounted) showSnack(context, 'Diagnostik gagal: $error', error: true);
+      if (mounted) {
+        showSnack(
+          context,
+          'Laporan diagnostik gagal dibuat: $error',
+          error: true,
+        );
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -46,7 +52,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         text: const JsonEncoder.withIndent('  ').convert(data),
       ),
     );
-    if (mounted) showSnack(context, 'Diagnostik disalin.');
+    if (mounted) showSnack(context, 'Laporan diagnostik disalin.');
   }
 
   Future<void> _export() async {
@@ -57,9 +63,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     setState(() => _exporting = true);
     try {
       final path = await DiagnosticsService.instance.exportToFile();
-      if (mounted) showSnack(context, 'Diagnostik disimpan: $path');
+      if (mounted) showSnack(context, 'Laporan diagnostik disimpan: $path');
     } catch (error) {
-      if (mounted) showSnack(context, 'Ekspor gagal: $error', error: true);
+      if (mounted) {
+        showSnack(context, 'Laporan gagal diekspor: $error', error: true);
+      }
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
@@ -85,13 +93,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
               children: [
                 SectionCard(
                   title: 'Ringkasan',
-                  subtitle:
-                      'Log tidak memuat kredensial, token, atau passphrase.',
+                  subtitle: 'Laporan untuk meminta bantuan teknis. Tidak '
+                      'memuat kata sandi, token, atau frasa sandi.',
                   child: Column(
                     children: [
                       _line('Dibuat', '${_data?['dibuat_pada'] ?? '-'}'),
-                      _line('Platform', '${_data?['platform'] ?? '-'}'),
-                      _line('Versi', '${_data?['versi'] ?? '-'}'),
+                      _line('Sistem', '${_data?['platform'] ?? '-'}'),
+                      _line('Versi skema', '${_data?['versi'] ?? '-'}'),
                       _line(
                         'Integritas',
                         '${_data?['integrity_check'] ?? '-'}',
@@ -101,7 +109,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 ),
                 const SizedBox(height: 12),
                 SectionCard(
-                  title: 'Ukuran',
+                  title: 'Ukuran data',
+                  subtitle: 'Ukuran berkas data di perangkat ini.',
                   child: Column(
                     children: _sizeLines(),
                   ),
@@ -109,23 +118,28 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 const SizedBox(height: 12),
                 SectionCard(
                   title: 'Antrean sinkronisasi',
+                  subtitle: 'Data yang menunggu dikirim ke server dan diterima '
+                      'dari server.',
                   child: Column(
                     children: [
-                      _line('Outbox', _mapText('outbox')),
-                      _line('Inbox', _mapText('inbox')),
+                      _line('Akan dikirim', _mapText('outbox')),
+                      _line('Sudah diterima', _mapText('inbox')),
                     ],
                   ),
                 ),
                 const SizedBox(height: 12),
                 SectionCard(
-                  title: 'Konflik aktif',
+                  title: 'Data yang perlu diputuskan',
+                  subtitle: 'Data yang berbeda antar perangkat dan menunggu '
+                      'keputusan.',
                   child: _conflictList(),
                 ),
                 const SizedBox(height: 12),
                 SectionCard(
                   title: 'Integritas data',
-                  subtitle:
-                      'Laporan saja; pemeriksaan ini tidak mengubah data.',
+                  subtitle: 'Hanya laporan, tidak mengubah data. Duplikat '
+                      'berarti data tercatat dua kali. Selisih berarti saldo '
+                      'tidak sama dengan riwayat.',
                   child: _integrityList(),
                 ),
                 const SizedBox(height: 12),
@@ -135,7 +149,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       child: OutlinedButton.icon(
                         onPressed: _copy,
                         icon: const Icon(Icons.copy_outlined),
-                        label: const Text('Salin'),
+                        label: const Text('Salin laporan'),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -162,10 +176,15 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   List<Widget> _sizeLines() {
     final sizes = _data?['ukuran'];
     if (sizes is! Map) return const [Text('-')];
+    const labels = {
+      'database': 'Berkas data',
+      'wal': 'Jurnal WAL',
+      'shm': 'Memori bersama',
+    };
     return [
       for (final entry in sizes.entries)
         _line(
-          '${entry.key}',
+          labels[entry.key] ?? '${entry.key}',
           _bytes((entry.value as num?)?.toInt() ?? 0),
         ),
     ];
@@ -180,7 +199,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   Widget _conflictList() {
     final rows = _data?['konflik'];
     if (rows is! List || rows.isEmpty) {
-      return const Text('Tidak ada konflik aktif.');
+      return const Text('Tidak ada data yang perlu diputuskan.');
     }
     return Column(
       children: [
@@ -255,7 +274,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           for (final row in negative)
             if (row is Map)
               Text(
-                '· ${row['nama']}: ${row['jumlah_milli']} milli',
+                '· ${row['nama']}: ${row['jumlah_milli']} unit terkecil',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
         ],

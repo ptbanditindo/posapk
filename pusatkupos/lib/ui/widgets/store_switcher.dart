@@ -15,7 +15,7 @@ class StoreSwitcherDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Ganti toko'),
+      title: const Text('Pilih toko aktif'),
       content: SizedBox(
         width: 420,
         child: ListView(

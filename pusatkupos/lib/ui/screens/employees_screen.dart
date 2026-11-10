@@ -182,12 +182,18 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
             TextField(
               controller: nominal,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Nominal'),
+              decoration: const InputDecoration(
+              labelText: 'Nominal hutang',
+              hintText: 'Contoh: 200000',
+            ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: catatan,
-              decoration: const InputDecoration(labelText: 'Catatan'),
+              decoration: const InputDecoration(
+              labelText: 'Catatan',
+              hintText: 'Contoh: pinjam untuk biaya sekolah',
+            ),
             ),
           ],
         ),
@@ -198,7 +204,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Simpan'),
+            child: const Text('Simpan hutang'),
           ),
         ],
       ),
@@ -209,7 +215,13 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     catatan.dispose();
     if (result != true) return;
     if (cents == null || cents <= 0) {
-      if (mounted) showSnack(context, 'Nominal tidak valid.', error: true);
+      if (mounted) {
+        showSnack(
+          context,
+          'Nominal hutang harus berupa angka lebih dari 0.',
+          error: true,
+        );
+      }
       return;
     }
     try {
@@ -265,7 +277,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
           const TabBar(
             tabs: [
               Tab(text: 'Karyawan'),
-              Tab(text: 'Komisi & Gaji'),
+              Tab(text: 'Komisi dan gaji'),
               Tab(text: 'Hutang'),
             ],
           ),
@@ -317,7 +329,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                           setState(() => _selected = '${employee['sync_id']}');
                           _editCompensation();
                         },
-                        child: const Text('Atur'),
+                        child: const Text('Atur imbalan'),
                       )
                     : null,
               ),
@@ -363,6 +375,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
                       labelText: 'Bonus (opsional)',
+                      hintText: 'Contoh: 100000',
+                      helperText: 'Kosongkan bila tidak ada bonus.',
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -391,7 +405,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                   .map(
                     (payment) => _row(
                       '${dateId.format(localTime(payment['cycle_start']))}'
-                      '${'${payment['konflik_sync_id'] ?? ''}'.trim().isEmpty ? '' : ' · konflik ganda'}',
+                      '${'${payment['konflik_sync_id'] ?? ''}'.trim().isEmpty ? '' : ' · perlu diperiksa'}',
                       formatRupiah(
                         (payment['nominal'] as int) -
                             (payment['potongan_hutang'] as int? ?? 0),
@@ -451,7 +465,10 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     return DropdownButtonFormField<String>(
       initialValue: _selected,
       isExpanded: true,
-      decoration: const InputDecoration(labelText: 'Karyawan'),
+      decoration: const InputDecoration(
+        labelText: 'Karyawan',
+        helperText: 'Pilih karyawan untuk melihat komisi dan gajinya.',
+      ),
       items: _employees
           .map(
             (employee) => DropdownMenuItem(
@@ -588,11 +605,16 @@ class _CompensationDialogState extends State<_CompensationDialog> {
     final tanggal = int.tryParse(_tanggal.text.trim());
     final hari = int.tryParse(_hari.text.trim());
     if (gaji == null || barang == null || jasa == null) {
-      setState(() => _error = 'Nilai kompensasi tidak valid.');
+      setState(
+        () => _error =
+            'Isi gaji, komisi barang, dan komisi jasa dengan angka.',
+      );
       return;
     }
     if (tanggal == null || hari == null) {
-      setState(() => _error = 'Jadwal payroll tidak valid.');
+      setState(
+        () => _error = 'Isi tanggal atau hari gaji dengan angka yang benar.',
+      );
       return;
     }
     Navigator.pop(
@@ -624,7 +646,10 @@ class _CompensationDialogState extends State<_CompensationDialog> {
           children: [
             DropdownButtonFormField<String>(
               initialValue: _jenis,
-              decoration: const InputDecoration(labelText: 'Jenis imbalan'),
+              decoration: const InputDecoration(
+                labelText: 'Jenis imbalan',
+                helperText: 'Komisi dihitung dari penjualan, gaji dibayar tetap.',
+              ),
               items: const [
                 DropdownMenuItem(value: 'KOMISI', child: Text('Komisi')),
                 DropdownMenuItem(value: 'GAJI', child: Text('Gaji bulanan')),
@@ -635,12 +660,19 @@ class _CompensationDialogState extends State<_CompensationDialog> {
             TextField(
               controller: _gaji,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Gaji bulanan'),
+              decoration: const InputDecoration(
+                labelText: 'Gaji bulanan',
+                hintText: 'Contoh: 3000000',
+                helperText: 'Isi 0 bila hanya memakai komisi.',
+              ),
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               initialValue: _mode,
-              decoration: const InputDecoration(labelText: 'Mode komisi'),
+              decoration: const InputDecoration(
+                labelText: 'Mode komisi',
+                helperText: 'Persen dari penjualan atau nominal tetap per nota.',
+              ),
               items: const [
                 DropdownMenuItem(value: 'PERSEN', child: Text('Persen')),
                 DropdownMenuItem(value: 'NOMINAL', child: Text('Nominal tetap')),
@@ -655,6 +687,7 @@ class _CompensationDialogState extends State<_CompensationDialog> {
                 labelText: persen
                     ? 'Komisi barang (%)'
                     : 'Komisi barang per nota',
+                hintText: persen ? 'Contoh: 5' : 'Contoh: 5000',
               ),
             ),
             const SizedBox(height: 10),
@@ -663,12 +696,16 @@ class _CompensationDialogState extends State<_CompensationDialog> {
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: persen ? 'Komisi jasa (%)' : 'Komisi jasa per nota',
+                hintText: persen ? 'Contoh: 10' : 'Contoh: 10000',
               ),
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               initialValue: _periode,
-              decoration: const InputDecoration(labelText: 'Periode payroll'),
+              decoration: const InputDecoration(
+                labelText: 'Periode gaji',
+                helperText: 'Seberapa sering gaji dibayarkan.',
+              ),
               items: const [
                 DropdownMenuItem(value: 'MINGGUAN', child: Text('Mingguan')),
                 DropdownMenuItem(value: 'BULANAN', child: Text('Bulanan')),
@@ -682,7 +719,8 @@ class _CompensationDialogState extends State<_CompensationDialog> {
                 controller: _tanggal,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
-                  labelText: 'Tanggal payroll (1-31)',
+                  labelText: 'Tanggal gaji (1-31)',
+                  hintText: 'Contoh: 25',
                 ),
               )
             else
@@ -690,24 +728,34 @@ class _CompensationDialogState extends State<_CompensationDialog> {
                 controller: _hari,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
-                  labelText: 'Hari payroll (1=Senin, 7=Minggu)',
+                  labelText: 'Hari gaji',
+                  hintText: '1 = Senin, 7 = Minggu',
                 ),
               ),
             const SizedBox(height: 10),
             TextField(
               controller: _bankNama,
-              decoration: const InputDecoration(labelText: 'Bank'),
+              decoration: const InputDecoration(
+                labelText: 'Bank',
+                hintText: 'Contoh: BCA',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _bankNomor,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Nomor rekening'),
+              decoration: const InputDecoration(
+                labelText: 'Nomor rekening',
+                hintText: 'Contoh: 1234567890',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _bankPemilik,
-              decoration: const InputDecoration(labelText: 'Pemilik rekening'),
+              decoration: const InputDecoration(
+                labelText: 'Pemilik rekening',
+                hintText: 'Contoh: Budi Santoso',
+              ),
             ),
             if (_error != null)
               Align(
@@ -729,7 +777,7 @@ class _CompensationDialogState extends State<_CompensationDialog> {
         ),
         FilledButton(
           onPressed: _save,
-          child: const Text('Simpan'),
+          child: const Text('Simpan kompensasi'),
         ),
       ],
     );

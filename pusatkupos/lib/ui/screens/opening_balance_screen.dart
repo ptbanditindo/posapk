@@ -104,8 +104,9 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: 'Jumlah',
+                hintText: 'Contoh: 10',
                 helperText:
-                    'Desimal ${stock.desimal}, satuan ${stock.satuan}',
+                    'Satuan ${stock.satuan}. Desimal ${stock.desimal}.',
               ),
             ),
             const SizedBox(height: 10),
@@ -114,7 +115,8 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
                 labelText: 'Modal per satuan',
-                helperText: 'Boleh berbeda dari modal master barang',
+                hintText: 'Contoh: 45000',
+                helperText: 'Boleh berbeda dari modal barang yang tersimpan.',
               ),
             ),
           ],
@@ -126,7 +128,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Tambah'),
+            child: const Text('Tambah ke daftar'),
           ),
         ],
       ),
@@ -138,7 +140,11 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
     if (ok != true || milli == null || milli <= 0) return;
     if (modalCents == null || modalCents < 0) {
       if (mounted) {
-        showSnack(context, 'Modal per satuan tidak valid.', error: true);
+        showSnack(
+          context,
+          'Modal per satuan harus berupa angka tanpa titik atau huruf.',
+          error: true,
+        );
       }
       return;
     }
@@ -207,14 +213,19 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
               controller: nominal,
               autofocus: true,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Nominal'),
+              decoration: const InputDecoration(
+                labelText: 'Nominal',
+                hintText: 'Contoh: 500000',
+              ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: due,
               keyboardType: TextInputType.datetime,
               decoration: const InputDecoration(
-                labelText: 'Jatuh tempo (yyyy-MM-dd, opsional)',
+                labelText: 'Jatuh tempo (opsional)',
+                hintText: 'Contoh: 2026-12-31',
+                helperText: 'Format tahun-bulan-tanggal.',
               ),
             ),
           ],
@@ -226,7 +237,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Tambah'),
+            child: const Text('Tambah ke daftar'),
           ),
         ],
       ),
@@ -275,13 +286,16 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Nominal',
+                  hintText: 'Contoh: 250000',
                   helperText: 'Sisa ${formatRupiah(sisa)}',
                 ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 initialValue: metode,
-                decoration: const InputDecoration(labelText: 'Metode'),
+                decoration: const InputDecoration(
+                  labelText: 'Metode pembayaran',
+                ),
                 items: const [
                   DropdownMenuItem(value: 'CASH', child: Text('Tunai')),
                   DropdownMenuItem(value: 'TRANSFER', child: Text('Transfer')),
@@ -335,7 +349,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
         showSnack(context, payable ? 'Utang awal dibayar.' : 'Piutang awal ditagih.');
       }
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal: $error', error: true);
+      if (mounted) showSnack(context, 'Gagal membayar: $error', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -375,7 +389,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
       await _load();
       if (mounted) showSnack(context, 'Saldo awal disimpan.');
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal: $error', error: true);
+      if (mounted) showSnack(context, 'Gagal menyimpan saldo awal: $error', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -391,7 +405,10 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
         content: TextField(
           controller: reason,
           autofocus: true,
-          decoration: const InputDecoration(labelText: 'Alasan koreksi'),
+          decoration: const InputDecoration(
+            labelText: 'Alasan koreksi',
+            hintText: 'Contoh: salah hitung stok awal',
+          ),
         ),
         actions: [
           TextButton(
@@ -419,7 +436,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
       await _load();
       if (mounted) showSnack(context, 'Saldo awal dikoreksi.');
     } catch (error) {
-      if (mounted) showSnack(context, 'Gagal: $error', error: true);
+      if (mounted) showSnack(context, 'Gagal mengoreksi saldo awal: $error', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -539,7 +556,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
                       if (canPay)
                         IconButton(
                           icon: const Icon(Icons.payments_outlined),
-                          tooltip: 'Bayar',
+                          tooltip: 'Bayar utang',
                           onPressed: _busy
                               ? null
                               : () => _payOpening(row: row, payable: true),
@@ -579,7 +596,7 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
                       if (canCollect)
                         IconButton(
                           icon: const Icon(Icons.receipt_long_outlined),
-                          tooltip: 'Tagih',
+                          tooltip: 'Tagih piutang',
                           onPressed: _busy
                               ? null
                               : () => _payOpening(row: row, payable: false),
@@ -672,7 +689,10 @@ class _OpeningBalanceScreenState extends State<OpeningBalanceScreen> {
             const SizedBox(height: 8),
             TextField(
               controller: _catatan,
-              decoration: const InputDecoration(labelText: 'Catatan'),
+              decoration: const InputDecoration(
+                labelText: 'Catatan',
+                hintText: 'Contoh: saldo per 1 November 2026',
+              ),
             ),
             const SizedBox(height: 12),
             Align(

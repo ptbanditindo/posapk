@@ -16,7 +16,7 @@ import 'estimates_screen.dart';
 
 const _statusLabels = <String, String>{
   'dibuka': 'Dibuka',
-  'antri': 'Antri',
+  'antri': 'Antre',
   'diagnosa': 'Diagnosa',
   'menunggu_persetujuan': 'Menunggu persetujuan',
   'menunggu_sparepart': 'Menunggu sparepart',
@@ -165,7 +165,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Order kerja',
+                          'Order kerja bengkel',
                           style: Theme.of(context)
                               .textTheme
                               .titleMedium
@@ -186,7 +186,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                         ),
                       ),
                       icon: const Icon(Icons.request_quote_outlined),
-                      label: const Text('Estimasi'),
+                      label: const Text('Daftar estimasi'),
                     ),
                   if (FeatureFlagsService.instance.isEnabled(featureEstimasi))
                     const SizedBox(width: 8),
@@ -315,7 +315,7 @@ class _OrderCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  queue == null ? '—' : '#$queue',
+                  queue == null ? '-' : '#$queue',
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     color: statusColor,
@@ -458,7 +458,7 @@ class _OrderDialogState extends State<_OrderDialog> {
       return;
     }
     if (widget.settings.vehicleRequired && _unitId == null) {
-      showSnack(context, 'Pilih unit kendaraan.', error: true);
+      showSnack(context, 'Pilih unit kendaraan terlebih dahulu.', error: true);
       return;
     }
     Navigator.of(context).pop(
@@ -494,7 +494,10 @@ class _OrderDialogState extends State<_OrderDialog> {
               DropdownButtonFormField<int>(
                 initialValue: _customerId,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Pelanggan'),
+                decoration: const InputDecoration(
+                  labelText: 'Pelanggan',
+                  helperText: 'Pilih pelanggan yang kendaraannya masuk.',
+                ),
                 items: [
                   for (final customer in widget.customers)
                     DropdownMenuItem(
@@ -519,8 +522,11 @@ class _OrderDialogState extends State<_OrderDialog> {
                   isExpanded: true,
                   decoration: InputDecoration(
                     labelText: widget.settings.vehicleRequired
-                        ? 'Unit'
-                        : 'Unit (opsional)',
+                        ? 'Unit kendaraan'
+                        : 'Unit kendaraan (opsional)',
+                    helperText: _units.isEmpty && !_loadingUnits
+                        ? 'Pelanggan ini belum punya unit terdaftar.'
+                        : null,
                   ),
                   items: [
                     if (!widget.settings.vehicleRequired)
@@ -545,7 +551,9 @@ class _OrderDialogState extends State<_OrderDialog> {
                 minLines: 2,
                 maxLines: 4,
                 decoration: const InputDecoration(
-                  labelText: 'Keluhan / pekerjaan',
+                  labelText: 'Keluhan atau pekerjaan',
+                  hintText: 'Contoh: rem depan berdecit',
+                  helperText: 'Tulis apa yang dikeluhkan pelanggan.',
                   alignLabelWithHint: true,
                 ),
               ),
@@ -553,7 +561,10 @@ class _OrderDialogState extends State<_OrderDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _mekanikSyncId ?? '',
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Mekanik'),
+                decoration: const InputDecoration(
+                  labelText: 'Mekanik yang mengerjakan',
+                  helperText: 'Boleh dikosongkan bila belum ditentukan.',
+                ),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('Tanpa mekanik')),
                   for (final employee in widget.employees)
@@ -668,7 +679,7 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
         title: 'Status di luar alur',
         message: '${_statusLabel(_status)} → ${_statusLabel(status)} '
             'bukan alur normal. Perubahan tetap disimpan dan dicatat '
-            'sebagai konflik untuk ditinjau.',
+            'sebagai data yang perlu ditinjau.',
         confirmLabel: 'Tetap ubah',
       );
       if (!ok) return;
@@ -760,12 +771,12 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
               const SizedBox(height: 8),
               if (!canChange)
                 Text(
-                  'Peran $role tidak berhak mengubah status order.',
+                  'Peran ini tidak berhak mengubah status order.',
                   style: Theme.of(context).textTheme.bodySmall,
                 )
               else if (_options.isEmpty)
                 Text(
-                  'Tidak ada transisi tersedia dari status ini.',
+                  'Tidak ada status lanjutan dari tahap ini.',
                   style: Theme.of(context).textTheme.bodySmall,
                 )
               else
@@ -780,7 +791,7 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
                               (allowedWorkOrderTransitions(_status)
                                       .contains(status)
                                   ? ''
-                                  : ' (paksa)'),
+                                  : ' (di luar alur)'),
                         ),
                         onPressed: _saving
                             ? null
@@ -851,8 +862,8 @@ class _OrderDetailDialogState extends State<_OrderDetailDialog> {
                                     top: 2,
                                   ),
                                   child: Text(
-                                    'Perangkat ${row.perangkat ?? '-'} · '
-                                    'HLC ${row.hlcWall}:${row.hlcCounter}',
+                                    'Dicatat dari perangkat '
+                                    '${row.perangkat ?? 'ini'}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall

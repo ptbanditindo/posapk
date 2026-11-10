@@ -90,7 +90,11 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
   Future<void> _sendWhatsApp(ReceiptDocument document) async {
     final phone = _normalizePhone(document.customerPhone);
     if (phone.isEmpty) {
-      showSnack(context, 'Nomor HP pelanggan belum diisi.', error: true);
+      showSnack(
+        context,
+        'Nomor HP pelanggan belum diisi, jadi struk tidak bisa dikirim.',
+        error: true,
+      );
       return;
     }
     var body = document.text.trim();
@@ -103,11 +107,15 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
     try {
       final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!opened && mounted) {
-        showSnack(context, 'WhatsApp tidak dapat dibuka.', error: true);
+        showSnack(
+          context,
+          'WhatsApp tidak bisa dibuka. Pastikan aplikasinya terpasang.',
+          error: true,
+        );
       }
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal membuka WhatsApp: $error', error: true);
+        showSnack(context, 'WhatsApp tidak bisa dibuka. $error', error: true);
       }
     }
   }
@@ -139,8 +147,11 @@ class _ReceiptDialogState extends State<_ReceiptDialog> {
       );
     } catch (error) {
       if (mounted) {
-        showSnack(context, 'Gagal mencetak: ${friendlyError(error)}',
-            error: true);
+        showSnack(
+          context,
+          'Struk gagal dicetak. ${friendlyError(error)}',
+          error: true,
+        );
       }
     } finally {
       if (mounted) setState(() => _printing = false);
@@ -264,7 +275,7 @@ class _PrintStatus extends StatelessWidget {
     final color = failed ? scheme.error : scheme.onSurfaceVariant;
     final detail = job.lastError.trim().isEmpty
         ? ''
-        : ' — ${friendlyError(job.lastError)}';
+        : ' · ${friendlyError(job.lastError)}';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
