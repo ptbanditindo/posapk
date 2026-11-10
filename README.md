@@ -310,9 +310,8 @@ backup, keamanan sesi, dan diagnostik.
   backup, sinkronisasi, dan catatan rilis.
 - [`relay/README.md`](relay/README.md) — setup relay, endpoint, dan otorisasi.
 - [`relay/OPS.md`](relay/OPS.md) — pemantauan, backup/pemulihan, TLS, retensi.
-- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) dan
-  [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) — rencana dan
-  progres implementasi.
+- [`RENCANA_PENGEMBANGAN.md`](RENCANA_PENGEMBANGAN.md) — rencana
+  pengembangan.
 - [`AUDIT_REPORT/`](AUDIT_REPORT/) — hasil audit internal dan roadmap remediasi.
 - [`UI_COPY_CATALOG.md`](UI_COPY_CATALOG.md) — katalog teks antarmuka.
 
