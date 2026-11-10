@@ -16,6 +16,7 @@ import 'package:pusatkupos/data/feature_flags.dart';
 import 'package:pusatkupos/data/models.dart';
 import 'package:pusatkupos/data/order_service.dart';
 import 'package:pusatkupos/data/pajak.dart';
+import 'package:pusatkupos/data/pin_service.dart';
 import 'package:pusatkupos/data/pajak_report_service.dart';
 import 'package:pusatkupos/data/purchase_service.dart';
 import 'package:pusatkupos/data/restore_lock.dart';
@@ -32,15 +33,37 @@ const _secureChannel = MethodChannel(
   'plugins.it_nomads.com/flutter_secure_storage',
 );
 
+final _secureValues = <String, String>{};
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUpAll(() {
-    // AppState.load() membaca PIN sesi lewat secure storage. Di lingkungan test
-    // tidak ada plugin platform, jadi bacaan dikosongkan agar state machine
-    // dapat diuji tanpa perangkat.
+    // PIN disimpan di secure storage sejak F8-6. Test memakai penyimpanan
+    // dalam memori agar jalur PIN yang sebenarnya tetap diuji.
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_secureChannel, (call) async => null);
+        .setMockMethodCallHandler(_secureChannel, (call) async {
+      final args = (call.arguments as Map?) ?? const {};
+      final key = '${args['key'] ?? ''}';
+      switch (call.method) {
+        case 'write':
+          _secureValues[key] = '${args['value']}';
+          return null;
+        case 'read':
+          return _secureValues[key];
+        case 'delete':
+          _secureValues.remove(key);
+          return null;
+        case 'containsKey':
+          return _secureValues.containsKey(key);
+        case 'readAll':
+          return Map<String, String>.from(_secureValues);
+        case 'deleteAll':
+          _secureValues.clear();
+          return null;
+      }
+      return null;
+    });
   });
 
   tearDownAll(() {
@@ -50,6 +73,7 @@ void main() {
 
   setUp(() {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    _secureValues.clear();
   });
   tearDown(() {
     debugDefaultTargetPlatformOverride = null;
@@ -103,15 +127,11 @@ void main() {
       expect(AppState.instance.scene, AppScene.ready);
 
       AppState.instance.setOperator(null);
-      await db.insert(
-        'app_meta',
-        {'key': 'auth.pin_hash', 'value': 'x'},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await PinService.instance.setup('123456');
       await AppState.instance.load();
       expect(AppState.instance.scene, AppScene.recovering);
 
-      await db.delete('app_meta', where: "key = 'auth.pin_hash'");
+      await PinService.instance.clear();
       await AppState.instance.load();
       expect(AppState.instance.scene, AppScene.unauthenticated);
     });

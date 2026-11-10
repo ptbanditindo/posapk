@@ -80,9 +80,30 @@ void main() {
     if (await dir.exists()) await dir.delete(recursive: true);
   });
 
-  test('pemilik keluar menghapus database lokal lalu membuka yang baru',
-      () async {
+  test('pemilik keluar mempertahankan database dan sesi lama', () async {
     await signOutSession(owner: true);
+
+    expect(AppDatabase.instance.isOpen, isTrue);
+    final db = AppDatabase.instance.db;
+    expect(
+      (await db.query('owner_identity')).single['owner_id'],
+      'OWNER1',
+    );
+    expect(
+      await AppDatabase.instance.getSetting('bengkel.nama'),
+      'Toko Lama',
+    );
+    expect(await AppDatabase.instance.getSetting('sync.store_id'), 'utama');
+    expect(await File('$path-wal').exists(), isTrue);
+    expect(await File('$path.bak-20260101-000000').exists(), isTrue);
+    expect(
+      await File(p.join(dir.path, 'viewer_OWNER1.db')).exists(),
+      isTrue,
+    );
+  });
+
+  test('hapus database lokal membuka database kosong bersih', () async {
+    await AppDatabase.instance.deleteLocalDatabases();
 
     expect(AppDatabase.instance.isOpen, isTrue);
     final db = AppDatabase.instance.db;
@@ -93,8 +114,7 @@ void main() {
       'PUSATKU POS',
     );
     expect(await AppDatabase.instance.getSetting('sync.store_id'), isNull);
-    expect(await File('$path-wal').exists(), isFalse);
-    expect(await File('$path-shm').exists(), isFalse);
+    // WAL/SHM boleh dibuat ulang oleh database kosong yang baru dibuka.
     expect(await File('$path.bak-20260101-000000').exists(), isFalse);
     expect(await File('$path.corrupt-20260101-000000').exists(), isFalse);
     expect(
@@ -102,7 +122,10 @@ void main() {
       isFalse,
     );
     // Penanda ditulis ulang oleh database kosong yang baru dibuka.
-    expect(await File('$path.schema_version').readAsString(), '10');
+    expect(
+      await File('$path.schema_version').readAsString(),
+      '${AppDatabase.schemaVersion}',
+    );
   });
 
   test('karyawan keluar tidak menghapus database lokal', () async {

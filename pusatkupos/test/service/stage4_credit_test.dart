@@ -21,11 +21,14 @@ const _secureChannel = MethodChannel(
   'plugins.it_nomads.com/flutter_secure_storage',
 );
 
+final _secureValues = <String, String>{};
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    _secureValues.clear();
   });
   tearDown(() {
     debugDefaultTargetPlatformOverride = null;
@@ -33,7 +36,28 @@ void main() {
 
   setUpAll(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_secureChannel, (call) async => null);
+        .setMockMethodCallHandler(_secureChannel, (call) async {
+      final args = (call.arguments as Map?) ?? const {};
+      final key = '${args['key'] ?? ''}';
+      switch (call.method) {
+        case 'write':
+          _secureValues[key] = '${args['value']}';
+          return null;
+        case 'read':
+          return _secureValues[key];
+        case 'delete':
+          _secureValues.remove(key);
+          return null;
+        case 'containsKey':
+          return _secureValues.containsKey(key);
+        case 'readAll':
+          return Map<String, String>.from(_secureValues);
+        case 'deleteAll':
+          _secureValues.clear();
+          return null;
+      }
+      return null;
+    });
   });
 
   tearDownAll(() {

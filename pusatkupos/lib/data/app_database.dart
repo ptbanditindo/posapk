@@ -30,7 +30,6 @@ import 'models.dart';
 import 'pajak.dart';
 import 'price_rules.dart';
 import 'schema.dart';
-import 'schema_migrations.dart';
 import 'secure_store.dart';
 import 'stock_ledger.dart';
 import 'store_settings.dart';
@@ -41,7 +40,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase();
 
-  static const int schemaVersion = 19;
+  static const int schemaVersion = 1;
 
   /// Versi kontrak format backup/restore. Naikkan bila format manifest berubah
   /// dengan cara yang tidak dapat dibaca versi lama.
@@ -203,7 +202,7 @@ class AppDatabase {
       onCreate: _createSchema,
       onOpen: createOperationalSchema,
       onUpgrade: _upgradeSchema,
-      onDowngrade: _rejectIncompatibleVersion,
+      onDowngrade: _resetIncompatibleVersion,
     );
     try {
       return await runZoned(
@@ -371,7 +370,7 @@ class AppDatabase {
       path,
       version: schemaVersion,
       onCreate: _createSchema,
-      onDowngrade: _rejectIncompatibleVersion,
+      onDowngrade: _resetIncompatibleVersion,
     );
     try {
       for (final entry in settings.entries) {
@@ -535,17 +534,91 @@ class AppDatabase {
     );
   }
 
-  /// Database dari versi aplikasi yang lebih baru tidak dibuka agar tabel
-  /// yang belum dikenal tidak ditimpa oleh kode lama.
-  Future<void> _rejectIncompatibleVersion(
+  /// Belum ada pengguna, jadi database dari skema versi lama dibuang dan
+  /// dibangun ulang dari skema kanonik v1. Ini juga menangani database web
+  /// yang tidak memiliki berkas penanda versi.
+  Future<void> _resetIncompatibleVersion(
     Database db,
     int oldVersion,
     int newVersion,
   ) async {
-    throw StateError(
-      'Versi skema $oldVersion tidak didukung. '
-      'Aplikasi ini memakai skema bersih v$newVersion.',
+    AppLog.instance.event(
+      LogCategory.database,
+      'schema.reset_downgrade',
+      data: {'stored': oldVersion, 'target': newVersion},
     );
+    final objects = await db.rawQuery(
+      "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+    );
+    for (final row in objects) {
+      final type = '${row['type']}';
+      if (type != 'trigger' && type != 'view' && type != 'index') continue;
+      await db.execute('DROP $type IF EXISTS "${row['name']}"');
+    }
+    final tables = [
+      for (final row in objects)
+        if ('${row['type']}' == 'table') '${row['name']}',
+    ];
+    for (final table in await _tablesChildFirst(db, tables)) {
+      await db.execute('DROP TABLE IF EXISTS "$table"');
+    }
+    await createCleanSchema(db);
+    await _clearCachedSession();
+  }
+
+  /// Tabel bersih tanpa akun membuat PIN dan profil lama tidak lagi sah,
+  /// sehingga sesi di penyimpanan aman ikut dibuang.
+  Future<void> _clearCachedSession() async {
+    const keys = [
+      'session.profile',
+      'session.pin_salt',
+      'session.pin_hash',
+      'session.pin_iterations',
+      'session.pin_identity',
+      'session.device_token',
+    ];
+    for (final key in keys) {
+      await SecureStore.instance.delete(key);
+    }
+  }
+
+  /// Tabel anak harus dihapus sebelum induknya agar pemeriksaan foreign key
+  /// saat `DROP TABLE` tidak menunjuk tabel yang sudah hilang.
+  Future<List<String>> _tablesChildFirst(
+    Database db,
+    List<String> tables,
+  ) async {
+    final known = tables.toSet();
+    final parents = <String, Set<String>>{};
+    for (final table in tables) {
+      final fks = await db.rawQuery('PRAGMA foreign_key_list("$table")');
+      parents[table] = {
+        for (final fk in fks)
+          if ('${fk['table']}' != table && known.contains('${fk['table']}'))
+            '${fk['table']}',
+      };
+    }
+    final parentFirst = <String>[];
+    final placed = <String>{};
+    while (parentFirst.length < tables.length) {
+      final ready = [
+        for (final table in tables)
+          if (!placed.contains(table) && parents[table]!.every(placed.contains))
+            table,
+      ];
+      if (ready.isEmpty) {
+        // Siklus referensi (tidak ada di skema saat ini); sisa tabel
+        // mengikuti urutan nama agar hasil tetap deterministik.
+        parentFirst.addAll([
+          for (final table in tables)
+            if (!placed.contains(table)) table,
+        ]);
+        break;
+      }
+      parentFirst.addAll(ready);
+      placed.addAll(ready);
+    }
+    return parentFirst.reversed.toList();
   }
 
   Future<void> _open() async {
@@ -571,7 +644,7 @@ class AppDatabase {
         onCreate: _createSchema,
         onOpen: createOperationalSchema,
         onUpgrade: _upgradeSchema,
-        onDowngrade: _rejectIncompatibleVersion,
+        onDowngrade: _resetIncompatibleVersion,
       );
       await _recordSchemaVersion();
       await _enableWal();
@@ -586,7 +659,7 @@ class AppDatabase {
         onCreate: _createSchema,
         onOpen: createOperationalSchema,
         onUpgrade: _upgradeSchema,
-        onDowngrade: _rejectIncompatibleVersion,
+        onDowngrade: _resetIncompatibleVersion,
       ),
     );
     await _recordSchemaVersion();
@@ -597,6 +670,9 @@ class AppDatabase {
   /// Versi skema terakhir disimpan di berkas penanda di samping database.
   /// Penanda dibaca sebelum database dibuka agar salinan pengaman dapat dibuat
   /// sebelum migrasi berjalan.
+  /// Skema kanonik dimulai lagi dari v1. Selama belum ada pengguna, database
+  /// dari versi skema lama (mis. hasil pengujian v19) dibuang agar tabel
+  /// dibuat bersih, bukan dimigrasikan.
   Future<void> _prepareSchemaUpgrade() async {
     if (kIsWeb) return;
     final path = _path;
@@ -612,15 +688,13 @@ class AppDatabase {
       stored = null;
     }
     if (stored != null && stored > schemaVersion) {
-      throw StateError(
-        'Database dibuat oleh aplikasi versi lebih baru (skema v$stored). '
-        'Perbarui aplikasi sebelum membuka data ini.',
+      AppLog.instance.event(
+        LogCategory.database,
+        'schema.reset_downgrade',
+        data: {'stored': stored, 'target': schemaVersion},
       );
-    }
-    if (stored != null &&
-        stored < schemaVersion &&
-        await backup_platform.fileExists(path)) {
-      await backup_platform.backupExistingDatabase(path);
+      await backup_platform.deleteDatabaseFiles(path);
+      await _clearCachedSession();
     }
   }
 
@@ -639,7 +713,6 @@ class AppDatabase {
     int oldVersion,
     int newVersion,
   ) async {
-    await runSchemaMigrations(db, from: oldVersion, to: newVersion);
     await createOperationalSchema(db);
   }
 
@@ -858,28 +931,16 @@ class AppDatabase {
     }
   }
 
-  /// Menjalankan migrasi pada salinan restore sebelum menggantikan database
-  /// aktif. Dengan begitu kegagalan migrasi menolak arsip tanpa menyentuh data
-  /// lama, dan skema hasil restore selalu mutakhir saat dibuka.
-  Future<void> migratePlainCopy(
-    String path, {
-    required int fromVersion,
-    int? toVersion,
-  }) async {
+  /// Menyiapkan salinan restore sebelum menggantikan database aktif. Karena
+  /// skema kanonik sudah v1 dan belum ada pengguna, salinan tidak dimigrasikan:
+  /// tabel yang belum ada dilengkapi lalu versi disetel ulang ke v1.
+  Future<void> migratePlainCopy(String path, {int? toVersion}) async {
     final target = toVersion ?? schemaVersion;
     final probe = await databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(onConfigure: _configure),
     );
     try {
-      final rows = await probe.rawQuery('PRAGMA user_version');
-      final stored = rows.isEmpty
-          ? 0
-          : ((rows.first.values.first as num?)?.toInt() ?? 0);
-      final start = stored > fromVersion ? stored : fromVersion;
-      if (start < target) {
-        await runSchemaMigrations(probe, from: start, to: target);
-      }
       await createOperationalSchema(probe);
       await probe.execute('PRAGMA user_version = $target');
     } finally {

@@ -6,6 +6,7 @@ import 'package:cryptography/cryptography.dart';
 
 const _base = String.fromEnvironment('RELAY_URL', defaultValue: 'http://127.0.0.1:8787');
 const _adminToken = String.fromEnvironment('RELAY_ADMIN_TOKEN');
+const _origin = String.fromEnvironment('RELAY_TEST_ORIGIN');
 
 final _run = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
 final _ownerId = 'e2e_owner_$_run';
@@ -73,11 +74,13 @@ Future<Resp> _request(
   String? enrollment,
   Object? body,
   String? raw,
+  String? origin,
 }) async {
   final client = HttpClient();
   try {
     final request = await client.openUrl(method, Uri.parse('$_base$path'));
     if (token != null) request.headers.set('x-device-token', token);
+    if (origin != null) request.headers.set('origin', origin);
     if (admin) request.headers.set('authorization', 'Bearer $_adminToken');
     if (enrollment != null) request.headers.set('x-relay-enroll-token', enrollment);
     if (raw != null) {
@@ -630,7 +633,8 @@ Future<void> main() async {
   r = await _request('POST', '/relay/manage/devices/$dev2Id/revoke?owner_id=$_ownerId', token: dev1Token);
   _expect('cabut perangkat 200', r.status, 200);
   r = await _request('GET', '/relay/feed?store_id=utama&since_seq=0', token: dev2Token);
-  _expect('token perangkat dicabut ditolak', r.status, 401);
+  _expect('token perangkat dicabut ditolak', r.status, 403, r.code);
+  _check('alasan perangkat dicabut', r.code == 'device_revoked', r.code);
   r = await _request('POST', '/relay/manage/devices/$dev2Id/revoke?owner_id=$_ownerId', token: dev1Token);
   _expect('cabut perangkat tidak ada 404', r.status, 404);
   r = await _request('POST', '/relay/manage/devices/$dev1Id/revoke?owner_id=$_ownerId', token: empToken);
@@ -662,10 +666,22 @@ Future<void> main() async {
     '${last?.body}',
   );
 
-  // 14. Transport.
-  r = await _request('OPTIONS', '/relay/devices');
-  _expect('preflight CORS 200', r.status, 200);
-  _check('header allow-origin ada', r.headers['access-control-allow-origin'] == '*');
+  // 14. Transport. CORS hanya mengizinkan origin yang terdaftar (F8-5).
+  r = await _request(
+    'OPTIONS',
+    '/relay/devices',
+    origin: _origin.isEmpty ? 'https://tidak-terdaftar.test' : _origin,
+  );
+  if (_origin.isEmpty) {
+    _expect('preflight origin asing ditolak', r.status, 403, r.code);
+  } else {
+    _expect('preflight CORS 200', r.status, 200);
+    _check(
+      'header allow-origin berisi origin terdaftar',
+      r.headers['access-control-allow-origin'] == _origin,
+      '${r.headers['access-control-allow-origin']}',
+    );
+  }
   r = await _request('GET', '/relay/tidak-ada');
   _expect('rute tidak dikenal 404', r.status, 404);
   r = await _request('POST', '/relay/devices', raw: '{bad json', enrollment: 'x');

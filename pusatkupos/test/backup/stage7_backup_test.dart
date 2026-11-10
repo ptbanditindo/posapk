@@ -139,7 +139,7 @@ void main() {
       expect(copy.userVersion, AppDatabase.schemaVersion);
     });
 
-    test('salinan dengan versi lama dimigrasikan ke versi aplikasi', () async {
+    test('salinan dengan versi lama disetel ulang ke versi aplikasi', () async {
       final dir = await Directory.systemTemp.createTemp('pusatkupos_migrate_');
       addTearDown(() async {
         if (await dir.exists()) await dir.delete(recursive: true);
@@ -152,7 +152,7 @@ void main() {
       final app = AppDatabase.instance;
       final before = await app.inspectPlainDatabase(path);
       expect(before.userVersion, 3);
-      await app.migratePlainCopy(path, fromVersion: before.userVersion);
+      await app.migratePlainCopy(path);
       final after = await app.inspectPlainDatabase(path);
       expect(after.userVersion, AppDatabase.schemaVersion);
     });

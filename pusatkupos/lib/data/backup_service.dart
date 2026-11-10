@@ -1003,7 +1003,7 @@ class BackupService {
           );
         }
         // Migrasi salinan sebelum promosi: kegagalan tidak menyentuh data aktif.
-        await db.migratePlainCopy(plainPath, fromVersion: version);
+        await db.migratePlainCopy(plainPath);
         if (db.databaseEncrypted) {
           await db.createEncryptedCopy(
             plainPath,
@@ -1351,7 +1351,7 @@ class BackupService {
             );
           }
           // Migrasi staging sebelum promosi; data aktif belum tersentuh.
-          await db.migratePlainCopy(plainPath, fromVersion: version);
+          await db.migratePlainCopy(plainPath);
           if (db.databaseEncrypted) {
             await db.createEncryptedCopy(
               plainPath,

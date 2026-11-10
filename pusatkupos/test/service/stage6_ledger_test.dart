@@ -427,7 +427,8 @@ void main() {
         whereArgs: [recordId],
       )).single;
       expect(part['harga_modal'], 15000);
-      expect(part['harga_batas_saat_transaksi'], 10000);
+      // Sejak modal baris memakai HPP ledger, batas harga juga ikut rata-rata.
+      expect(part['harga_batas_saat_transaksi'], 15000);
 
       final balance = await balanceOf(stockId);
       expect(balance?['qty_milli'], 199000);

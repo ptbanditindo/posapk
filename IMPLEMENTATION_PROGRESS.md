@@ -1,8 +1,8 @@
 # Progres Implementasi — IMPLEMENTATION_PLAN.md
 
 Dokumen ini mencatat status eksekusi per fase. Satu task dicentang hanya bila
-kode sudah ditulis dan `dart analyze lib` bersih. Uji otomatis/skenario belum
-dijalankan karena menunggu persetujuan pemilik.
+kode sudah ditulis dan `dart analyze lib` bersih. Uji otomatis dan uji web
+nyata dijalankan pada 10 November 2026; hasilnya ada di bagian 13.
 
 - [1. Ringkasan fase](#1-ringkasan-fase)
 - [2. F0 — Penjaga Keamanan & Data](#2-f0--penjaga-keamanan--data)
@@ -16,23 +16,24 @@ dijalankan karena menunggu persetujuan pemilik.
 - [10. F8 — E2EE & Siklus Kunci](#10-f8--e2ee--siklus-kunci)
 - [11. F9 — Error & Recovery](#11-f9--error--recovery)
 - [12. F10 — Performa & Pembulatan](#12-f10--performa--pembulatan)
-- [13. Berkas yang berubah](#13-berkas-yang-berubah)
+- [13. Reset Skema Kanonik v1 & Hasil Uji](#13-reset-skema-kanonik-v1--hasil-uji)
+- [14. Berkas yang berubah](#14-berkas-yang-berubah)
 
 ## 1. Ringkasan fase
 
 | Fase | Status | Catatan |
 |---|---|---|
 | F0 | Selesai | Semua guard logout/restore/sync/banner |
-| F1 | Selesai | Baseline schema (v11) & laporan integritas di diagnostik |
-| F2 | Selesai | Konsistensi transaksi; schema naik ke v12 |
-| F3 | Selesai | Harga, pembayaran, zona waktu; schema naik ke v13 |
+| F1 | Selesai | Baseline schema kanonik v1 & laporan integritas di diagnostik |
+| F2 | Selesai | Konsistensi transaksi; skema tetap v1 |
+| F3 | Selesai | Harga, pembayaran, zona waktu; skema tetap v1 |
 | F4 | Selesai (kecuali uji F4-8) | Stok, HPP, izin; tanpa perubahan schema |
 | F5 | Selesai (kecuali uji F5-5) | Sync event-driven, status per dokumen, paginasi riwayat, panel sync, laporan/VOID |
 | F6 | Selesai (kecuali uji F6-6) | Sync lanjutan, konflik, protokol, kompensasi |
-| F7 | Selesai (kecuali uji F7-6/F7-7) | Arsip, purge (flag mati), pencarian, ekspor, tutup buku; schema v16 |
-| F8 | Selesai (kecuali uji F8-8) | E2EE, escrow, rotasi kunci, viewer/role; schema v17; protokol v2 |
+| F7 | Selesai (kecuali uji F7-6/F7-7) | Arsip, purge (flag mati), pencarian, ekspor, tutup buku; skema v1 |
+| F8 | Selesai (kecuali uji F8-8) | E2EE, escrow, rotasi kunci, viewer/role; skema v1; protokol v2 |
 | F9 | Selesai (kecuali uji F9-4) | Diagnosis startup, antrean cetak, pesan error actionable, health surface |
-| F10 | Selesai | Index performa, aritmetika integer, metrik feed/snapshot; schema v19 |
+| F10 | Selesai | Index performa, aritmetika integer, metrik feed/snapshot; skema v1 |
 
 ## 2. F0 — Penjaga Keamanan & Data
 
@@ -236,7 +237,41 @@ dihapus otomatis oleh diagnosis.
 Catatan F10: pembulatan uang tetap sen penuh; tidak ada perubahan format
 tampilan. Index bersifat aditif dan aman dijalankan berulang.
 
-## 13. Berkas yang berubah
+## 13. Reset Skema Kanonik v1 & Hasil Uji
+
+Belum ada pengguna, jadi rantai migrasi lama dibuang. Skema kanonik dimulai
+lagi dari **v1** dan database dari versi lebih baru dibangun ulang bersih, bukan
+dimigrasikan.
+
+| Perubahan | Bukti |
+| --- | --- |
+| Versi skema kembali ke v1 | `lib/data/app_database.dart`: `schemaVersion = 1` |
+| Rantai migrasi v2–v19 dihapus | `lib/data/schema_migrations.dart` dihapus seluruhnya (1330 baris) |
+| Backup/restore tidak lagi memigrasikan salinan lama | `lib/data/backup_service.dart`: `migratePlainCopy(path)` hanya membuat skema operasional lalu menulis `user_version` |
+| Downgrade membangun tabel bersih | `_resetIncompatibleVersion` menghapus trigger/view/index, lalu tabel **anak lebih dulu** (`_tablesChildFirst` membaca `PRAGMA foreign_key_list`), lalu `createCleanSchema` |
+| Jalur berkas (desktop/Android) | `_prepareSchemaUpgrade` menghapus berkas database bila penanda versi > 1 |
+| Sesi lama tidak menggantung | Reset skema juga menghapus `session.profile`, `session.pin_*`, `session.pin_identity`, dan `session.device_token` di secure storage |
+
+Hasil uji 10 November 2026:
+
+| Uji | Hasil |
+| --- | --- |
+| `dart analyze` (pusatkupos) | Tidak ada masalah |
+| `flutter test` (pusatkupos) | **121/121 lulus** |
+| Relay e2e (`relay/tool/e2e_test.dart`) | **83/83 lulus** |
+| Web nyata — instal baru (origin bersih) | Onboarding → PIN pemilik → Ringkasan tampil |
+| Web nyata — alur kasir | Tambah barang 10 pcs → jual 2 pcs Rp 120.000 → nota `TLRB5S7-S20261110-0001` LUNAS → stok 8 pcs |
+| Web nyata — downgrade v19 → v1 | Database dibangun ulang: `user_version=1`, 79 tabel, tabel bisnis kosong, onboarding tampil |
+| Build Windows native | Tidak dapat dijalankan di mesin ini: butuh Developer Mode untuk symlink plugin |
+
+Catatan uji web: SharedWorker Flutter menyimpan koneksi database, jadi pengujian
+downgrade harus dilakukan setelah worker dilepas (buka halaman non-Flutter lalu
+muat ulang aplikasi).
+
+## 14. Berkas yang berubah
+
+Daftar per fase di bawah bersifat historis. `lib/data/schema_migrations.dart`
+dihapus seluruhnya saat reset skema ke v1 (bagian 13).
 
 F0 menyentuh berkas berikut (relatif `pusatkupos/`):
 

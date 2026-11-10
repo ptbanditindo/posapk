@@ -264,7 +264,7 @@ void main() {
       kind: 'employee',
       role: 'KASIR',
       label: 'Kasir',
-      permissions: {'buat_nota', 'diskon'},
+      permissions: {'buat_nota', 'diskon', 'stok_keluar'},
     );
     await expectLater(
       AppDatabase.instance.createTransaction(
