@@ -1499,43 +1499,65 @@ class FollowupService {
     DateTime moment,
     String storeName,
   ) {
-    final customer = item['customer_nama'] as String? ?? '';
+    final customer = (item['customer_nama'] as String? ?? '').trim();
     final jenis = item['jenis'] as String? ?? '';
-    final unit = item['unit_label'] as String? ?? 'unit';
-    final noNota = item['no_nota'] as String? ?? '';
+    final unit = (item['unit_label'] as String? ?? '').trim();
+    final noNota = (item['no_nota'] as String? ?? '').trim();
     final due = _dateOnly(item['jatuh_tempo']) ?? startOfDay(moment);
     final sisa = item['sisa_bayar'] as int? ?? 0;
-    final opening =
-        '${_greeting(moment)} Bapak/Ibu $customer. Kami dari $storeName.';
+    final days = due.difference(startOfDay(moment)).inDays;
+    final toko = storeName.trim().isEmpty ? 'toko kami' : storeName.trim();
+    final fields = <String>[
+      _waField('Pelanggan', customer.isEmpty ? '-' : customer),
+      _waField('Unit', unit.isEmpty ? 'Unit' : unit),
+    ];
     String body;
-    switch (jenis) {
-      case 'garansi':
-        final days = due.difference(startOfDay(moment)).inDays;
-        body = 'Kami ingin menginformasikan bahwa garansi servis $unit '
-            'akan berakhir pada ${_fmtDate(due)}'
-            '${days >= 0 ? ' ($days hari lagi)' : ''}. '
-            'Bagaimana kondisi $unit saat ini? Apabila masih ada kendala, '
-            'kami berharap Bapak/Ibu berkenan memeriksakan kembali sebelum '
-            'masa garansi berakhir.';
-      case 'servis_berkala':
-        body = 'Kami ingin mengingatkan jadwal servis berkala untuk $unit '
-            'sekitar ${_fmtDate(due)}. Kami berharap Bapak/Ibu berkenan '
-            'menjadwalkan kedatangan ke bengkel kami.';
-      case 'piutang':
-        body = 'Kami ingin mengingatkan sisa pembayaran nota $noNota '
-            'sebesar ${formatRupiah(sisa)} untuk $unit. Mohon kiranya '
-            'pembayaran dapat diselesaikan. Apabila sudah dibayar, mohon '
-            'abaikan pesan ini.';
-      case 'unit_selesai':
-        body = 'Kami ingin menginformasikan bahwa $unit sudah selesai '
-            'dikerjakan dan siap diambil. Kami berharap Bapak/Ibu berkenan '
-            'mengambil unit tersebut di bengkel kami.';
-      default:
-        body = 'Kami ingin menanyakan kondisi $unit setelah servis terakhir. '
-            'Apakah masih ada kendala? Kami berharap Bapak/Ibu berkenan '
-            'menghubungi kami apabila perlu dilakukan pemeriksaan ulang.';
+    if (jenis == 'garansi') {
+      fields.add(
+        _waField('Garansi', 's.d. ${_fmtDate(due)}${_waSisaHari(days)}'),
+      );
+      body = days < 0
+          ? 'Garansi servis unit ini sudah berakhir pada ${_fmtDate(due)}. '
+              'Kalau ada kendala yang muncul, silakan datang agar kami '
+              'periksa kembali.'
+          : 'Garansi servis unit ini akan berakhir pada ${_fmtDate(due)}. '
+              'Kalau masih ada kendala setelah servis, silakan datang agar '
+              'kami periksa kembali sebelum masa garansi habis.';
+    } else if (jenis == 'servis_berkala') {
+      fields.add(_waField('Jadwal', _fmtDate(due)));
+      body = 'Sudah waktunya servis berkala untuk unit ini, yaitu sekitar '
+          '${_fmtDate(due)}. Silakan datang ke $toko, atau balas pesan ini '
+          'untuk memilih hari lain.';
+    } else if (jenis == 'piutang') {
+      fields.add(_waField('No. Nota', noNota.isEmpty ? '-' : noNota));
+      fields.add(_waField('Sisa Bayar', formatRupiah(sisa)));
+      fields.add(_waField('Jatuh Tempo', _fmtDate(due)));
+      body = 'Sisa pembayaran nota ${noNota.isEmpty ? 'ini' : noNota} '
+          'sebesar ${formatRupiah(sisa)} masih tercatat belum lunas. Kalau '
+          'sudah dibayar, mohon abaikan pesan ini. Kalau belum, mohon kabari '
+          'kapan bisa dilunasi.';
+    } else if (jenis == 'unit_selesai') {
+      fields.add(_waField('Status', 'Selesai, siap diambil'));
+      body = 'Unit ini sudah selesai dikerjakan dan siap diambil di $toko. '
+          'Silakan datang, atau balas pesan ini kalau ada pertanyaan.';
+    } else {
+      body = 'Kami ingin menanyakan kondisi unit setelah servis terakhir. '
+          'Masih ada kendala? Balas pesan ini kalau ingin kami periksa ulang.';
     }
-    return '$opening $body\n\nTerima kasih atas perhatian Bapak/Ibu.';
+    return [
+      _waLine,
+      _waStore(storeName),
+      _waTitle(jenis),
+      _waLine,
+      ...fields,
+      _waDivider,
+      body,
+      '',
+      if (jenis != 'piutang')
+        'Kalau tidak perlu diingatkan lagi, balas pesan ini.',
+      'Terima kasih!',
+      _waLine,
+    ].join('\n');
   }
 
   String _groupMessage(
@@ -1543,26 +1565,65 @@ class FollowupService {
     DateTime moment,
     String storeName,
   ) {
-    final customer = items.first['customer_nama'] as String? ?? '';
-    final lines = items.map((item) {
-      final jenis = item['jenis'] as String? ?? '';
-      final unit = item['unit_label'] as String? ?? 'unit';
-      final noNota = item['no_nota'] as String? ?? '';
-      final due = _dateOnly(item['jatuh_tempo']) ?? startOfDay(moment);
-      final label = switch (jenis) {
-        'garansi' => 'Garansi $unit',
-        'servis_berkala' => 'Servis berkala $unit',
-        'piutang' => 'Piutang nota $noNota '
-            '(${formatRupiah(item['sisa_bayar'] as int? ?? 0)})',
-        'unit_selesai' => 'Unit siap diambil $unit',
-        _ => 'Follow up pasca servis $unit',
+    final first = items.first;
+    final jenis = first['jenis'] as String? ?? '';
+    final customer = (first['customer_nama'] as String? ?? '').trim();
+    final today = startOfDay(moment);
+    final toko = storeName.trim().isEmpty ? 'toko kami' : storeName.trim();
+    final lines = <String>[
+      _waLine,
+      _waStore(storeName),
+      _waTitle(jenis),
+      _waLine,
+      _waField('Pelanggan', customer.isEmpty ? '-' : customer),
+      _waDivider,
+    ];
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
+      final unit = (item['unit_label'] as String? ?? '').trim();
+      final unitName = unit.isEmpty ? 'Unit' : unit;
+      final noNota = (item['no_nota'] as String? ?? '').trim();
+      final due = _dateOnly(item['jatuh_tempo']) ?? today;
+      final days = due.difference(today).inDays;
+      final (judul, rincian) = switch (jenis) {
+        'garansi' => (
+          unitName,
+          'Garansi s.d. ${_fmtDate(due)}${_waSisaHari(days)}',
+        ),
+        'servis_berkala' => (unitName, 'Jadwal ${_fmtDate(due)}'),
+        'piutang' => (
+          'Nota ${noNota.isEmpty ? '-' : noNota}',
+          'Sisa ${formatRupiah(item['sisa_bayar'] as int? ?? 0)}',
+        ),
+        'unit_selesai' => (unitName, 'Selesai, siap diambil'),
+        _ => (unitName, 'Tindak lanjut setelah servis'),
       };
-      return '- $label (jadwal ${_fmtDate(due)})';
-    }).join('\n');
-    return '${_greeting(moment)} Bapak/Ibu $customer. Kami dari $storeName.\n\n'
-        'Kami ingin menyampaikan beberapa pengingat berikut:\n$lines\n\n'
-        'Apabila sudah ditindaklanjuti, mohon abaikan pesan ini.\n\n'
-        'Terima kasih atas perhatian Bapak/Ibu.';
+      lines
+        ..add('${i + 1}. $judul')
+        ..add('   $rincian');
+    }
+    final body = switch (jenis) {
+      'garansi' => 'Kalau masih ada kendala pada unit di atas, silakan datang '
+          'agar kami periksa kembali sebelum masa garansi habis.',
+      'servis_berkala' => 'Silakan balas pesan ini untuk memilih hari '
+          'kedatangan yang cocok.',
+      'piutang' => 'Kalau sudah dibayar, mohon abaikan pesan ini. Kalau belum, '
+          'mohon kabari kapan bisa dilunasi.',
+      'unit_selesai' => 'Semua unit di atas sudah siap diambil di $toko. '
+          'Silakan datang, atau balas pesan ini kalau ada pertanyaan.',
+      _ => 'Kami ingin menanyakan kondisi unit di atas setelah servis terakhir. '
+          'Balas pesan ini kalau ingin kami periksa ulang.',
+    };
+    return [
+      ...lines,
+      _waDivider,
+      body,
+      '',
+      if (jenis != 'piutang')
+        'Kalau tidak perlu diingatkan lagi, balas pesan ini.',
+      'Terima kasih!',
+      _waLine,
+    ].join('\n');
   }
 
   Future<void> _addEvent(
@@ -1677,10 +1738,28 @@ String _fmtDateTime(DateTime value) =>
     '${_fmtDate(value)} ${value.hour.toString().padLeft(2, '0')}:'
     '${value.minute.toString().padLeft(2, '0')}';
 
-String _greeting(DateTime moment) {
-  final hour = moment.hour;
-  if (hour < 11) return 'Selamat pagi,';
-  if (hour < 15) return 'Selamat siang,';
-  if (hour < 18) return 'Selamat sore,';
-  return 'Selamat malam,';
+const _waLine = '================================';
+const _waDivider = '--------------------------------';
+
+String _waStore(String storeName) {
+  final clean = storeName.trim();
+  return (clean.isEmpty ? 'Toko' : clean).toUpperCase();
+}
+
+String _waTitle(String jenis) => switch (jenis) {
+      'garansi' => 'Pengingat Garansi Servis',
+      'servis_berkala' => 'Pengingat Servis Berkala',
+      'piutang' => 'Pengingat Pembayaran',
+      'unit_selesai' => 'Pengingat Pengambilan Unit',
+      _ => 'Tindak Lanjut Setelah Servis',
+    };
+
+String _waField(String label, String value) =>
+    '${label.padRight(11)}: $value';
+
+String _waSisaHari(int days) {
+  if (days > 1) return ' ($days hari lagi)';
+  if (days == 1) return ' (besok)';
+  if (days == 0) return ' (hari ini)';
+  return '';
 }

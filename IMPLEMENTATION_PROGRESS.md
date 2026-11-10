@@ -520,3 +520,23 @@ dan alur tidak diubah.
 Verifikasi: `dart analyze` pada `pusatkupos/` menghasilkan "No issues found!".
 Build, uji runtime, dan pemeriksaan tampilan di perangkat belum dijalankan
 karena menunggu persetujuan.
+
+## Format pesan WhatsApp pengingat (10 November 2026)
+
+Ruang lingkup: teks pesan saja. Alur, kunci data, kuota, dan pengiriman tidak
+diubah.
+
+- Template `_message` dan `_groupMessage` di `lib/data/followup_service.dart`
+  memakai tata letak struk: garis `=` 32 karakter pada kepala dan kaki, garis
+  `-` sebagai pemisah, label rata sebelum titik dua, nama toko huruf besar,
+  dan judul sesuai jenis pengingat.
+- Sapaan waktu dan "Bapak/Ibu" berulang dihapus. Kalimat dibuat pendek dan
+  langsung: unit, tanggal, sisa pembayaran, lalu langkah berikutnya.
+- Sisa hari ditulis wajar: hari ini, besok, atau n hari lagi. Garansi yang
+  sudah lewat memakai kalimat "sudah berakhir".
+- Pesan gabungan menampilkan nomor unit atau nota dan rincian per baris,
+  tanpa tanda kurung ganda.
+- Piutang menyebut nomor nota, sisa bayar, dan jatuh tempo. Pesan lain memuat
+  ajakan membalas untuk berhenti diingatkan.
+
+Verifikasi: `dart analyze lib/data/followup_service.dart` → No issues found.
